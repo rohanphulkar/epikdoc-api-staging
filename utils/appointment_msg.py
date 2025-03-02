@@ -1,8 +1,8 @@
 from datetime import datetime
 from sqlalchemy.orm import Session
-from appointment.model import Appointment, AppointmentStatus
-from patients.model import Patient
-from auth.model import User
+from appointment.models import Appointment, AppointmentStatus
+from patient.models import Patient
+from auth.models import User
 from utils.email import send_email, EMAIL_SENDER, EMAIL_PASSWORD
 
 async def send_appointment_email(
@@ -72,7 +72,7 @@ Dr. {doctor.name}
         return send_email(
             sender_email=EMAIL_SENDER,
             sender_password=EMAIL_PASSWORD,
-            receiver_emails=patient.email,
+            receiver_emails=patient.email if patient.email else [],
             subject=subject,
             body=message
         ), "Appointment email sent successfully"

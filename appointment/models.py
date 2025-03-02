@@ -1,7 +1,6 @@
-
 import enum
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Boolean, Enum as SQLAlchemyEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, DateTime, ForeignKey, Boolean, Enum as SQLAlchemyEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from db.db import Base
 import uuid
@@ -9,10 +8,8 @@ import uuid
 def generate_uuid():
     return str(uuid.uuid4())
 
-
 class AppointmentStatus(enum.Enum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
+    SCHEDULED = "scheduled"
     CANCELLED = "cancelled"
 
 class Appointment(Base):
@@ -20,11 +17,14 @@ class Appointment(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
-    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    purpose_of_visit: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(String(255), nullable=False)
-    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    patient_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    patient_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False) 
+    doctor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    notes: Mapped[str] = mapped_column(String(1000), nullable=True)
+    appointment_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    checked_in_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    checked_out_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     status: Mapped[AppointmentStatus] = mapped_column(SQLAlchemyEnum(AppointmentStatus), nullable=False)
     share_on_email: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     share_on_sms: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)

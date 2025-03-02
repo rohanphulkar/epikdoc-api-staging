@@ -1,124 +1,89 @@
-from sqlalchemy import String, Integer, DateTime, Float, Enum as SQLAlchemyEnum, ForeignKey, Boolean
-from sqlalchemy.orm import relationship, Mapped, mapped_column
-from datetime import datetime
+from sqlalchemy import String, DateTime, ForeignKey, Float, Boolean, Text, JSON, Integer, Enum as SQLAlchemyEnum
+from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.db import Base
+from datetime import datetime
 import uuid
 import enum
-from pydantic import validator
+from typing import Optional
+
 
 def generate_uuid():
     return str(uuid.uuid4())
 
-class PaymentStatus(enum.Enum):
-    PENDING = "pending"
-    PAID = "paid" 
-    FAILED = "failed"
-    REFUNDED = "refunded"
-    CANCELLED = "cancelled"
 
-class CouponType(enum.Enum):
+class DiscountType(enum.Enum):
     PERCENTAGE = "percentage"
-    AMOUNT = "amount"
-
-class SubscriptionStatus(enum.Enum):
-    PENDING = "pending"
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    CANCELLED = "cancelled"
-
-class CouponUsers(Base):
-    __tablename__ = "coupon_users"
-    
-    coupon_id: Mapped[str] = mapped_column(String(36), ForeignKey("coupons.id"), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
-
-class Coupon(Base):
-    __tablename__ = "coupons"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    code: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    type: Mapped[CouponType] = mapped_column(SQLAlchemyEnum(CouponType), nullable=False)
-    value: Mapped[float] = mapped_column(Float, nullable=False)
-    max_uses: Mapped[int | None] = mapped_column(Integer, default=None)
-    used_count: Mapped[int] = mapped_column(Integer, default=0)
-    valid_from: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
-    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-    used_by_users = relationship("User", secondary="coupon_users")
-
-    @validator('code', pre=True, always=True)
-    def validate_code(cls, v):
-        if ' ' in v or not v.isalnum():
-            raise ValueError('Code cannot contain spaces and special characters')
-        return v.upper()
-
-class Order(Base):
-    __tablename__ = "orders"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    plan: Mapped[str] = mapped_column(String(255), nullable=False)
-    duration_months: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    billing_frequency: Mapped[str] = mapped_column(String(255), nullable=False, default="monthly")
-    coupon: Mapped[str | None] = mapped_column(String(36), ForeignKey("coupons.id"), nullable=True)
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
-    discount_amount: Mapped[float] = mapped_column(Float, default=0.0)
-    final_amount: Mapped[float] = mapped_column(Float, nullable=False)
-    payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    status: Mapped[PaymentStatus] = mapped_column(SQLAlchemyEnum(PaymentStatus), nullable=False, default=PaymentStatus.PENDING)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    FIXED = "fixed"
 
 
-class Subscription(Base):
-    __tablename__ = "subscriptions"
+class Expense(Base):
+    __tablename__ = "expenses"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    subscription_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    plan: Mapped[str] = mapped_column(String(255), nullable=False)
-    plan_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    start_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    end_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    status: Mapped[SubscriptionStatus] = mapped_column(SQLAlchemyEnum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.PENDING)
-    payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False)
-    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-
-class CancellationStatus(enum.Enum):
-    PENDING = "pending"
-    CANCELLED = "cancelled"
-    FAILED = "failed"
-
-class CancellationRequest(Base):
-    __tablename__ = "cancellation_requests"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    subscription: Mapped[str] = mapped_column(String(36), ForeignKey("subscriptions.id"), nullable=False)
-    reason: Mapped[str] = mapped_column(String(255), nullable=False)
-    feedback: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    status: Mapped[CancellationStatus] = mapped_column(SQLAlchemyEnum(CancellationStatus), nullable=False, default=CancellationStatus.PENDING)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expense_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    vendor_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
 
-class InvoiceStatus(enum.Enum):
-    PENDING = "pending"
-    PAID = "paid"
-    FAILED = "failed"
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
+    date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    receipt_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    treatment_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    amount_paid: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    invoice_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refund: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
+    refund_receipt_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    refunded_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    payment_mode: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    card_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    card_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cheque_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cheque_bank: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    netbanking_bank_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    vendor_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    vendor_fees_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cancelled: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
+
 
 class Invoice(Base):
     __tablename__ = "invoices"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    invoice_number: Mapped[str] = mapped_column(String(255), nullable=False)
-    order_id: Mapped[str] = mapped_column(String(36), ForeignKey("orders.id"), nullable=False)
-    status: Mapped[InvoiceStatus] = mapped_column(SQLAlchemyEnum(InvoiceStatus), nullable=False, default=InvoiceStatus.PENDING)
-    file_path: Mapped[str] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
+    date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    doctor_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    invoice_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    treatment_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    unit_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    discount_type: Mapped[Optional[DiscountType]] = mapped_column(SQLAlchemyEnum(DiscountType), nullable=True)
+    type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    invoice_level_tax_discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tax_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tax_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cancelled: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    file_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)

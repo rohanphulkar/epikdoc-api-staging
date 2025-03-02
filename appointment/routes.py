@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from .schema import AppointmentCreate, AppointmentUpdate, AppointmentResponse
-from .model import Appointment
+from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse
+from .models import Appointment, AppointmentStatus
 from db.db import get_db
-from auth.model import User
-from patients.model import Patient
+from auth.models import User
+from patient.models import Patient
 from utils.auth import verify_token
 from utils.appointment_msg import send_appointment_email
 from sqlalchemy.orm import joinedload
@@ -27,14 +27,14 @@ appointment_router = APIRouter()
     
     Required parameters:
     - patient_id: ID of the patient
-    - purpose_of_visit: Reason for the appointment
-    - description: Detailed description of the appointment
-    - start_time: Start time of appointment
-    - end_time: End time of appointment
-    - status: Status of the appointment
-    - share_on_email: Whether to share the appointment on email
-    - share_on_sms: Whether to share the appointment on sms
-    - share_on_whatsapp: Whether to share the appointment on whatsapp
+    - notes: Notes for the appointment
+    - appointment_date: Date of appointment
+    - checked_in_at: Check-in time
+    - checked_out_at: Check-out time
+    - status: Status of the appointment (SCHEDULED, CONFIRMED, CANCELLED, COMPLETED)
+    - share_on_email: Whether to share appointment details via email
+    - share_on_sms: Whether to share appointment details via SMS
+    - share_on_whatsapp: Whether to share appointment details via WhatsApp
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -62,30 +62,31 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        print(appointment.start_time, appointment.end_time)
-        
-        appointment = Appointment(
+        new_appointment = Appointment(
             patient_id=appointment.patient_id,
             doctor_id=user.id,
-            purpose_of_visit=appointment.purpose_of_visit,
-            description=appointment.description,
-            start_time=appointment.start_time,
-            end_time=appointment.end_time,
+            patient_number=patient.patient_number,
+            patient_name=patient.name,
+            doctor_name=user.name,
+            notes=appointment.notes,
+            appointment_date=appointment.appointment_date,
+            checked_in_at=appointment.checked_in_at,
+            checked_out_at=appointment.checked_out_at,
             status=appointment.status,
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
             share_on_whatsapp=appointment.share_on_whatsapp
         )
 
-        db.add(appointment)
+        db.add(new_appointment)
         db.commit()
-        db.refresh(appointment)
+        db.refresh(new_appointment)
 
-        reminder_time = appointment.start_time - timedelta(hours=1, minutes=15)
-        scheduler.add_job(send_appointment_email, 'date', run_date=reminder_time, args=[db, appointment.id])
+        reminder_time = new_appointment.appointment_date - timedelta(hours=1, minutes=15)
+        scheduler.add_job(send_appointment_email, 'date', run_date=reminder_time, args=[db, new_appointment.id])
 
-        if appointment.share_on_email:
-            await send_appointment_email(db, appointment.id)
+        if new_appointment.share_on_email:
+            await send_appointment_email(db, new_appointment.id)
 
         return JSONResponse(status_code=201, content={"message": "Appointment created successfully"})
     except Exception as e:
@@ -118,7 +119,6 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Fetch appointments and related data in a single query
         appointments = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
@@ -131,10 +131,15 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
         for appointment, patient, doctor in appointments:
             appointment_data = {
                 "id": appointment.id,
-                "purpose_of_visit": appointment.purpose_of_visit,
-                "description": appointment.description,
-                "start_time": appointment.start_time.isoformat(),
-                "end_time": appointment.end_time.isoformat(),
+                "patient_id": appointment.patient_id,
+                "patient_number": appointment.patient_number,
+                "patient_name": appointment.patient_name,
+                "doctor_id": appointment.doctor_id,
+                "doctor_name": appointment.doctor_name,
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.isoformat(),
+                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat(),
                 "updated_at": appointment.updated_at.isoformat(),
@@ -187,12 +192,10 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Check if patient exists
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        # Fetch appointments and related data in a single query
         appointments = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
@@ -205,10 +208,15 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
         for appointment, patient, doctor in appointments:
             appointment_data = {
                 "id": appointment.id,
-                "purpose_of_visit": appointment.purpose_of_visit,
-                "description": appointment.description,
-                "start_time": appointment.start_time.isoformat(),
-                "end_time": appointment.end_time.isoformat(),
+                "patient_id": appointment.patient_id,
+                "patient_number": appointment.patient_number,
+                "patient_name": appointment.patient_name,
+                "doctor_id": appointment.doctor_id,
+                "doctor_name": appointment.doctor_name,
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.isoformat(),
+                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat(),
                 "updated_at": appointment.updated_at.isoformat(),
@@ -234,7 +242,6 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
-
 @appointment_router.get("/search",
     response_model=dict,
     status_code=200,
@@ -252,8 +259,8 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
     
     Filter parameters (optional):
     - patient_gender: Patient's gender
-    - purpose_of_visit: Purpose of visit
-    - start_time: Appointment start time (ISO format)
+    - status: Appointment status (SCHEDULED, CONFIRMED, CANCELLED, COMPLETED)
+    - appointment_date: Appointment date (ISO format)
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -273,8 +280,8 @@ async def search_appointments(
     doctor_email: Optional[str] = None,
     doctor_phone: Optional[str] = None,
     patient_gender: Optional[str] = None,
-    purpose_of_visit: Optional[str] = None,
-    start_time: Optional[datetime] = None,
+    status: Optional[str] = None,
+    appointment_date: Optional[datetime] = None,
     db: Session = Depends(get_db)
 ):
     try:
@@ -285,12 +292,10 @@ async def search_appointments(
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Build base query
         query = db.query(Appointment, Patient, User)\
             .join(Patient, Appointment.patient_id == Patient.id)\
             .join(User, Appointment.doctor_id == User.id)
 
-        # Add search terms if provided
         search_filters = []
         if patient_name:
             search_filters.append(or_(
@@ -308,16 +313,14 @@ async def search_appointments(
         if doctor_phone:
             search_filters.append(User.phone.ilike(f"%{doctor_phone}%"))
 
-        # Add filters if provided
         filter_conditions = []
         if patient_gender:
             filter_conditions.append(Patient.gender == patient_gender)
-        if purpose_of_visit:
-            filter_conditions.append(Appointment.purpose_of_visit == purpose_of_visit)
-        if start_time:
-            filter_conditions.append(Appointment.start_time >= start_time)
+        if status:
+            filter_conditions.append(Appointment.status == status)
+        if appointment_date:
+            filter_conditions.append(Appointment.appointment_date >= appointment_date)
 
-        # Apply search terms and filters independently
         if search_filters:
             query = query.filter(or_(*search_filters))
         if filter_conditions:
@@ -329,10 +332,15 @@ async def search_appointments(
         for appointment, patient, doctor in appointments:
             appointment_data = {
                 "id": appointment.id,
-                "purpose_of_visit": appointment.purpose_of_visit,
-                "description": appointment.description,
-                "start_time": appointment.start_time.isoformat(),
-                "end_time": appointment.end_time.isoformat(),
+                "patient_id": appointment.patient_id,
+                "patient_number": appointment.patient_number,
+                "patient_name": appointment.patient_name,
+                "doctor_id": appointment.doctor_id,
+                "doctor_name": appointment.doctor_name,
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.isoformat(),
+                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat(),
                 "updated_at": appointment.updated_at.isoformat(),
@@ -387,7 +395,6 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        # Fetch appointment and related data in a single query
         result = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
@@ -403,10 +410,15 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
         
         appointment_data = {
                 "id": appointment.id,
-                "purpose_of_visit": appointment.purpose_of_visit,
-                "description": appointment.description,
-                "start_time": appointment.start_time.isoformat(),
-                "end_time": appointment.end_time.isoformat(),
+                "patient_id": appointment.patient_id,
+                "patient_number": appointment.patient_number,
+                "patient_name": appointment.patient_name,
+                "doctor_id": appointment.doctor_id,
+                "doctor_name": appointment.doctor_name,
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.isoformat(),
+                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat(),
                 "updated_at": appointment.updated_at.isoformat(),
@@ -440,6 +452,14 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
 
     Required parameters:
     - appointment_id: ID of the appointment
+    - notes: Notes for the appointment (optional)
+    - appointment_date: Date of appointment (optional)
+    - checked_in_at: Check-in time (optional)
+    - checked_out_at: Check-out time (optional)
+    - status: Status of the appointment (optional)
+    - share_on_email: Whether to share via email (optional)
+    - share_on_sms: Whether to share via SMS (optional)
+    - share_on_whatsapp: Whether to share via WhatsApp (optional)
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -451,7 +471,7 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
         500: {"description": "Internal server error"}
     }
 )
-async def update_appointment(request: Request, appointment_id: str, appointment: AppointmentUpdate, db: Session = Depends(get_db)):
+async def update_appointment(request: Request, appointment_id: str, appointment_update: AppointmentUpdate, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
@@ -465,11 +485,22 @@ async def update_appointment(request: Request, appointment_id: str, appointment:
         if not appointment:
             return JSONResponse(status_code=404, content={"message": "Appointment not found"})
         
-        appointment.purpose_of_visit = appointment.purpose_of_visit or appointment.purpose_of_visit
-        appointment.description = appointment.description or appointment.description
-        appointment.start_time = appointment.start_time or appointment.start_time
-        appointment.end_time = appointment.end_time or appointment.end_time
-        appointment.status = appointment.status or appointment.status
+        if appointment_update.notes is not None:
+            appointment.notes = appointment_update.notes
+        if appointment_update.appointment_date is not None:
+            appointment.appointment_date = appointment_update.appointment_date
+        if appointment_update.checked_in_at is not None:
+            appointment.checked_in_at = appointment_update.checked_in_at
+        if appointment_update.checked_out_at is not None:
+            appointment.checked_out_at = appointment_update.checked_out_at
+        if appointment_update.status is not None:
+            appointment.status = appointment_update.status
+        if appointment_update.share_on_email is not None:
+            appointment.share_on_email = appointment_update.share_on_email
+        if appointment_update.share_on_sms is not None:
+            appointment.share_on_sms = appointment_update.share_on_sms
+        if appointment_update.share_on_whatsapp is not None:
+            appointment.share_on_whatsapp = appointment_update.share_on_whatsapp
         
         db.commit()
         db.refresh(appointment)

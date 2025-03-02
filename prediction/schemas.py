@@ -8,8 +8,20 @@ class LabelResponse(BaseModel):
     name: str
     percentage: float
     prediction_id: str
-    include:bool
+    include: bool
     color_hex: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class XRayResponse(BaseModel):
+    id: str
+    patient: str
+    original_image: str
+    predicted_image: Optional[str] = None
+    is_annotated: bool
     created_at: datetime
     updated_at: datetime
 
@@ -18,12 +30,9 @@ class LabelResponse(BaseModel):
 
 class PredictionResponse(BaseModel):
     id: str
-    patient: str
-    original_image: str
-    predicted_image: Optional[str] = None
-    is_annotated: bool
+    xray_id: str
+    prediction: str
     notes: Optional[str] = None
-    xray_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

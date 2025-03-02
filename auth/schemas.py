@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 class UserSchema(BaseModel):
     email: str
@@ -38,3 +39,26 @@ class ForgotPasswordSchema(BaseModel):
 class GoogleLoginSchema(BaseModel):
     token: str
 
+class ProcedureCatalogSchema(BaseModel):
+    treatment_name: str
+    treatment_cost: float
+    treatment_notes: Optional[str] = None
+    locale: Optional[str] = "en"
+
+class ProcedureCatalogResponse(ProcedureCatalogSchema):
+    id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ProcedureCatalogUpdateSchema(ProcedureCatalogSchema):
+    treatment_name: Optional[str] = None
+    treatment_cost: Optional[float] = None
+    treatment_notes: Optional[str] = None
+    locale: Optional[str] = None
+
+    
+    
