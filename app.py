@@ -105,7 +105,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 async def root():
     return RedirectResponse(url="/docs")
 
-app.include_router(user_router, prefix=f"/users", tags=["auth"])
+app.include_router(user_router, prefix=f"/user", tags=["auth"])
 app.include_router(patient_router, prefix=f"/patients", tags=["patients"])
 app.include_router(prediction_router, prefix=f"/predictions", tags=["predictions"])
 app.include_router(payment_router, prefix=f"/payments", tags=["payments"])
