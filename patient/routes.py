@@ -462,7 +462,7 @@ async def delete_patient(
 @patient_router.post(
     "/create-medical-record",
     status_code=status.HTTP_201_CREATED,
-    response_description="Medical record created successfully",
+    response_description="Create a new medical record for a patient with treatments, medicines and attachments",
     responses={
         201: {
             "description": "Medical record created successfully",
@@ -470,40 +470,46 @@ async def delete_patient(
                 "application/json": {
                     "example": {
                         "message": "Medical record created successfully",
-                        "medical_record_id": "uuid"
+                        "medical_record_id": "550e8400-e29b-41d4-a716-446655440000",
                     }
                 }
             }
         },
         400: {
-            "description": "Invalid request data",
+            "description": "Invalid request data or validation error",
             "content": {
                 "application/json": {
-                    "example": {"message": "Invalid request data"}
+                    "example": {
+                        "message": "Invalid request data",
+                        "detail": "Required field 'complaint' is missing"
+                    }
                 }
             }
         },
         401: {
-            "description": "Unauthorized access",
+            "description": "Unauthorized - Invalid or missing authentication token",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized access"}
+                    "example": {"message": "Unauthorized access - Please login"}
                 }
             }
         },
         404: {
-            "description": "Patient not found",
+            "description": "Patient not found or no access to patient record",
             "content": {
                 "application/json": {
-                    "example": {"message": "Patient not found"}
+                    "example": {"message": "Patient with ID not found or access denied"}
                 }
             }
         },
         500: {
-            "description": "Internal server error",
+            "description": "Internal server error during processing",
             "content": {
                 "application/json": {
-                    "example": {"message": "Internal server error"}
+                    "example": {
+                        "message": "Internal server error",
+                        "detail": "Error processing file upload"
+                    }
                 }
             }
         }
@@ -512,6 +518,7 @@ async def delete_patient(
 async def create_medical_record(
     request: Request,
     patient_id: str,
+    medical_record: MedicalRecordCreateSchema,
     files: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -521,6 +528,7 @@ async def create_medical_record(
     Args:
         request: The HTTP request containing medical record data
         patient_id: ID of the patient
+        medical_record: Medical record data schema
         files: Optional list of files to attach
         db: Database session
         
@@ -544,24 +552,19 @@ async def create_medical_record(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"message": "Patient not found"}
             )
-        
-        body = await request.json()
-        complaint = body.get("complaint", "")
-        diagnosis = body.get("diagnosis", "")
-        vital_signs = body.get("vital_signs", "")
 
         # Create medical record
-        medical_record = MedicalRecord(
+        medical_record_db = MedicalRecord(
             patient_id=patient_id,
-            complaint=complaint,
-            diagnosis=diagnosis,
-            vital_signs=vital_signs
+            complaint=medical_record.complaint,
+            diagnosis=medical_record.diagnosis,
+            vital_signs=medical_record.vital_signs
         )
 
         # Save to database
-        db.add(medical_record)
+        db.add(medical_record_db)
         db.commit()
-        db.refresh(medical_record)
+        db.refresh(medical_record_db)
         
         # Handle attachments
         attachments = []
@@ -580,7 +583,7 @@ async def create_medical_record(
                     f.write(file_content)
 
                 attachment = MedicalRecordAttachment(
-                    medical_record_id=medical_record.id,
+                    medical_record_id=medical_record_db.id,
                     attachment=file_path,
                 )
                 attachments.append(attachment)
@@ -590,42 +593,34 @@ async def create_medical_record(
             db.commit()
         
         # Add medical record treatments
-        treatments = body.get("treatments", [])
-        for treatment in treatments:
-            treatment_name = treatment.get("name", "")
-            
-            medical_record_treatment = MedicalRecordTreatment(
-                medical_record_id=medical_record.id,
-                name=treatment_name,
-            )
-            db.add(medical_record_treatment)
+        if medical_record.treatments:
+            for treatment in medical_record.treatments:
+                medical_record_treatment = MedicalRecordTreatment(
+                    medical_record_id=medical_record_db.id,
+                    name=treatment.name,
+                    )
+                db.add(medical_record_treatment)
 
         # Add medicines
-        medicines = body.get("medicines", [])
-        for medicine in medicines:
-            medicine_name = medicine.get("name", "")
-            medicine_quantity = medicine.get("quantity", 0)
-            medicine_price = medicine.get("price", 0)
-            medicine_amount = medicine_price * medicine_quantity
-            medicine_dosage = medicine.get("dosage", "")
-            medicine_instructions = medicine.get("instructions", "")
-
-            medical_record_medicine = Medicine(
-                medical_record_id=medical_record.id,
-                item_name=medicine_name,  # Fixed field name to match model
-                quantity=medicine_quantity,
-                price=medicine_price,
-                amount=medicine_amount,
-                dosage=medicine_dosage,
-                instructions=medicine_instructions
-            )
-            db.add(medical_record_medicine)
+        if medical_record.medicines:
+            for medicine in medical_record.medicines:
+                medicine_amount = medicine.price * medicine.quantity
+                medical_record_medicine = Medicine(
+                    medical_record_id=medical_record_db.id,
+                    item_name=medicine.name,
+                    quantity=medicine.quantity,
+                    price=medicine.price,
+                    amount=medicine_amount,
+                    dosage=medicine.dosage,
+                    instructions=medicine.instructions
+                )
+                db.add(medical_record_medicine)
 
         db.commit()
         
         return {
             "message": "Medical record created successfully",
-            "medical_record_id": medical_record.id
+            "medical_record_id": medical_record_db.id
         }
         
     except SQLAlchemyError as e:
@@ -639,4 +634,3 @@ async def create_medical_record(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"message": f"Internal server error: {str(e)}"}
         )
-    

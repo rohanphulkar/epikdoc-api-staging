@@ -41,8 +41,8 @@ app = FastAPI(
     For detailed API documentation and usage examples, please visit our documentation.
     """,
     version="1.0.0",
-    docs_url="/redoc",
-    redoc_url="/docs",
+    docs_url="/docs",
+    redoc_url="/redoc",
     openapi_tags=[
         {"name": "auth", "description": "Authentication and user management"},
         {"name": "patients", "description": "Patient records and management"},
