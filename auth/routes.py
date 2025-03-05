@@ -200,13 +200,11 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
             "content": {
                 "application/json": {
                     "example": {
-                        "user": {
-                            "name": "John Doe",
-                            "email": "john@example.com",
-                            "phone": "+1234567890",
-                            "bio": "Doctor specializing in pediatrics"
-                        },
-                        "profile": "http://example.com/uploads/profile.jpg"
+                        "name": "John Doe",
+                        "email": "john@example.com",
+                        "phone": "+1234567890",
+                        "bio": "Doctor specializing in pediatrics",
+                        "profile_pic": "http://example.com/uploads/profile.jpg"
                     }
                 }
             }
@@ -229,12 +227,13 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
             "bio": user.bio,
         }
 
-        if user.profile_url:
-            profile_url = f"{request.base_url}{user.profile_url}"
+        if user.profile_pic:
+            profile_pic = f"{request.base_url}{user.profile_pic}"
+            user_data["profile_pic"] = profile_pic
         else:
-            profile_url = None
+            user_data["profile_pic"] = None
         
-        return JSONResponse(status_code=200, content={"user": user_data, "profile": profile_url})
+        return JSONResponse(status_code=200, content=user_data)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -496,7 +495,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
     - name: New display name
     - phone: New phone number with country code
     - bio: Brief user biography/description
-    - profile_picture: Profile image file (JPG/PNG)
+    - image: Profile image file (JPG/PNG)
     
     The profile picture will be stored in the uploads/profile_pictures directory.
     """,
@@ -513,7 +512,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
         500: {"description": "Internal server error"}
     }
 )
-async def update_profile(user: UserProfileUpdateSchema, request: Request, file: UploadFile = File(None), db: Session = Depends(get_db)):
+async def update_profile(user: UserProfileUpdateSchema, request: Request, image: UploadFile = File(None), db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         
@@ -528,19 +527,19 @@ async def update_profile(user: UserProfileUpdateSchema, request: Request, file: 
         if user.bio:
             setattr(db_user, 'bio', user.bio)
             
-        if file:
+        if image:
             # Read file contents
-            file_contents = await file.read()
+            file_contents = await image.read()
             
             # Save file to disk/storage
-            file_name = f"profile_{db_user.id}_{file.filename}"
+            file_name = f"profile_{db_user.id}_{image.filename}"
             file_path = f"uploads/profile_pictures/{file_name}"
             
             with open(file_path, "wb") as f:
                 f.write(file_contents)
                 
             # Update user profile URL in database
-            setattr(db_user, 'profile_url', str(file_path))
+            setattr(db_user, 'profile_pic', str(file_path))
             
         db.commit()
         db.refresh(db_user)
@@ -1586,6 +1585,105 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
         db.commit()
         
         return JSONResponse(status_code=200, content={"message": "Procedure catalog deleted successfully"})
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+
+@user_router.get("/get-all-users",
+    response_model=List[UserResponse],
+    status_code=200,
+    summary="Get all users", 
+    description="Get all users in the system",
+    responses={
+        200: {
+            "description": "List of all users",
+            "model": List[UserResponse]
+        },
+        401: {"description": "Unauthorized"},
+        404: {"description": "No users found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_all_users(request: Request, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        users = db.query(User).all()
+        if not users:
+            return JSONResponse(status_code=404, content={"error": "No users found"})
+        
+        users_list = []
+        for user in users:
+            user_data = {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "phone": user.phone,
+                "user_type": user.user_type,
+                "bio": user.bio,
+                "profile_pic": user.profile_pic,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None
+            }
+            users_list.append(user_data)
+
+        
+        return JSONResponse(status_code=200, content=users_list)
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+
+@user_router.get("/doctor-list",
+    response_model=List[UserResponse],
+    status_code=200,
+    summary="Get all doctors",
+    description="Get all doctors in the system",
+    responses={
+        200: {
+            "description": "List of all doctors",
+            "model": List[UserResponse]
+        },
+        401: {"description": "Unauthorized"},
+        404: {"description": "No doctors found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_doctor_list(request: Request, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        doctors = db.query(User).filter(User.user_type == "doctor").all()
+        if not doctors:
+            return JSONResponse(status_code=404, content={"error": "No doctors found"})
+        
+        doctors_list = []
+        for doctor in doctors:
+            doctor_data = {
+                "id": doctor.id,
+                "name": doctor.name,
+                "email": doctor.email,
+                "phone": doctor.phone,
+                "user_type": doctor.user_type,
+                "bio": doctor.bio,
+                "profile_pic": doctor.profile_pic,
+                "created_at": doctor.created_at.isoformat() if doctor.created_at else None,
+                "updated_at": doctor.updated_at.isoformat() if doctor.updated_at else None
+            }
+            doctors_list.append(doctor_data)
+
+        return JSONResponse(status_code=200, content=doctors_list)
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})

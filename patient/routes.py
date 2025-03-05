@@ -44,7 +44,7 @@ async def create_patient(
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
-        user = db.execute(select(User).filter(User.id == decoded_token.get("id"))).scalar_one_or_none()
+        user = db.execute(select(User).filter(User.id == decoded_token.get("user_id"))).scalar_one_or_none()
         if not user:
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
@@ -89,11 +89,53 @@ async def create_patient(
 @patient_router.get(
     "/get-all",
     status_code=status.HTTP_200_OK,
-    response_description="All patients retrieved successfully",
+    summary="Get all patients",
+    description="""
+    Get all patients associated with the authenticated doctor.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Returns array of patient records including:
+    - Basic info (name, age, gender)
+    - Contact details (phone, email, address)
+    - Medical details (blood group, history)
+    - Other metadata (created date, notes)
+    """,
     responses={
-        200: {"description": "All patients retrieved successfully"},
-        401: {"description": "Unauthorized access"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "All patients retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": [{
+                        "id": "uuid",
+                        "name": "John Doe",
+                        "mobile_number": "+1234567890",
+                        "email": "john@example.com",
+                        "gender": "male",
+                        "age": 35,
+                        "blood_group": "O+",
+                        "created_at": "2023-01-01T00:00:00"
+                    }]
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized access",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error: {error details}"}
+                }
+            }
+        }
     }
 )
 async def get_all_patients(
@@ -106,14 +148,45 @@ async def get_all_patients(
         
         # Get all patients for the authenticated doctor
         patients = db.execute(
-            select(Patient).filter(Patient.doctor_id == decoded_token.get("id"))
+            select(Patient).where(Patient.doctor_id == decoded_token.get("user_id"))
         ).scalars().all()
         
-        return patients
+        # Convert patients to list of dictionaries
+        patient_list = []
+        for patient in patients:
+            patient_dict = {
+                "id": patient.id,
+                "doctor_id": patient.doctor_id,
+                "patient_number": patient.patient_number,
+                "name": patient.name,
+                "mobile_number": patient.mobile_number,
+                "contact_number": patient.contact_number,
+                "email": patient.email,
+                "secondary_mobile": patient.secondary_mobile,
+                "gender": patient.gender,
+                "address": patient.address,
+                "locality": patient.locality,
+                "city": patient.city,
+                "pincode": patient.pincode,
+                "national_id": patient.national_id,
+                "date_of_birth": patient.date_of_birth,
+                "age": patient.age,
+                "anniversary_date": patient.anniversary_date,
+                "blood_group": patient.blood_group,
+                "remarks": patient.remarks,
+                "medical_history": patient.medical_history,
+                "referred_by": patient.referred_by,
+                "groups": patient.groups,
+                "patient_notes": patient.patient_notes,
+                "created_at": patient.created_at
+            }
+            patient_list.append(patient_dict)
+        
+        return patient_list
     except SQLAlchemyError as e:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"message": f"Internal server error: {str(e)}"}
+            content={"message": f"Database error: {str(e)}"}
         )
     except Exception as e:
         return JSONResponse(
@@ -145,7 +218,7 @@ async def get_patient_by_id(
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("id")
+                Patient.doctor_id == decoded_token.get("user_id")
             )
         ).scalar_one_or_none()
 
@@ -217,7 +290,7 @@ async def search_patients(
         decoded_token = verify_token(request)
         
         # Base query
-        query = select(Patient).filter(Patient.doctor_id == decoded_token.get("id"))
+        query = select(Patient).filter(Patient.doctor_id == decoded_token.get("user_id"))
         
         # Add search filters if search_query provided
         if search_query:
@@ -330,7 +403,7 @@ async def update_patient(
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("id")
+                Patient.doctor_id == decoded_token.get("user_id")
             )
         ).scalar_one_or_none()
         
@@ -429,7 +502,7 @@ async def delete_patient(
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("id")
+                Patient.doctor_id == decoded_token.get("user_id")
             )
         ).scalar_one_or_none()
         
@@ -543,7 +616,7 @@ async def create_medical_record(
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("id")
+                Patient.doctor_id == decoded_token.get("user_id")
             )
         ).scalar_one_or_none()
         

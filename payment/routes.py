@@ -43,7 +43,7 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -269,6 +269,10 @@ async def create_payment(request: Request, payment: PaymentCreate, db: Session =
     description="""
     Get list of all payments for the logged in doctor.
     
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10)
+    
     Required headers:
     - Authorization: Bearer token from doctor login
     """,
@@ -278,21 +282,178 @@ async def create_payment(request: Request, payment: PaymentCreate, db: Session =
         500: {"description": "Internal server error"}
     }
 )
-async def get_payments(request: Request, db: Session = Depends(get_db)):
+async def get_payments(
+    request: Request, 
+    page: int = 1,
+    per_page: int = 10,
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        payments = db.query(Payment).filter(Payment.doctor_id == user.id).all()
-        return JSONResponse(status_code=200, content={"payments": payments})
+        # Calculate pagination
+        offset = (page - 1) * per_page
+        
+        # Get total count
+        total_count = db.query(Payment).filter(Payment.doctor_id == user.id).count()
+        
+        # Get paginated payments
+        payments = db.query(Payment)\
+            .filter(Payment.doctor_id == user.id)\
+            .offset(offset)\
+            .limit(per_page)\
+            .all()
+        
+        # Convert payments to dict for JSON serialization
+        payments_list = []
+        for payment in payments:
+            payment_dict = {
+                "id": payment.id,
+                "date": payment.date.isoformat() if payment.date else None,
+                "patient_id": payment.patient_id,
+                "doctor_id": payment.doctor_id,
+                "patient_number": payment.patient_number,
+                "patient_name": payment.patient_name,
+                "receipt_number": payment.receipt_number,
+                "treatment_name": payment.treatment_name,
+                "amount_paid": payment.amount_paid,
+                "invoice_number": payment.invoice_number,
+                "notes": payment.notes,
+                "refund": payment.refund,
+                "refund_receipt_number": payment.refund_receipt_number,
+                "refunded_amount": payment.refunded_amount,
+                "payment_mode": payment.payment_mode,
+                "card_number": payment.card_number,
+                "card_type": payment.card_type,
+                "cheque_number": payment.cheque_number,
+                "cheque_bank": payment.cheque_bank,
+                "netbanking_bank_name": payment.netbanking_bank_name,
+                "vendor_name": payment.vendor_name,
+                "vendor_fees_percent": payment.vendor_fees_percent,
+                "cancelled": payment.cancelled,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+            }
+            payments_list.append(payment_dict)
+            
+        return JSONResponse(status_code=200, content={
+            "payments": payments_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
+        })
     except Exception as e:
+        print(str(e))
         return JSONResponse(status_code=500, content={"message": str(e)})
     
+@payment_router.get("/get-payment-by-patient-id/{patient_id}",
+    response_model=list[PaymentResponse],
+    status_code=200,
+    summary="Get payment by patient ID",
+    description="""
+    Get all payments for a specific patient.
+    
+    Path parameters:
+    - patient_id: ID of the patient
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10)
+    
+    Required headers:
+    - Authorization: Bearer token from doctor login
+    """,
+    responses={
+        200: {"description": "Payments retrieved successfully"},
+        401: {"description": "Unauthorized - Invalid token"},
+        404: {"description": "Patient not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_payments_by_patient_id(
+    request: Request, 
+    patient_id: str, 
+    page: int = 1,
+    per_page: int = 10,
+    db: Session = Depends(get_db)
+):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        # Calculate pagination
+        offset = (page - 1) * per_page
+        
+        # Get total count
+        total_count = db.query(Payment).filter(Payment.patient_id == patient_id).count()
+        
+        # Get paginated payments
+        payments = db.query(Payment)\
+            .filter(Payment.patient_id == patient_id)\
+            .offset(offset)\
+            .limit(per_page)\
+            .all()
+        
+        # Convert payments to dict for JSON serialization
+        payments_list = []
+        for payment in payments:
+            payment_dict = {
+                "id": payment.id,
+                "date": payment.date.isoformat() if payment.date else None,
+                "patient_id": payment.patient_id,
+                "doctor_id": payment.doctor_id,
+                "patient_number": payment.patient_number,
+                "patient_name": payment.patient_name,
+                "receipt_number": payment.receipt_number,
+                "treatment_name": payment.treatment_name,
+                "amount_paid": payment.amount_paid,
+                "invoice_number": payment.invoice_number,
+                "notes": payment.notes,
+                "refund": payment.refund,
+                "refund_receipt_number": payment.refund_receipt_number,
+                "refunded_amount": payment.refunded_amount,
+                "payment_mode": payment.payment_mode,
+                "card_number": payment.card_number,
+                "card_type": payment.card_type,
+                "cheque_number": payment.cheque_number,
+                "cheque_bank": payment.cheque_bank,
+                "netbanking_bank_name": payment.netbanking_bank_name,
+                "vendor_name": payment.vendor_name,
+                "vendor_fees_percent": payment.vendor_fees_percent,
+                "cancelled": payment.cancelled,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+            }
+            payments_list.append(payment_dict)
+            
+        return JSONResponse(status_code=200, content={
+            "payments": payments_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
+
+
 @payment_router.get("/get-payment/{payment_id}",
     response_model=PaymentResponse,
     status_code=200,
@@ -319,7 +480,7 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
@@ -327,7 +488,36 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
         if not payment:
             return JSONResponse(status_code=404, content={"message": "Payment not found"})
         
-        return JSONResponse(status_code=200, content={"payment": payment})
+        # Convert payment to dict for JSON serialization
+        payment_dict = {
+            "id": payment.id,
+            "date": payment.date.isoformat() if payment.date else None,
+            "patient_id": payment.patient_id,
+            "doctor_id": payment.doctor_id,
+            "patient_number": payment.patient_number,
+            "patient_name": payment.patient_name,
+            "receipt_number": payment.receipt_number,
+            "treatment_name": payment.treatment_name,
+            "amount_paid": payment.amount_paid,
+            "invoice_number": payment.invoice_number,
+            "notes": payment.notes,
+            "refund": payment.refund,
+            "refund_receipt_number": payment.refund_receipt_number,
+            "refunded_amount": payment.refunded_amount,
+            "payment_mode": payment.payment_mode,
+            "card_number": payment.card_number,
+            "card_type": payment.card_type,
+            "cheque_number": payment.cheque_number,
+            "cheque_bank": payment.cheque_bank,
+            "netbanking_bank_name": payment.netbanking_bank_name,
+            "vendor_name": payment.vendor_name,
+            "vendor_fees_percent": payment.vendor_fees_percent,
+            "cancelled": payment.cancelled,
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+            "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+        }
+        
+        return JSONResponse(status_code=200, content={"payment": payment_dict})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
@@ -348,6 +538,10 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
     - end_date: End date for date range filter (YYYY-MM-DD)
     - date: Specific date to filter (YYYY-MM-DD)
     
+    Pagination parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10)
+    
     Required headers:
     - Authorization: Bearer token from doctor login
     """,
@@ -365,6 +559,8 @@ async def search_payments(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     date: Optional[datetime] = None,
+    page: int = 1,
+    per_page: int = 10,
     db: Session = Depends(get_db)
 ):
     try:
@@ -372,7 +568,7 @@ async def search_payments(
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
@@ -399,8 +595,56 @@ async def search_payments(
         elif end_date:
             query = query.filter(Payment.date <= end_date)
 
-        payments = query.all()
-        return JSONResponse(status_code=200, content={"payments": payments})
+        # Get total count before pagination
+        total_count = query.count()
+        
+        # Calculate pagination
+        offset = (page - 1) * per_page
+        
+        # Apply pagination
+        payments = query.offset(offset).limit(per_page).all()
+        
+        # Convert payments to dict for JSON serialization
+        payments_list = []
+        for payment in payments:
+            payment_dict = {
+                "id": payment.id,
+                "date": payment.date.isoformat() if payment.date else None,
+                "patient_id": payment.patient_id,
+                "doctor_id": payment.doctor_id,
+                "patient_number": payment.patient_number,
+                "patient_name": payment.patient_name,
+                "receipt_number": payment.receipt_number,
+                "treatment_name": payment.treatment_name,
+                "amount_paid": payment.amount_paid,
+                "invoice_number": payment.invoice_number,
+                "notes": payment.notes,
+                "refund": payment.refund,
+                "refund_receipt_number": payment.refund_receipt_number,
+                "refunded_amount": payment.refunded_amount,
+                "payment_mode": payment.payment_mode,
+                "card_number": payment.card_number,
+                "card_type": payment.card_type,
+                "cheque_number": payment.cheque_number,
+                "cheque_bank": payment.cheque_bank,
+                "netbanking_bank_name": payment.netbanking_bank_name,
+                "vendor_name": payment.vendor_name,
+                "vendor_fees_percent": payment.vendor_fees_percent,
+                "cancelled": payment.cancelled,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+            }
+            payments_list.append(payment_dict)
+            
+        return JSONResponse(status_code=200, content={
+            "payments": payments_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
@@ -435,7 +679,7 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -481,7 +725,7 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -530,7 +774,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
             
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -632,7 +876,7 @@ async def get_invoices(request: Request, db: Session = Depends(get_db)):
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -667,7 +911,7 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -702,7 +946,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -755,7 +999,7 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -834,7 +1078,7 @@ async def delete_invoice(request: Request, invoice_id: str, db: Session = Depend
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
