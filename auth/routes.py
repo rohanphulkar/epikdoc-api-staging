@@ -728,7 +728,7 @@ async def deactivate_account(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
+async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing patient data")
     for _, row in df.iterrows():
         try:
@@ -745,6 +745,7 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             if not patient:
                 print(f"Creating new patient with number: {patient_number}")
                 patient = Patient(
+                    doctor_id=user.id,
                     patient_number=str(row.get("Patient Number", ""))[:255],
                     name=str(row.get("Patient Name", ""))[:255],
                     mobile_number=str(row.get("Mobile Number", ""))[:255],
@@ -1183,7 +1184,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                     with db.no_autoflush:
                         if any(name in normalized_filename for name in ["patients.csv", "patient.csv"]):
                             print("Processing patients data...")
-                            await process_patient_data(import_log, df, db)
+                            await process_patient_data(import_log, df, db, user)
 
                         elif any(name in normalized_filename for name in ["appointments.csv", "appointment.csv"]):
                             print("Processing appointments data...")
