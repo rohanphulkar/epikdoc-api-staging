@@ -753,7 +753,7 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
     - unit_cost: Cost per unit
     - quantity: Number of units
     - discount: Discount amount or percentage (default: 0)
-    - discount_type: "fixed" or "percentage" (default: fixed)
+    - discount_type: discount type (default: '')
     - type: Invoice type
     - invoice_level_tax_discount: Tax discount percentage
     - tax_name: Name of tax
@@ -798,7 +798,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
             "unit_cost": invoice.unit_cost or 0.0,
             "quantity": invoice.quantity or 1,
             "discount": invoice.discount or 0.0,
-            "discount_type": invoice.discount_type or "fixed",
+            "discount_type": invoice.discount_type or "",
             "type": invoice.type,
             "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
             "tax_name": invoice.tax_name,
@@ -831,7 +831,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                 unit_cost=invoice_data["unit_cost"],
                 quantity=invoice_data["quantity"],
                 discount=invoice_data["discount"],
-                discount_type=invoice_data["discount_type"].value,
+                discount_type=invoice_data["discount_type"],
                 type=invoice_data["type"],
                 invoice_level_tax_discount=invoice_data["invoice_level_tax_discount"],
                 tax_name=invoice_data["tax_name"],
@@ -921,7 +921,7 @@ async def get_invoices(
                 "unit_cost": invoice.unit_cost,
                 "quantity": invoice.quantity,
                 "discount": invoice.discount,
-                "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+                "discount_type": invoice.discount_type if invoice.discount_type else None,
                 "type": invoice.type,
                 "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
                 "tax_name": invoice.tax_name,
@@ -985,7 +985,7 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
                 "unit_cost": invoice.unit_cost,
                 "quantity": invoice.quantity,
                 "discount": invoice.discount,
-                "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+                "discount_type": invoice.discount_type if invoice.discount_type else None,
                 "type": invoice.type,
                 "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
                 "tax_name": invoice.tax_name,
@@ -1050,7 +1050,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "unit_cost": invoice.unit_cost,
             "quantity": invoice.quantity,
             "discount": invoice.discount,
-            "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+            "discount_type": invoice.discount_type if invoice.discount_type else None,
             "type": invoice.type,
             "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
             "tax_name": invoice.tax_name,
@@ -1137,7 +1137,7 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                 unit_cost=existing_invoice.unit_cost or 0.0,
                 quantity=existing_invoice.quantity or 0,
                 discount=existing_invoice.discount or 0.0,
-                discount_type=existing_invoice.discount_type.value if existing_invoice.discount_type else "fixed",
+                discount_type=existing_invoice.discount_type if existing_invoice.discount_type else "fixed",
                 type=existing_invoice.type,
                 invoice_level_tax_discount=existing_invoice.invoice_level_tax_discount,
                 tax_name=existing_invoice.tax_name,

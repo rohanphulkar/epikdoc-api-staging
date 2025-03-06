@@ -41,7 +41,7 @@ class GoogleLoginSchema(BaseModel):
 
 class ProcedureCatalogSchema(BaseModel):
     treatment_name: str
-    treatment_cost: float
+    treatment_cost: str
     treatment_notes: Optional[str] = None
     locale: Optional[str] = "en"
 
@@ -56,7 +56,7 @@ class ProcedureCatalogResponse(ProcedureCatalogSchema):
 
 class ProcedureCatalogUpdateSchema(ProcedureCatalogSchema):
     treatment_name: Optional[str] = None
-    treatment_cost: Optional[float] = None
+    treatment_cost: Optional[str] = None
     treatment_notes: Optional[str] = None
     locale: Optional[str] = None
 

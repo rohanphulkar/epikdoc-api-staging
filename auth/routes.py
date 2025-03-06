@@ -730,69 +730,96 @@ async def deactivate_account(request: Request, db: Session = Depends(get_db)):
 
 async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing patient data")
-    for _, row in df.iterrows():
+    
+    # Pre-process gender mapping
+    gender_map = df["Gender"].str.lower().map(lambda x: Gender.FEMALE if "f" in str(x) or "female" in str(x) else Gender.MALE)
+    
+    # Convert date columns once
+    dob_series = pd.to_datetime(df["Date of Birth"].astype(str), errors='coerce')
+    anniversary_series = pd.to_datetime(df["Anniversary Date"].astype(str), errors='coerce')
+    
+    # Get all existing patient numbers for bulk lookup
+    existing_patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(df["Patient Number"].astype(str).tolist())).all()
+    }
+    
+    # Prepare bulk insert
+    new_patients = []
+    for idx, row in df.iterrows():
         try:
-            gender_str = str(row.get("Gender", "male")).lower()
-            if "f" in gender_str or "female" in gender_str:
-                gender = Gender.FEMALE
-            else:
-                gender = Gender.MALE
-
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
-            if not patient:
-                print(f"Creating new patient with number: {patient_number}")
-                patient = Patient(
-                    doctor_id=user.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    name=str(row.get("Patient Name", ""))[:255],
-                    mobile_number=str(row.get("Mobile Number", ""))[:255],
-                    contact_number=str(row.get("Contact Number", ""))[:255],
-                    email=str(row.get("Email Address", ""))[:255],
-                    secondary_mobile=str(row.get("Secondary Mobile", ""))[:255],
-                    gender=gender,
-                    address=str(row.get("Address", ""))[:255],
-                    locality=str(row.get("Locality", ""))[:255],
-                    city=str(row.get("City", ""))[:255],
-                    pincode=str(row.get("Pincode", ""))[:255],
-                    national_id=str(row.get("National Id", ""))[:255],
-                    date_of_birth=pd.to_datetime(str(row.get("Date of Birth"))) if row.get("Date of Birth") else None,
-                    age=str(row.get("Age", ""))[:5],
-                    anniversary_date=pd.to_datetime(str(row.get("Anniversary Date"))) if row.get("Anniversary Date") else None,
-                    blood_group=str(row.get("Blood Group", ""))[:50],
-                    remarks=str(row.get("Remarks", "")),
-                    medical_history=str(row.get("Medical History", "")),
-                    referred_by=str(row.get("Referred By", ""))[:255],
-                    groups=str(row.get("Groups", ""))[:255],
-                    patient_notes=str(row.get("Patient Notes", ""))
-                )
-                db.add(patient)
+            
+            if patient_number in existing_patients:
+                continue
+                
+            new_patients.append(Patient(
+                doctor_id=user.id,
+                patient_number=str(row.get("Patient Number", ""))[:255],
+                name=str(row.get("Patient Name", ""))[:255],
+                mobile_number=str(row.get("Mobile Number", ""))[:255],
+                contact_number=str(row.get("Contact Number", ""))[:255],
+                email=str(row.get("Email Address", ""))[:255],
+                secondary_mobile=str(row.get("Secondary Mobile", ""))[:255],
+                gender=gender_map[idx],
+                address=str(row.get("Address", ""))[:255],
+                locality=str(row.get("Locality", ""))[:255],
+                city=str(row.get("City", ""))[:255],
+                pincode=str(row.get("Pincode", ""))[:255],
+                national_id=str(row.get("National Id", ""))[:255],
+                date_of_birth=dob_series[idx],
+                age=str(row.get("Age", ""))[:5],
+                anniversary_date=anniversary_series[idx],
+                blood_group=str(row.get("Blood Group", ""))[:50],
+                remarks=str(row.get("Remarks", "")),
+                medical_history=str(row.get("Medical History", "")),
+                referred_by=str(row.get("Referred By", ""))[:255],
+                groups=str(row.get("Groups", ""))[:255],
+                patient_notes=str(row.get("Patient Notes", ""))
+            ))
+            
         except Exception as e:
-            print(f"Error processing patient row: {str(e)}")
+            print(f"Error processing patient row {idx}: {str(e)}")
             db.rollback()
             import_log.status = ImportStatus.FAILED
             db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing patient row: {str(e)}"})
+            return JSONResponse(status_code=400, content={"error": f"Error processing patient row {idx}: {str(e)}"})
+    
+    try:
+        # Bulk insert all new patients
+        if new_patients:
+            db.bulk_save_objects(new_patients)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
 async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing appointment data")
+    
+    # Pre-process all patient numbers and get patients in bulk
+    patient_numbers = df["Patient Number"].astype(str).unique()
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+    
+    appointments = []
     for _, row in df.iterrows():
         try:
             status_str = str(row.get("Status", "SCHEDULED")).upper()
-            if status_str == "SCHEDULED":
-                status = AppointmentStatus.SCHEDULED
-            else:
-                status = AppointmentStatus.CANCELLED
+            status = AppointmentStatus.SCHEDULED if status_str == "SCHEDULED" else AppointmentStatus.CANCELLED
 
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
+            patient = patients.get(patient_number)
             if not patient:
                 print(f"Patient not found for number: {patient_number}")
                 continue
             
-            appointment = Appointment(
+            appointments.append(Appointment(
                 patient_id=patient.id,
                 patient_number=str(row.get("Patient Number", ""))[:255],
                 patient_name=str(row.get("Patient Name", ""))[:255],
@@ -803,8 +830,8 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
                 checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
                 checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
                 status=status
-            )
-            db.add(appointment)
+            ))
+            
         except Exception as e:
             print(f"Error processing appointment row: {str(e)}")
             db.rollback()
@@ -812,19 +839,37 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing appointment row: {str(e)}"})
 
+    try:
+        if appointments:
+            db.bulk_save_objects(appointments)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
     print("Processing treatment data")
+    
+    # Pre-process all patient numbers and get patients in bulk
+    patient_numbers = df["Patient Number"].astype(str).unique()
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+
+    treatments = []
     for _, row in df.iterrows():
         try:
-         
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
+            patient = patients.get(patient_number)
             if not patient:
                 print(f"Patient not found for number: {patient_number}")
                 continue
 
-            treatment = Treatment(
+            treatments.append(Treatment(
                 patient_id=patient.id,
                 treatment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                 treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
@@ -836,8 +881,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                 discount=float(str(row.get("Discount", 0)).strip("'")),
                 discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
                 doctor=str(row.get("Doctor", "")).strip("'")[:255]
-            )
-            db.add(treatment)
+            ))
         except Exception as e:
             print(f"Error processing treatment row: {str(e)}")
             db.rollback()
@@ -845,26 +889,44 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing treatment row: {str(e)}"})
 
+    try:
+        if treatments:
+            db.bulk_save_objects(treatments)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
     print("Processing clinical note data")
+    
+    # Pre-process all patient numbers and get patients in bulk
+    patient_numbers = df["Patient Number"].astype(str).unique()
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+
+    clinical_notes = []
     for _, row in df.iterrows():
         try:
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
+            patient = patients.get(patient_number)
             if not patient:
                 print(f"Patient not found for number: {patient_number}")
                 continue
             
-            note = ClinicalNote(
+            clinical_notes.append(ClinicalNote(
                 patient_id=patient.id,
                 date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                 doctor=str(row.get("Doctor", ""))[:255],
                 note_type=str(row.get("Type", ""))[:255],
                 description=str(row.get("Description", "")),
                 is_revised=bool(row.get("Revised", False))
-            )
-            db.add(note)
+            ))
         except Exception as e:
             print(f"Error processing clinical note row: {str(e)}")
             db.rollback()
@@ -872,18 +934,37 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing clinical note row: {str(e)}"})
 
+    try:
+        if clinical_notes:
+            db.bulk_save_objects(clinical_notes)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
     print("Processing treatment plan data")
+    
+    # Pre-process all patient numbers and get patients in bulk
+    patient_numbers = df["Patient Number"].astype(str).unique()
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+
+    treatment_plans = []
     for _, row in df.iterrows():
         try:
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
+            patient = patients.get(patient_number)
             if not patient:
                 print(f"Patient not found for number: {patient_number}")
                 continue
-            
-            plan = TreatmentPlan(
+
+            treatment_plans.append(TreatmentPlan(
                 patient_id=patient.id,
                 date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                 doctor=str(row.get("Doctor", ""))[:255],
@@ -895,8 +976,8 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 amount=float(row.get("Amount", 0.0)),
                 treatment_description=str(row.get("Treatment Description", "")),
                 tooth_diagram=str(row.get("Tooth Diagram", ""))
-            )
-            db.add(plan)
+            ))
+
         except Exception as e:
             print(f"Error processing treatment plan row: {str(e)}")
             db.rollback()
@@ -904,140 +985,152 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing treatment plan row: {str(e)}"})
 
+    try:
+        if treatment_plans:
+            db.bulk_save_objects(treatment_plans)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing expense data")
-    for _, row in df.iterrows():
-        try:
-            amount_str = str(row.get("Amount", "0.0")).strip("'")
+    
+    # Pre-process data and handle type conversions in bulk
+    df["Amount"] = df["Amount"].astype(str).str.strip("'").astype(float)
+    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
+    df["Expense Type"] = df["Expense Type"].astype(str).str[:255]
+    df["Description"] = df["Description"].astype(str)
+    df["Vendor Name"] = df["Vendor Name"].astype(str).str[:255]
+
+    expenses = []
+    try:
+        # Build list of expense objects
+        for _, row in df.iterrows():
             expense = Expense(
-                date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                date=row["Date"] if pd.notna(row["Date"]) else None,
                 doctor_id=user.id,
-                expense_type=str(row.get("Expense Type", ""))[:255],
-                description=str(row.get("Description", "")),
-                amount=float(amount_str),
-                vendor_name=str(row.get("Vendor Name", ""))[:255]
+                expense_type=row["Expense Type"],
+                description=row["Description"],
+                amount=row["Amount"],
+                vendor_name=row["Vendor Name"]
             )
-            db.add(expense)
-        except Exception as e:
-            print(f"Error processing expense row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
+            expenses.append(expense)
+
+        # Bulk insert all expenses
+        if expenses:
+            db.bulk_save_objects(expenses)
             db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing expense row: {str(e)}"})
+            
+    except Exception as e:
+        print(f"Error processing expenses: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error processing expenses: {str(e)}"})
 
 async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing payment data")
+    
+    # Pre-process data and handle type conversions in bulk
+    df["Amount Paid"] = df["Amount Paid"].astype(str).str.strip("'").astype(float).fillna(0.0)
+    df["Refunded amount"] = df["Refunded amount"].astype(str).str.strip("'").astype(float).fillna(None) 
+    df["Vendor Fees Percent"] = df["Vendor Fees Percent"].astype(str).str.strip("'").astype(float).fillna(None)
+    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
+    df["Patient Number"] = df["Patient Number"].astype(str)
+    
+    # Get all unique patient numbers
+    patient_numbers = df["Patient Number"].unique()
+    
+    # Bulk fetch all patients in one query
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+    
+    payments = []
     for _, row in df.iterrows():
-        try:
-            patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
+        patient_number = row["Patient Number"]
+        patient = patients.get(patient_number)
+        
+        if not patient:
+            print(f"Patient not found for number: {patient_number}")
+            continue
             
-            # Handle potential string values with quotes for numeric fields
-            try:
-                amount_paid = float(str(row.get("Amount Paid", 0.0)).strip("'"))
-            except (ValueError, TypeError):
-                print("Error parsing amount paid, defaulting to 0.0")
-                amount_paid = 0.0
+        payment = Payment(
+            date=row["Date"] if pd.notna(row["Date"]) else None,
+            doctor_id=user.id,
+            patient_id=patient.id,
+            patient_number=str(row.get("Patient Number", ""))[:255],
+            patient_name=str(row.get("Patient Name", ""))[:255],
+            receipt_number=str(row.get("Receipt Number", ""))[:255],
+            treatment_name=str(row.get("Treatment name", ""))[:255],
+            amount_paid=row["Amount Paid"],
+            invoice_number=str(row.get("Invoice Number", ""))[:255],
+            notes=str(row.get("Notes", "")),
+            refund=bool(row.get("Refund", False)),
+            refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
+            refunded_amount=row["Refunded amount"],
+            payment_mode=str(row.get("Payment Mode", ""))[:255],
+            card_number=str(row.get("Card Number", ""))[:255],
+            card_type=str(row.get("Card Type", ""))[:255],
+            cheque_number=str(row.get("Cheque Number", ""))[:255],
+            cheque_bank=str(row.get("Cheque Bank", ""))[:255],
+            netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
+            vendor_name=str(row.get("Vendor Name", ""))[:255],
+            vendor_fees_percent=row["Vendor Fees Percent"],
+            cancelled=bool(row.get("Cancelled", False))
+        )
+        payments.append(payment)
 
-            try:
-                refunded_amount = float(str(row.get("Refunded amount")).strip("'")) if row.get("Refunded amount") else None
-            except (ValueError, TypeError):
-                print("Error parsing refunded amount, defaulting to None")
-                refunded_amount = None
-
-            try:
-                vendor_fees_percent = float(str(row.get("Vendor Fees Percent")).strip("'")) if row.get("Vendor Fees Percent") else None
-            except (ValueError, TypeError):
-                print("Error parsing vendor fees percent, defaulting to None")
-                vendor_fees_percent = None
-
-            payment = Payment(
-                date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                doctor_id=user.id,
-                patient_id=patient.id,
-                patient_number=str(row.get("Patient Number", ""))[:255],
-                patient_name=str(row.get("Patient Name", ""))[:255],
-                receipt_number=str(row.get("Receipt Number", ""))[:255],
-                treatment_name=str(row.get("Treatment name", ""))[:255],
-                amount_paid=amount_paid,
-                invoice_number=str(row.get("Invoice Number", ""))[:255],
-                notes=str(row.get("Notes", "")),
-                refund=bool(row.get("Refund", False)),
-                refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
-                refunded_amount=refunded_amount,
-                payment_mode=str(row.get("Payment Mode", ""))[:255],
-                card_number=str(row.get("Card Number", ""))[:255],
-                card_type=str(row.get("Card Type", ""))[:255],
-                cheque_number=str(row.get("Cheque Number", ""))[:255],
-                cheque_bank=str(row.get("Cheque Bank", ""))[:255],
-                netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
-                vendor_name=str(row.get("Vendor Name", ""))[:255],
-                vendor_fees_percent=vendor_fees_percent,
-                cancelled=bool(row.get("Cancelled", False))
-            )
-            db.add(payment)
-        except Exception as e:
-            print(f"Error processing payment row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
+    try:
+        if payments:
+            db.bulk_save_objects(payments)
             db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing payment row: {str(e)}"})
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
 async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing invoice data")
+    
+    # Get all unique patient numbers from the dataframe
+    patient_numbers = df["Patient Number"].unique()
+    
+    # Bulk fetch all patients in one query
+    patients = {
+        p.patient_number: p for p in 
+        db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
+    }
+    
+    invoices = []
     for _, row in df.iterrows():
         try:
             patient_number = str(row.get("Patient Number", ""))
-            print(f"Looking up patient number: {patient_number}")
-            patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
+            patient = patients.get(patient_number)
+            
             if not patient:
                 print(f"Patient not found for number: {patient_number}")
                 continue
-            
-            discount_type_str = row.get("DiscountType")
-            if discount_type_str:
+
+            # Parse discount type
+            discount_type = row.get("DiscountType", "").upper() if row.get("DiscountType") else None
+
+            # Helper function to safely parse numeric values
+            def safe_parse_number(value, convert_func, default=None, strip_quotes=True):
+                if pd.isna(value):
+                    return default
                 try:
-                    discount_type = DiscountType[discount_type_str.upper()]
-                except KeyError:
-                    print(f"Invalid discount type: {discount_type_str}")
-                    discount_type = None
-            else:
-                discount_type = None
-
-            # Handle potential string values with quotes for numeric fields
-            try:
-                unit_cost = float(str(row.get("Unit Cost", 0.0)).strip("'"))
-            except (ValueError, TypeError):
-                print("Error parsing unit cost, defaulting to 0.0")
-                unit_cost = 0.0
-
-            try:
-                discount = float(str(row.get("Discount")).strip("'")) if row.get("Discount") else None
-            except (ValueError, TypeError):
-                print("Error parsing discount, defaulting to None")
-                discount = None
-
-            try:
-                invoice_level_tax_discount = float(str(row.get("Invoice Level Tax Discount")).strip("'")) if row.get("Invoice Level Tax Discount") else None
-            except (ValueError, TypeError):
-                print("Error parsing invoice level tax discount, defaulting to None")
-                invoice_level_tax_discount = None
-
-            try:
-                tax_percent = float(str(row.get("Tax Percent")).strip("'")) if row.get("Tax Percent") else None
-            except (ValueError, TypeError):
-                print("Error parsing tax percent, defaulting to None")
-                tax_percent = None
-
-            try:
-                quantity = int(str(row.get("Quantity", 1)).strip("'"))
-            except (ValueError, TypeError):
-                print("Error parsing quantity, defaulting to 1")
-                quantity = 1
+                    val_str = str(value).strip("'") if strip_quotes else str(value)
+                    return convert_func(val_str)
+                except (ValueError, TypeError):
+                    return default
 
             invoice = Invoice(
                 date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
@@ -1048,19 +1141,20 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 doctor_name=str(row.get("Doctor Name", ""))[:255],
                 invoice_number=str(row.get("Invoice Number", ""))[:255],
                 treatment_name=str(row.get("Treatment Name", ""))[:255],
-                unit_cost=unit_cost,
-                quantity=quantity,
-                discount=discount,
+                unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
+                quantity=safe_parse_number(row.get("Quantity"), int, 1),
+                discount=safe_parse_number(row.get("Discount"), float),
                 discount_type=discount_type,
                 type=str(row.get("Type", ""))[:255],
-                invoice_level_tax_discount=invoice_level_tax_discount,
+                invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
                 tax_name=str(row.get("Tax name", ""))[:255],
-                tax_percent=tax_percent,
+                tax_percent=safe_parse_number(row.get("Tax Percent"), float),
                 cancelled=bool(row.get("Cancelled", False)),
                 notes=str(row.get("Notes", "")),
                 description=str(row.get("Description", ""))
             )
-            db.add(invoice)
+            invoices.append(invoice)
+            
         except Exception as e:
             print(f"Error processing invoice row: {str(e)}")
             db.rollback()
@@ -1068,34 +1162,52 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing invoice row: {str(e)}"})
 
+    # Bulk save all invoices at once
+    try:
+        if invoices:
+            db.bulk_save_objects(invoices)
+            db.commit()
+    except Exception as e:
+        print(f"Error during bulk insert: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing procedure catalog data")
-    for _, row in df.iterrows():
-        try:
-            try:
-                treatment_cost = float(row.get("Treatment Cost", 0.0))
-            except (ValueError, TypeError):
-                print("Error parsing treatment cost, defaulting to 0.0")
-                treatment_cost = 0.0
-            
-            try:
-                procedure = ProcedureCatalog(
-                    user_id=user.id,
-                    treatment_name=str(row.get("Treatment Name", ""))[:255],
-                    treatment_cost=treatment_cost,
-                    treatment_notes=str(row.get("Treatment Notes", "")),
-                    locale=str(row.get("Locale", ""))[:50]
-                )
-                db.add(procedure)
-            except Exception as e:
-                print(f"Error creating procedure catalog: {str(e)}")
-                raise
-        except Exception as e:
-            print(f"Error processing procedure catalog row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
+    procedures = []
+    
+    # Process all rows at once using pandas operations
+    df['treatment_cost'] = df['Treatment Cost'].fillna('0').astype(str).str.strip().str.strip("'")
+    df['treatment_name'] = df['Treatment Name'].fillna('').astype(str).str.strip("'").str[:255] 
+    df['treatment_notes'] = df['Treatment Notes'].fillna('').astype(str)
+    df['locale'] = df['Locale'].fillna('').astype(str).str.strip("'").str[:50]
+
+    try:
+        # Create all ProcedureCatalog objects in memory
+        procedures = [
+            ProcedureCatalog(
+                user_id=user.id,
+                treatment_name=row['treatment_name'],
+                treatment_cost=row['treatment_cost'], 
+                treatment_notes=row['treatment_notes'],
+                locale=row['locale']
+            )
+            for _, row in df.iterrows()
+        ]
+
+        # Bulk insert all records at once
+        if procedures:
+            db.bulk_save_objects(procedures)
             db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog row: {str(e)}"})
+            
+    except Exception as e:
+        print(f"Error processing procedure catalog data: {str(e)}")
+        db.rollback()
+        import_log.status = ImportStatus.FAILED
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog data: {str(e)}"})
 
 async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session):
     try:
@@ -1119,7 +1231,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             try:
                 print("Extracting zip file...")
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
-                    zip_ref.extractall("uploads")
+                    zip_ref.extractall("uploads/imports")
                 print("Zip file extracted successfully")
             except Exception as e:
                 print(f"Error extracting zip file: {str(e)}")
@@ -1133,7 +1245,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         print("Updated import status to PROCESSING")
 
         # Process each CSV file
-        csv_files = [f for f in os.listdir("uploads") if f.endswith('.csv')]
+        csv_files = [f for f in os.listdir("uploads/imports") if f.endswith('.csv')]
         print(f"Found CSV files: {csv_files}")
         if not csv_files:
             print("No CSV files found")
@@ -1165,7 +1277,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                 print(f"\nProcessing file: {filename}")
                 try:
                     print(f"Reading CSV file: {filename}")
-                    df = pd.read_csv(f"uploads/{filename}", keep_default_na=False)
+                    df = pd.read_csv(f"uploads/imports/{filename}", keep_default_na=False)
                     df = df.fillna("")
                     print(f"Successfully read CSV with {len(df)} rows")
                 except Exception as e:
@@ -1209,9 +1321,6 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         elif any(name in normalized_filename for name in ["procedurecatalog.csv", "procedure-catalog.csv", "procedure_catalog.csv"]):
                             print("Processing procedure catalog data...")
                             await process_procedure_catalog_data(import_log, df, db, user)
-                        print("Committing changes to database...")
-                        db.commit()
-                        print("Successfully committed changes")
 
                 except Exception as e:
                     print(f"Error processing file {filename}: {str(e)}")
@@ -1304,7 +1413,8 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
         
         # Create uploads directory if it doesn't exist
-        os.makedirs("uploads", exist_ok=True)
+        upload_dir = os.path.join("uploads", "imports")
+        os.makedirs(upload_dir, exist_ok=True)
         
         # Create import log entry
         import_log = ImportLog(
@@ -1398,7 +1508,7 @@ async def get_import_logs(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        import_logs = db.query(ImportLog).filter(ImportLog.user_id == user.id).all()
+        import_logs = db.query(ImportLog).filter(ImportLog.user_id == user.id).order_by(ImportLog.created_at.desc()).all()
         return JSONResponse(status_code=200, content={
             "import_logs": [
                 {

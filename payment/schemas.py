@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-from .models import DiscountType
 
 class ExpenseResponse(BaseModel):
     id: str
@@ -127,7 +126,7 @@ class InvoiceResponse(BaseModel):
     unit_cost: Optional[float]
     quantity: Optional[int]
     discount: Optional[float]
-    discount_type: Optional[DiscountType]
+    discount_type: Optional[str]
     type: Optional[str]
     invoice_level_tax_discount: Optional[float]
     tax_name: Optional[str]
@@ -150,7 +149,7 @@ class InvoiceCreate(BaseModel):
     unit_cost: Optional[float] = None
     quantity: Optional[int] = None
     discount: Optional[float] = None
-    discount_type: Optional[DiscountType] = None
+    discount_type: Optional[str] = None
     type: Optional[str] = None
     invoice_level_tax_discount: Optional[float] = None
     tax_name: Optional[str] = None
@@ -169,7 +168,7 @@ class InvoiceUpdate(BaseModel):
     unit_cost: Optional[float] = None
     quantity: Optional[int] = None
     discount: Optional[float] = None
-    discount_type: Optional[DiscountType] = None
+    discount_type: Optional[str] = None
     type: Optional[str] = None
     invoice_level_tax_discount: Optional[float] = None
     tax_name: Optional[str] = None

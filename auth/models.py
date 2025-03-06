@@ -83,7 +83,7 @@ class ProcedureCatalog(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    treatment_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    treatment_cost: Mapped[str] = mapped_column(String(255), nullable=False, default="0")
     treatment_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     locale: Mapped[str] = mapped_column(String(50), nullable=True, default="en")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

@@ -12,11 +12,6 @@ def generate_uuid():
     return str(uuid.uuid4())
 
 
-class DiscountType(enum.Enum):
-    PERCENTAGE = "percentage"
-    FIXED = "fixed"
-
-
 class Expense(Base):
     __tablename__ = "expenses"
 
@@ -76,7 +71,7 @@ class Invoice(Base):
     unit_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    discount_type: Mapped[Optional[DiscountType]] = mapped_column(SQLAlchemyEnum(DiscountType), nullable=True)
+    discount_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     invoice_level_tax_discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tax_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
