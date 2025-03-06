@@ -407,7 +407,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
@@ -507,7 +507,7 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id")  if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -579,7 +579,7 @@ async def add_notes(request: Request, prediction_id: str, notes: str, db: Sessio
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -624,7 +624,7 @@ async def delete_prediction(request: Request, prediction_id: str, db: Session = 
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -668,7 +668,7 @@ async def reset_prediction(request: Request, prediction_id: str, db: Session = D
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -781,7 +781,7 @@ async def include_legend(request: Request, legend_id: str, db: Session = Depends
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -826,7 +826,7 @@ async def exclude_legend(request: Request, legend_id: str, db: Session = Depends
     try:
         # Validate user
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("id") if decoded_token else None
+        user_id = decoded_token.get("user_id") if decoded_token else None
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -876,7 +876,7 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
             return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
             
         # Check if user is a doctor
-        user = db.query(User).filter(User.id == decoded_token.get("id")).first()
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
 

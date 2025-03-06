@@ -81,7 +81,7 @@ async def get_expenses(request: Request, db: Session = Depends(get_db)):
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -116,7 +116,7 @@ async def get_expense(request: Request, expense_id: str, db: Session = Depends(g
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -161,7 +161,7 @@ async def update_expense(request: Request, expense_id: str, expense: ExpenseUpda
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -207,7 +207,7 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -246,7 +246,7 @@ async def create_payment(request: Request, payment: PaymentCreate, db: Session =
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == decoded_token["id"]).first()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
@@ -855,7 +855,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         return JSONResponse(status_code=500, content={"message": f"Failed to create invoice: {str(e)}"})
 
 @payment_router.get("/get-invoices",
-    response_model=list[InvoiceResponse],
+    response_model=dict,
     status_code=200,
     summary="Get all invoices",
     description="""
@@ -863,6 +863,11 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Optional query parameters:
+    - cancelled: Filter by cancelled status (true/false)
+    - start_date: Filter by date range start (YYYY-MM-DD)
+    - end_date: Filter by date range end (YYYY-MM-DD)
     """,
     responses={
         200: {"description": "List of invoices retrieved successfully"},
@@ -870,7 +875,13 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         500: {"description": "Internal server error"}
     }
 )
-async def get_invoices(request: Request, db: Session = Depends(get_db)):
+async def get_invoices(
+    request: Request, 
+    cancelled: Optional[bool] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -880,13 +891,56 @@ async def get_invoices(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        invoices = db.query(Invoice).filter(Invoice.doctor_id == user.id).all()
-        return JSONResponse(status_code=200, content={"invoices": invoices})
+        # Build query with filters
+        query = db.query(Invoice).filter(Invoice.doctor_id == user.id)
+        
+        if cancelled is not None:
+            query = query.filter(Invoice.cancelled == cancelled)
+            
+        if start_date:
+            query = query.filter(Invoice.date >= start_date)
+            
+        if end_date:
+            query = query.filter(Invoice.date <= end_date)
+            
+        invoices = query.order_by(Invoice.date.desc()).all()
+        
+        # Format response
+        invoice_list = []
+        for invoice in invoices:
+            invoice_dict = {
+                "id": invoice.id,
+                "date": invoice.date,
+                "patient_id": invoice.patient_id,
+                "doctor_id": invoice.doctor_id,
+                "patient_number": invoice.patient_number,
+                "patient_name": invoice.patient_name,
+                "doctor_name": invoice.doctor_name,
+                "invoice_number": invoice.invoice_number,
+                "treatment_name": invoice.treatment_name,
+                "unit_cost": invoice.unit_cost,
+                "quantity": invoice.quantity,
+                "discount": invoice.discount,
+                "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+                "type": invoice.type,
+                "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
+                "tax_name": invoice.tax_name,
+                "tax_percent": invoice.tax_percent,
+                "cancelled": invoice.cancelled,
+                "notes": invoice.notes,
+                "description": invoice.description,
+                "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "created_at": invoice.created_at,
+                "updated_at": invoice.updated_at
+            }
+            invoice_list.append(invoice_dict)
+            
+        return JSONResponse(status_code=200, content=invoice_list)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.get("/get-invoices-by-patient/{patient_id}",
-    response_model=list[InvoiceResponse],
+    response_model=dict,
     status_code=200,
     summary="Get invoices by patient ID",
     description="""
@@ -916,12 +970,41 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
         invoices = db.query(Invoice).filter(Invoice.patient_id == patient_id).all()
-        return JSONResponse(status_code=200, content={"invoices": invoices})
+        invoice_list = []
+        for invoice in invoices:
+            invoice_dict = {
+                "id": invoice.id,
+                "date": invoice.date,
+                "patient_id": invoice.patient_id,
+                "doctor_id": invoice.doctor_id, 
+                "patient_number": invoice.patient_number,
+                "patient_name": invoice.patient_name,
+                "doctor_name": invoice.doctor_name,
+                "invoice_number": invoice.invoice_number,
+                "treatment_name": invoice.treatment_name,
+                "unit_cost": invoice.unit_cost,
+                "quantity": invoice.quantity,
+                "discount": invoice.discount,
+                "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+                "type": invoice.type,
+                "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
+                "tax_name": invoice.tax_name,
+                "tax_percent": invoice.tax_percent,
+                "cancelled": invoice.cancelled,
+                "notes": invoice.notes,
+                "description": invoice.description,
+                "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "created_at": invoice.created_at,
+                "updated_at": invoice.updated_at
+            }
+            invoice_list.append(invoice_dict)
+            
+        return JSONResponse(status_code=200, content=invoice_list)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @payment_router.get("/get-invoice/{invoice_id}",
-    response_model=InvoiceResponse,
+    response_model=dict,
     status_code=200,
     summary="Get invoice by ID",
     description="""
@@ -954,7 +1037,33 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
         if not invoice:
             return JSONResponse(status_code=404, content={"message": "Invoice not found"})
         
-        return JSONResponse(status_code=200, content={"invoice": invoice})
+        invoice_dict = {
+            "id": invoice.id,
+            "date": invoice.date,
+            "patient_id": invoice.patient_id,
+            "doctor_id": invoice.doctor_id,
+            "patient_number": invoice.patient_number,
+            "patient_name": invoice.patient_name,
+            "doctor_name": invoice.doctor_name,
+            "invoice_number": invoice.invoice_number,
+            "treatment_name": invoice.treatment_name,
+            "unit_cost": invoice.unit_cost,
+            "quantity": invoice.quantity,
+            "discount": invoice.discount,
+            "discount_type": invoice.discount_type.value if invoice.discount_type else None,
+            "type": invoice.type,
+            "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
+            "tax_name": invoice.tax_name,
+            "tax_percent": invoice.tax_percent,
+            "cancelled": invoice.cancelled,
+            "notes": invoice.notes,
+            "description": invoice.description,
+            "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+            "created_at": invoice.created_at,
+            "updated_at": invoice.updated_at
+        }
+        
+        return JSONResponse(status_code=200, content=invoice_dict)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
