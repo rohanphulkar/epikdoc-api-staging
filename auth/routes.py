@@ -732,7 +732,6 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     print("Processing patient data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing patient row: {row}")
             gender_str = str(row.get("Gender", "male")).lower()
             if "f" in gender_str or "female" in gender_str:
                 gender = Gender.FEMALE
@@ -780,7 +779,6 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
     print("Processing appointment data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing appointment row: {row}")
             status_str = str(row.get("Status", "SCHEDULED")).upper()
             if status_str == "SCHEDULED":
                 status = AppointmentStatus.SCHEDULED
@@ -818,7 +816,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
     print("Processing treatment data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing treatment row: {row}")
+         
             patient_number = str(row.get("Patient Number", ""))
             print(f"Looking up patient number: {patient_number}")
             patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
@@ -851,7 +849,6 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
     print("Processing clinical note data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing clinical note row: {row}")
             patient_number = str(row.get("Patient Number", ""))
             print(f"Looking up patient number: {patient_number}")
             patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
@@ -879,7 +876,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
     print("Processing treatment plan data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing treatment plan row: {row}")
             patient_number = str(row.get("Patient Number", ""))
             print(f"Looking up patient number: {patient_number}")
             patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
@@ -912,7 +908,6 @@ async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     print("Processing expense data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing expense row: {row}")
             amount_str = str(row.get("Amount", "0.0")).strip("'")
             expense = Expense(
                 date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
@@ -934,7 +929,6 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     print("Processing payment data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing payment row: {row}")
             patient_number = str(row.get("Patient Number", ""))
             print(f"Looking up patient number: {patient_number}")
             patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
@@ -997,7 +991,6 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     print("Processing invoice data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing invoice row: {row}")
             patient_number = str(row.get("Patient Number", ""))
             print(f"Looking up patient number: {patient_number}")
             patient = db.query(Patient).filter(Patient.patient_number == patient_number).first()
@@ -1079,7 +1072,6 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
     print("Processing procedure catalog data")
     for _, row in df.iterrows():
         try:
-            print(f"Processing procedure catalog row: {row}")
             try:
                 treatment_cost = float(row.get("Treatment Cost", 0.0))
             except (ValueError, TypeError):
