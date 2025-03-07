@@ -86,7 +86,20 @@ async def get_expenses(request: Request, db: Session = Depends(get_db)):
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
         expenses = db.query(Expense).filter(Expense.doctor_id == user.id).all()
-        return JSONResponse(status_code=200, content={"expenses": expenses})
+        expenses_list = []
+        for expense in expenses:
+            expense_dict = {
+                "id": expense.id,
+                "date": expense.date.isoformat() if expense.date else None,
+                "expense_type": expense.expense_type,
+                "description": expense.description,
+                "amount": expense.amount,
+                "vendor_name": expense.vendor_name,
+                "created_at": expense.created_at.isoformat() if expense.created_at else None,
+                "updated_at": expense.updated_at.isoformat() if expense.updated_at else None
+            }
+            expenses_list.append(expense_dict)
+        return JSONResponse(status_code=200, content=expenses_list)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
@@ -124,7 +137,17 @@ async def get_expense(request: Request, expense_id: str, db: Session = Depends(g
         if not expense:
             return JSONResponse(status_code=404, content={"message": "Expense not found"})
         
-        return JSONResponse(status_code=200, content={"expense": expense})
+        expense_dict = {
+            "id": expense.id,
+            "date": expense.date.isoformat() if expense.date else None,
+            "expense_type": expense.expense_type,
+            "description": expense.description,
+            "amount": expense.amount,
+            "vendor_name": expense.vendor_name,
+            "created_at": expense.created_at.isoformat() if expense.created_at else None,
+            "updated_at": expense.updated_at.isoformat() if expense.updated_at else None
+        }
+        return JSONResponse(status_code=200, content=expense_dict)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
@@ -451,8 +474,6 @@ async def get_payments_by_patient_id(
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
-
-
 
 @payment_router.get("/get-payment/{payment_id}",
     response_model=PaymentResponse,
@@ -930,8 +951,8 @@ async def get_invoices(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
-                "created_at": invoice.created_at,
-                "updated_at": invoice.updated_at
+                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
             }
             invoice_list.append(invoice_dict)
             
@@ -994,8 +1015,8 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
-                "created_at": invoice.created_at,
-                "updated_at": invoice.updated_at
+                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
             }
             invoice_list.append(invoice_dict)
             
@@ -1059,8 +1080,8 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "notes": invoice.notes,
             "description": invoice.description,
             "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
-            "created_at": invoice.created_at,
-            "updated_at": invoice.updated_at
+            "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+            "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
         }
         
         return JSONResponse(status_code=200, content=invoice_dict)
