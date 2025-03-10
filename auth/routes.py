@@ -1633,7 +1633,9 @@ async def add_procedure_catalog(request: Request, procedure: ProcedureCatalogSch
         db.commit()
         db.refresh(procedure_catalog)
         
-        return JSONResponse(status_code=201, content=ProcedureCatalogResponse.model_validate(procedure_catalog).model_dump())
+        return JSONResponse(status_code=201, content={
+            "message": "Procedure catalog created successfully",
+        })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
@@ -1664,7 +1666,20 @@ async def get_procedure_catalogs(request: Request, db: Session = Depends(get_db)
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
         procedure_catalogs = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id).all()
-        return [ProcedureCatalogResponse.model_validate(pc) for pc in procedure_catalogs]
+
+        procedure_catalogs_list = []
+        for procedure_catalog in procedure_catalogs:
+            procedure_catalogs_list.append({
+                "id": procedure_catalog.id,
+                "treatment_name": procedure_catalog.treatment_name,
+                "treatment_cost": procedure_catalog.treatment_cost,
+                "treatment_notes": procedure_catalog.treatment_notes,
+                "locale": procedure_catalog.locale,
+                "created_at": procedure_catalog.created_at.isoformat() if procedure_catalog.created_at else None,
+                "updated_at": procedure_catalog.updated_at.isoformat() if procedure_catalog.updated_at else None
+            })
+
+        return JSONResponse(status_code=200, content=procedure_catalogs_list)
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
@@ -1718,7 +1733,9 @@ async def update_procedure_catalog(
         db.commit()
         db.refresh(procedure_catalog)
         
-        return ProcedureCatalogResponse.model_validate(procedure_catalog)
+        return JSONResponse(status_code=200, content={
+            "message": "Procedure catalog updated successfully"
+        })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
