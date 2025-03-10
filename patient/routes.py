@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, File, UploadFile, status
+from fastapi import APIRouter, Request, Depends, File, UploadFile, status, Form
 from sqlalchemy.orm import Session
 from .schemas import *
 from .models import *
@@ -12,9 +12,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from PIL import Image
 import io
 import numpy as np
-import pydicom
+import json
 from datetime import datetime
 from typing import Optional, List
+from appointment.models import Appointment
 
 patient_router = APIRouter()
 
@@ -237,29 +238,144 @@ async def get_patient_by_id(
             "contact_number": patient.contact_number,
             "email": patient.email,
             "secondary_mobile": patient.secondary_mobile,
-            "gender": patient.gender,
+            "gender": patient.gender.value,
             "address": patient.address,
             "locality": patient.locality,
             "city": patient.city,
             "pincode": patient.pincode,
             "national_id": patient.national_id,
-            "date_of_birth": patient.date_of_birth,
+            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
             "age": patient.age,
-            "anniversary_date": patient.anniversary_date,
+            "anniversary_date": patient.anniversary_date.isoformat() if patient.anniversary_date else None,
             "blood_group": patient.blood_group,
             "remarks": patient.remarks,
             "medical_history": patient.medical_history,
             "referred_by": patient.referred_by,
             "groups": patient.groups,
             "patient_notes": patient.patient_notes,
-            "created_at": patient.created_at,
-            "treatments": patient.treatments,
-            "clinical_notes": patient.clinical_notes,
-            "treatment_plans": patient.treatment_plans,
-            "medical_records": patient.medical_records
+            "created_at": patient.created_at.isoformat() if patient.created_at else None,
         }
 
-        return patient_data
+        treatments = []
+        clinical_notes = []
+        treatment_plans = []
+        medical_records = []
+        appointments = []
+
+        for treatment in patient.treatments:
+            treatment_data = {
+                "id": treatment.id,
+                "treatment_date": treatment.treatment_date,
+                "treatment_name": treatment.treatment_name,
+                "tooth_number": treatment.tooth_number,
+                "treatment_notes": treatment.treatment_notes,
+                "quantity": treatment.quantity,
+                "treatment_cost": treatment.treatment_cost,
+                "amount": treatment.amount,
+                "discount": treatment.discount,
+                "discount_type": treatment.discount_type,
+                "doctor": treatment.doctor,
+                "created_at": treatment.created_at.isoformat() if treatment.created_at else None
+            }
+            treatments.append(treatment_data)
+
+        for clinical_note in patient.clinical_notes:
+            clinical_note_data = {
+                "id": clinical_note.id,
+                "date": clinical_note.date.isoformat() if clinical_note.date else None,
+                "note_type": clinical_note.note_type,
+                "description": clinical_note.description,
+                "is_revised": clinical_note.is_revised,
+                "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None
+            }
+            clinical_notes.append(clinical_note_data)
+
+        for treatment_plan in patient.treatment_plans:
+            treatment_plan_data = {
+                "id": treatment_plan.id,
+                "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
+                "treatment_name": treatment_plan.treatment_name,
+                "unit_cost": treatment_plan.unit_cost,
+                "quantity": treatment_plan.quantity,
+                "discount": treatment_plan.discount,
+                "discount_type": treatment_plan.discount_type,
+                "amount": treatment_plan.amount,
+                "treatment_description": treatment_plan.treatment_description,
+                "tooth_diagram": treatment_plan.tooth_diagram,
+                "created_at": treatment_plan.created_at.isoformat() if treatment_plan.created_at else None
+            }
+            treatment_plans.append(treatment_plan_data)
+
+        for medical_record in patient.medical_records:
+            medical_record_data = {
+                "id": medical_record.id,
+                "complaint": medical_record.complaint,
+                "diagnosis": medical_record.diagnosis,
+                "vital_signs": medical_record.vital_signs,
+                "created_at": medical_record.created_at.isoformat() if medical_record.created_at else None,
+                "attachments": [
+                    {
+                        "id": attachment.id,
+                        "attachment": attachment.attachment,
+                        "created_at": attachment.created_at.isoformat() if attachment.created_at else None
+                    } for attachment in medical_record.attachments
+                ],
+                "treatments": [
+                    {
+                        "id": treatment.id,
+                        "name": treatment.name,
+                        "created_at": treatment.created_at.isoformat() if treatment.created_at else None
+                    } for treatment in medical_record.treatments
+                ],
+                "medicines": [
+                    {
+                        "id": medicine.id,
+                        "item_name": medicine.item_name,
+                        "price": medicine.price,
+                        "quantity": medicine.quantity,
+                        "dosage": medicine.dosage,
+                        "instructions": medicine.instructions,
+                        "amount": medicine.amount,
+                        "created_at": medicine.created_at.isoformat() if medicine.created_at else None
+                    } for medicine in medical_record.medicines
+                ]
+            }
+            medical_records.append(medical_record_data)
+
+        db_appointments = db.execute(
+            select(Appointment).filter(
+                Appointment.patient_id == patient_id,
+                Appointment.doctor_id == decoded_token.get("user_id")
+            )
+        ).scalars().all()
+
+        for appointment in db_appointments:
+            appointment_data = {
+                "id": appointment.id,
+                "patient_id": appointment.patient_id,
+                "patient_number": appointment.patient_number,
+                "patient_name": appointment.patient_name,
+                "doctor_id": appointment.doctor_id,
+                "doctor_name": appointment.doctor_name,
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
+                "status": appointment.status.value,
+                "share_on_email": appointment.share_on_email,
+                "share_on_sms": appointment.share_on_sms,
+                "share_on_whatsapp": appointment.share_on_whatsapp,
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None
+            }
+            appointments.append(appointment_data)
+            
+        patient_data["treatments"] = treatments
+        patient_data["clinical_notes"] = clinical_notes
+        patient_data["treatment_plans"] = treatment_plans
+        patient_data["medical_records"] = medical_records
+        patient_data["appointments"] = appointments
+        return JSONResponse(status_code=200, content=patient_data)
         
     except SQLAlchemyError as e:
         return JSONResponse(
@@ -533,56 +649,78 @@ async def delete_patient(
         )
 
 @patient_router.post(
-    "/create-medical-record",
+    "/create-medical-record/{patient_id}",
     status_code=status.HTTP_201_CREATED,
-    response_description="Create a new medical record for a patient with treatments, medicines and attachments",
+    summary="Create medical record with treatments, medicines and attachments",
+    description="""
+    Create a new medical record for a patient with treatments, medicines and file attachments.
+    
+    Required parameters:
+    - patient_id (path): ID of the patient
+    - complaint (form): Chief complaint text
+    - diagnosis (form): Doctor's diagnosis text
+    - vital_signs (form): Patient vital signs data
+    
+    Optional parameters:
+    - treatments (form): JSON string containing list of treatments
+        [
+            {
+                "name": "Treatment name"
+            }
+        ]
+    - medicines (form): JSON string containing list of medicines with details
+        [
+            {
+                "name": "Medicine name",
+                "quantity": 1,
+                "price": 0.0,
+                "dosage": "Dosage instructions", 
+                "instructions": "Usage instructions"
+            }
+        ]
+    - files (form): List of file attachments (images, documents etc)
+    
+    Required headers:
+    - Authorization: Bearer token from login
+    """,
     responses={
         201: {
             "description": "Medical record created successfully",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Medical record created successfully",
-                        "medical_record_id": "550e8400-e29b-41d4-a716-446655440000",
-                    }
+                    "example": {"message": "Medical record created successfully"}
                 }
             }
         },
         400: {
-            "description": "Invalid request data or validation error",
+            "description": "Invalid request data",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Invalid request data",
-                        "detail": "Required field 'complaint' is missing"
-                    }
+                    "example": {"message": "Invalid request data"}
                 }
             }
         },
         401: {
-            "description": "Unauthorized - Invalid or missing authentication token",
+            "description": "Unauthorized - Invalid or missing token",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized access - Please login"}
+                    "example": {"message": "Unauthorized"}
                 }
             }
         },
         404: {
-            "description": "Patient not found or no access to patient record",
+            "description": "Patient not found",
             "content": {
                 "application/json": {
-                    "example": {"message": "Patient with ID not found or access denied"}
+                    "example": {"message": "Patient not found"}
                 }
             }
         },
         500: {
-            "description": "Internal server error during processing",
+            "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Internal server error",
-                        "detail": "Error processing file upload"
-                    }
+                    "example": {"message": "Internal server error"}
                 }
             }
         }
@@ -591,28 +729,17 @@ async def delete_patient(
 async def create_medical_record(
     request: Request,
     patient_id: str,
-    medical_record: MedicalRecordCreateSchema,
+    complaint: str = Form(...),
+    diagnosis: str = Form(...),
+    vital_signs: str = Form(...),
+    treatments: str = Form(None),  # JSON string of treatments
+    medicines: str = Form(None),   # JSON string of medicines
     files: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db)
 ):
-    """
-    Create a new medical record for a patient with optional file attachments.
-    
-    Args:
-        request: The HTTP request containing medical record data
-        patient_id: ID of the patient
-        medical_record: Medical record data schema
-        files: Optional list of files to attach
-        db: Database session
-        
-    Returns:
-        JSON response with success/error message
-    """
     try:
-        # Verify user authentication
+        # Verify user and get patient
         decoded_token = verify_token(request)
-        
-        # Get patient
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
@@ -628,66 +755,62 @@ async def create_medical_record(
 
         # Create medical record
         medical_record_db = MedicalRecord(
-            patient_id=patient_id,
-            complaint=medical_record.complaint,
-            diagnosis=medical_record.diagnosis,
-            vital_signs=medical_record.vital_signs
+            patient_id=patient.id,
+            complaint=complaint,
+            diagnosis=diagnosis,
+            vital_signs=vital_signs
         )
-
-        # Save to database
         db.add(medical_record_db)
         db.commit()
         db.refresh(medical_record_db)
-        
-        # Handle attachments
-        attachments = []
+
+        # Handle file attachments
         if files:
+            attachments = []
+            os.makedirs("uploads/medical_records", exist_ok=True)
+            
             for file in files:
-                file_content = await file.read()
-                # Create uploads directory if it doesn't exist
-                os.makedirs("uploads/medical_records", exist_ok=True)
-                
-                # Generate unique filename
                 file_ext = os.path.splitext(str(file.filename))[1]
-                unique_filename = f"{generate_uuid()}{file_ext}"
-                file_path = f"uploads/medical_records/{unique_filename}"
+                file_path = f"uploads/medical_records/{generate_uuid()}{file_ext}"
                 
                 with open(file_path, "wb") as f:
-                    f.write(file_content)
+                    f.write(await file.read())
 
-                attachment = MedicalRecordAttachment(
+                attachments.append(MedicalRecordAttachment(
                     medical_record_id=medical_record_db.id,
-                    attachment=file_path,
-                )
-                attachments.append(attachment)
+                    attachment=file_path
+                ))
 
-            # Save attachments
             db.add_all(attachments)
-            db.commit()
-        
-        # Add medical record treatments
-        if medical_record.treatments:
-            for treatment in medical_record.treatments:
-                medical_record_treatment = MedicalRecordTreatment(
-                    medical_record_id=medical_record_db.id,
-                    name=treatment.name,
-                    )
-                db.add(medical_record_treatment)
 
-        # Add medicines
-        if medical_record.medicines:
-            for medicine in medical_record.medicines:
-                medicine_amount = medicine.price * medicine.quantity
-                medical_record_medicine = Medicine(
+        # Add treatments if provided
+        if treatments:
+            treatments_list = json.loads(treatments)
+            treatments_db = [
+                MedicalRecordTreatment(
                     medical_record_id=medical_record_db.id,
-                    item_name=medicine.name,
-                    quantity=medicine.quantity,
-                    price=medicine.price,
-                    amount=medicine_amount,
-                    dosage=medicine.dosage,
-                    instructions=medicine.instructions
+                    name=treatment["name"]
                 )
-                db.add(medical_record_medicine)
+                for treatment in treatments_list
+            ]
+            db.add_all(treatments_db)
+
+        # Add medicines if provided
+        if medicines:
+            medicines_list = json.loads(medicines)
+            medicines_db = [
+                Medicine(
+                    medical_record_id=medical_record_db.id,
+                    item_name=medicine["name"],
+                    quantity=medicine.get("quantity", 1),
+                    price=medicine.get("price", 0),
+                    amount=medicine.get("price", 0) * medicine.get("quantity", 1),
+                    dosage=medicine.get("dosage"),
+                    instructions=medicine.get("instructions")
+                )
+                for medicine in medicines_list
+            ]
+            db.add_all(medicines_db)
 
         db.commit()
         
@@ -696,10 +819,15 @@ async def create_medical_record(
             "medical_record_id": medical_record_db.id
         }
         
+    except json.JSONDecodeError:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": "Invalid JSON format for treatments or medicines"}
+        )
     except SQLAlchemyError as e:
         db.rollback()
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_400_BAD_REQUEST, 
             content={"message": f"Database error: {str(e)}"}
         )
     except Exception as e:

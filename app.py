@@ -49,7 +49,7 @@ app = FastAPI(
         {"name": "appointments", "description": "Appointment scheduling and management"},
         {"name": "payments", "description": "Payment processing and invoicing"},
         {"name": "predictions", "description": "AI-powered analysis and predictions"},
-        {"name": "staff", "description": "Staff management and permissions"}
+        {"name": "staff", "description": "Staff management and permissions"},
     ],
     terms_of_service="https://www.epikdoc.com/terms-and-conditions",
     license_info={

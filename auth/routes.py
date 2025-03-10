@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Body
 from db.db import get_db
 from sqlalchemy.orm import Session
 from .models import User, ProcedureCatalog, ImportLog, ImportStatus
@@ -20,6 +20,7 @@ from patient.models import *
 from payment.models import *
 from prediction.models import *
 from typing import List
+import json, shutil
 
 user_router = APIRouter()
 
@@ -484,56 +485,138 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
 @user_router.patch("/update-profile",
     response_model=dict,
     status_code=200,
-    summary="Update profile",
+    summary="Update profile", 
     description="""
     Update authenticated user's profile information.
     
     Required headers:
     - Authorization: Bearer {access_token}
     
-    Optional fields:
-    - name: New display name
-    - phone: New phone number with country code
-    - bio: Brief user biography/description
-    - image: Profile image file (JPG/PNG)
+    The request can be sent in two ways:
+    1. As multipart/form-data with:
+       - json: A JSON string containing the profile fields:
+         {
+           "name": "John Doe",           # Optional: New display name
+           "phone": "+1234567890",       # Optional: Phone with country code
+           "bio": "Doctor profile..."    # Optional: Brief biography
+         }
+       - image: Optional profile image file
+       
+    2. As application/json with the same profile fields in request body
     
-    The profile picture will be stored in the uploads/profile_pictures directory.
+    Image requirements if provided:
+    - Format: JPG/PNG
+    - Max size: 5MB
+    - Will be stored in uploads/profile_pictures directory
+    - File path saved in user's profile_pic field
+    
+    All fields are optional - only provided fields will be updated.
+    Returns a success message on successful update.
     """,
     responses={
         200: {
             "description": "Profile updated successfully",
             "content": {
                 "application/json": {
-                    "example": {"message": "Profile updated successfully"}
+                    "example": {
+                        "message": "Profile updated successfully"
+                    }
                 }
             }
         },
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "Invalid phone number format"
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "Invalid or expired token"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "User not found"
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "Failed to update profile"
+                    }
+                }
+            }
+        }
     }
 )
-async def update_profile(user: UserProfileUpdateSchema, request: Request, image: UploadFile = File(None), db: Session = Depends(get_db)):
+async def update_profile(request: Request, image: UploadFile = File(None), db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         
         db_user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
+
+        # Get form data and body separately
+        form = await request.form()
+        body = {}
         
-        if user.name:
-            setattr(db_user, 'name', user.name)
-        if user.phone:
-            setattr(db_user, 'phone', user.phone)
-        if user.bio:
-            setattr(db_user, 'bio', user.bio)
+        # Extract JSON data from form if present
+        if 'json' in form:
+            try:
+                json_str = str(form['json'])
+                body = json.loads(json_str)
+            except:
+                body = {}
+        else:
+            # Try to read raw JSON body
+            try:
+                raw_body = await request.body()
+                if raw_body:
+                    body = await request.json()
+            except:
+                pass
+
+        # Get values from body dict with get() method
+        name = body.get('name') if isinstance(body, dict) else None
+        phone = body.get('phone') if isinstance(body, dict) else None 
+        bio = body.get('bio') if isinstance(body, dict) else None
+
+        if name:
+            setattr(db_user, 'name', name)
+        if phone:
+            setattr(db_user, 'phone', phone)
+        if bio:
+            setattr(db_user, 'bio', bio)
             
         if image:
             # Read file contents
             file_contents = await image.read()
+
+            # Check if the uploads directory exists, create it if it doesn't
+            upload_dir = "uploads/profile_pictures"
+            os.makedirs(upload_dir, exist_ok=True)
             
             # Save file to disk/storage
             file_name = f"profile_{db_user.id}_{image.filename}"
-            file_path = f"uploads/profile_pictures/{file_name}"
+            file_path = f"{upload_dir}/{file_name}"
             
             with open(file_path, "wb") as f:
                 f.write(file_contents)
@@ -547,7 +630,6 @@ async def update_profile(user: UserProfileUpdateSchema, request: Request, image:
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
 @user_router.delete("/delete-profile",
     response_model=dict,
     status_code=200,
@@ -734,7 +816,7 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     # Pre-process gender mapping
     gender_map = df["Gender"].str.lower().map(lambda x: Gender.FEMALE if "f" in str(x) or "female" in str(x) else Gender.MALE)
     
-    # Convert date columns once
+    # Convert date columns once and handle NaT values
     dob_series = pd.to_datetime(df["Date of Birth"].astype(str), errors='coerce')
     anniversary_series = pd.to_datetime(df["Anniversary Date"].astype(str), errors='coerce')
     
@@ -752,6 +834,10 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             
             if patient_number in existing_patients:
                 continue
+            
+            # Handle NaT values for dates by converting to None
+            dob = None if pd.isna(dob_series[idx]) else dob_series[idx].to_pydatetime()
+            anniversary = None if pd.isna(anniversary_series[idx]) else anniversary_series[idx].to_pydatetime()
                 
             new_patients.append(Patient(
                 doctor_id=user.id,
@@ -767,9 +853,9 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 city=str(row.get("City", ""))[:255],
                 pincode=str(row.get("Pincode", ""))[:255],
                 national_id=str(row.get("National Id", ""))[:255],
-                date_of_birth=dob_series[idx],
+                date_of_birth=dob,
                 age=str(row.get("Age", ""))[:5],
-                anniversary_date=anniversary_series[idx],
+                anniversary_date=anniversary,
                 blood_group=str(row.get("Blood Group", ""))[:50],
                 remarks=str(row.get("Remarks", "")),
                 medical_history=str(row.get("Medical History", "")),
@@ -815,22 +901,19 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
 
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
-            
-            appointments.append(Appointment(
-                patient_id=patient.id,
-                patient_number=str(row.get("Patient Number", ""))[:255],
-                patient_name=str(row.get("Patient Name", ""))[:255],
-                doctor_id=user.id,
-                doctor_name=str(row.get("DoctorName", ""))[:255],
-                notes=str(row.get("Notes", "")),
-                appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
-                checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
-                status=status
-            ))
+            if patient:
+                appointments.append(Appointment(
+                    patient_id=patient.id,
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    doctor_id=user.id,
+                    doctor_name=str(row.get("DoctorName", ""))[:255],
+                    notes=str(row.get("Notes", "")),
+                    appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
+                    checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
+                    status=status
+                ))
             
         except Exception as e:
             print(f"Error processing appointment row: {str(e)}")
@@ -865,23 +948,20 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
-
-            treatments.append(Treatment(
-                patient_id=patient.id,
-                treatment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
-                tooth_number=str(row.get("Tooth Number", "")).strip("'")[:50],
-                treatment_notes=str(row.get("Treatment Notes", "")).strip("'"),
-                quantity=int(float(str(row.get("Quantity", 0)).strip("'"))),
-                treatment_cost=float(str(row.get("Treatment Cost", 0.0)).strip("'")),
-                amount=float(str(row.get("Amount", 0.0)).strip("'")),
-                discount=float(str(row.get("Discount", 0)).strip("'")),
-                discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
-                doctor=str(row.get("Doctor", "")).strip("'")[:255]
-            ))
+            if patient:
+                treatments.append(Treatment(
+                    patient_id=patient.id,
+                    treatment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
+                    tooth_number=str(row.get("Tooth Number", "")).strip("'")[:50],
+                    treatment_notes=str(row.get("Treatment Notes", "")).strip("'"),
+                    quantity=int(float(str(row.get("Quantity", 0)).strip("'"))),
+                    treatment_cost=float(str(row.get("Treatment Cost", 0.0)).strip("'")),
+                    amount=float(str(row.get("Amount", 0.0)).strip("'")),
+                    discount=float(str(row.get("Discount", 0)).strip("'")),
+                    discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
+                    doctor=str(row.get("Doctor", "")).strip("'")[:255]
+                ))
         except Exception as e:
             print(f"Error processing treatment row: {str(e)}")
             db.rollback()
@@ -915,18 +995,15 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
-            
-            clinical_notes.append(ClinicalNote(
-                patient_id=patient.id,
-                date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                doctor=str(row.get("Doctor", ""))[:255],
-                note_type=str(row.get("Type", ""))[:255],
-                description=str(row.get("Description", "")),
-                is_revised=bool(row.get("Revised", False))
-            ))
+            if patient:
+                clinical_notes.append(ClinicalNote(
+                    patient_id=patient.id,
+                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    doctor=str(row.get("Doctor", ""))[:255],
+                    note_type=str(row.get("Type", ""))[:255],
+                    description=str(row.get("Description", "")),
+                    is_revised=bool(row.get("Revised", False))
+                ))
         except Exception as e:
             print(f"Error processing clinical note row: {str(e)}")
             db.rollback()
@@ -960,23 +1037,20 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
-
-            treatment_plans.append(TreatmentPlan(
-                patient_id=patient.id,
-                date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                doctor=str(row.get("Doctor", ""))[:255],
-                treatment_name=str(row.get("Treatment Name", ""))[:255],
-                unit_cost=float(row.get("UnitCost", 0.0)),
-                quantity=int(row.get("Quantity", 1)),
-                discount=float(row.get("Discount", 0)) if row.get("Discount") else None,
-                discount_type=str(row.get("DiscountType", ""))[:50],
-                amount=float(row.get("Amount", 0.0)),
-                treatment_description=str(row.get("Treatment Description", "")),
-                tooth_diagram=str(row.get("Tooth Diagram", ""))
-            ))
+            if patient:
+                treatment_plans.append(TreatmentPlan(
+                    patient_id=patient.id,
+                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    doctor=str(row.get("Doctor", ""))[:255],
+                    treatment_name=str(row.get("Treatment Name", ""))[:255],
+                    unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
+                    quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
+                    discount=float(str(row.get("Discount", 0)).strip("'")) if row.get("Discount") else None,
+                    discount_type=str(row.get("DiscountType", ""))[:50],
+                    amount=float(str(row.get("Amount", 0.0)).strip("'")),
+                    treatment_description=str(row.get("Treatment Description", "")),
+                    tooth_diagram=str(row.get("Tooth Diagram", ""))
+                ))
 
         except Exception as e:
             print(f"Error processing treatment plan row: {str(e)}")
@@ -1036,9 +1110,21 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     print("Processing payment data")
     
     # Pre-process data and handle type conversions in bulk
-    df["Amount Paid"] = df["Amount Paid"].astype(str).str.strip("'").astype(float).fillna(0.0)
-    df["Refunded amount"] = df["Refunded amount"].astype(str).str.strip("'").astype(float).fillna(None) 
-    df["Vendor Fees Percent"] = df["Vendor Fees Percent"].astype(str).str.strip("'").astype(float).fillna(None)
+    def safe_float_convert(value):
+        try:
+            # First strip any quotes and whitespace
+            cleaned = str(value).strip().strip("'")
+            # Handle empty string case
+            if not cleaned:
+                return 0.0
+            return float(cleaned)
+        except (ValueError, TypeError):
+            return 0.0
+
+    # Safely convert numeric columns
+    df["Amount Paid"] = df["Amount Paid"].apply(safe_float_convert)
+    df["Refunded amount"] = df["Refunded amount"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else None)
+    df["Vendor Fees Percent"] = df["Vendor Fees Percent"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else None)
     df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
     df["Patient Number"] = df["Patient Number"].astype(str)
     
@@ -1056,35 +1142,32 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         patient_number = row["Patient Number"]
         patient = patients.get(patient_number)
         
-        if not patient:
-            print(f"Patient not found for number: {patient_number}")
-            continue
-            
-        payment = Payment(
-            date=row["Date"] if pd.notna(row["Date"]) else None,
-            doctor_id=user.id,
-            patient_id=patient.id,
-            patient_number=str(row.get("Patient Number", ""))[:255],
-            patient_name=str(row.get("Patient Name", ""))[:255],
-            receipt_number=str(row.get("Receipt Number", ""))[:255],
-            treatment_name=str(row.get("Treatment name", ""))[:255],
-            amount_paid=row["Amount Paid"],
-            invoice_number=str(row.get("Invoice Number", ""))[:255],
-            notes=str(row.get("Notes", "")),
-            refund=bool(row.get("Refund", False)),
-            refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
-            refunded_amount=row["Refunded amount"],
-            payment_mode=str(row.get("Payment Mode", ""))[:255],
-            card_number=str(row.get("Card Number", ""))[:255],
-            card_type=str(row.get("Card Type", ""))[:255],
-            cheque_number=str(row.get("Cheque Number", ""))[:255],
-            cheque_bank=str(row.get("Cheque Bank", ""))[:255],
-            netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
-            vendor_name=str(row.get("Vendor Name", ""))[:255],
-            vendor_fees_percent=row["Vendor Fees Percent"],
-            cancelled=bool(row.get("Cancelled", False))
-        )
-        payments.append(payment)
+        if  patient:            
+            payment = Payment(
+                date=row["Date"] if pd.notna(row["Date"]) else None,
+                doctor_id=user.id,
+                patient_id=patient.id,
+                patient_number=str(row.get("Patient Number", ""))[:255],
+                patient_name=str(row.get("Patient Name", ""))[:255],
+                receipt_number=str(row.get("Receipt Number", ""))[:255],
+                treatment_name=str(row.get("Treatment name", ""))[:255],
+                amount_paid=row["Amount Paid"],
+                invoice_number=str(row.get("Invoice Number", ""))[:255],
+                notes=str(row.get("Notes", "")),
+                refund=bool(row.get("Refund", False)),
+                refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
+                refunded_amount=row["Refunded amount"],
+                payment_mode=str(row.get("Payment Mode", ""))[:255],
+                card_number=str(row.get("Card Number", ""))[:255],
+                card_type=str(row.get("Card Type", ""))[:255],
+                cheque_number=str(row.get("Cheque Number", ""))[:255],
+                cheque_bank=str(row.get("Cheque Bank", ""))[:255],
+                netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
+                vendor_name=str(row.get("Vendor Name", ""))[:255],
+                vendor_fees_percent=row["Vendor Fees Percent"],
+                cancelled=bool(row.get("Cancelled", False))
+            )
+            payments.append(payment)
 
     try:
         if payments:
@@ -1115,45 +1198,42 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
             
-            if not patient:
-                print(f"Patient not found for number: {patient_number}")
-                continue
+            if patient:
+                # Parse discount type
+                discount_type = row.get("DiscountType", "").upper() if row.get("DiscountType") else None
 
-            # Parse discount type
-            discount_type = row.get("DiscountType", "").upper() if row.get("DiscountType") else None
+                # Helper function to safely parse numeric values
+                def safe_parse_number(value, convert_func, default=None, strip_quotes=True):
+                    if pd.isna(value):
+                        return default
+                    try:
+                        val_str = str(value).strip("'") if strip_quotes else str(value)
+                        return convert_func(val_str)
+                    except (ValueError, TypeError):
+                        return default
 
-            # Helper function to safely parse numeric values
-            def safe_parse_number(value, convert_func, default=None, strip_quotes=True):
-                if pd.isna(value):
-                    return default
-                try:
-                    val_str = str(value).strip("'") if strip_quotes else str(value)
-                    return convert_func(val_str)
-                except (ValueError, TypeError):
-                    return default
-
-            invoice = Invoice(
-                date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                doctor_id=user.id,
-                patient_id=patient.id,
-                patient_number=str(row.get("Patient Number", ""))[:255],
-                patient_name=str(row.get("Patient Name", ""))[:255],
-                doctor_name=str(row.get("Doctor Name", ""))[:255],
-                invoice_number=str(row.get("Invoice Number", ""))[:255],
-                treatment_name=str(row.get("Treatment Name", ""))[:255],
-                unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
-                quantity=safe_parse_number(row.get("Quantity"), int, 1),
-                discount=safe_parse_number(row.get("Discount"), float),
-                discount_type=discount_type,
-                type=str(row.get("Type", ""))[:255],
-                invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
-                tax_name=str(row.get("Tax name", ""))[:255],
-                tax_percent=safe_parse_number(row.get("Tax Percent"), float),
-                cancelled=bool(row.get("Cancelled", False)),
-                notes=str(row.get("Notes", "")),
-                description=str(row.get("Description", ""))
-            )
-            invoices.append(invoice)
+                invoice = Invoice(
+                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    doctor_id=user.id,
+                    patient_id=patient.id,
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    doctor_name=str(row.get("Doctor Name", ""))[:255],
+                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                    treatment_name=str(row.get("Treatment Name", ""))[:255],
+                    unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
+                    quantity=safe_parse_number(row.get("Quantity"), int, 1),
+                    discount=safe_parse_number(row.get("Discount"), float),
+                    discount_type=discount_type,
+                    type=str(row.get("Type", ""))[:255],
+                    invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
+                    tax_name=str(row.get("Tax name", ""))[:255],
+                    tax_percent=safe_parse_number(row.get("Tax Percent"), float),
+                    cancelled=bool(row.get("Cancelled", False)),
+                    notes=str(row.get("Notes", "")),
+                    description=str(row.get("Description", ""))
+                )
+                invoices.append(invoice)
             
         except Exception as e:
             print(f"Error processing invoice row: {str(e)}")
@@ -1209,7 +1289,7 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog data: {str(e)}"})
 
-async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session):
+async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str):
     try:
         print(f"Starting background processing for file: {file_path}")
         import_log = db.query(ImportLog).filter(ImportLog.id == import_log_id).first()
@@ -1231,7 +1311,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             try:
                 print("Extracting zip file...")
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
-                    zip_ref.extractall("uploads/imports")
+                    zip_ref.extractall(f"uploads/imports/{uuid}")
                 print("Zip file extracted successfully")
             except Exception as e:
                 print(f"Error extracting zip file: {str(e)}")
@@ -1245,7 +1325,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         print("Updated import status to PROCESSING")
 
         # Process each CSV file
-        csv_files = [f for f in os.listdir("uploads/imports") if f.endswith('.csv')]
+        csv_files = [f for f in os.listdir(f"uploads/imports/{uuid}") if f.endswith('.csv')]
         print(f"Found CSV files: {csv_files}")
         if not csv_files:
             print("No CSV files found")
@@ -1253,79 +1333,72 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             db.commit()
             return
 
-        # Define processing order
+        # Define processing order and file name patterns
         file_types = [
-            ["patients", "patient"],
-            ["appointments", "appointment"], 
-            ["treatments", "treatment"],
-            ["clinicalnotes", "clinical-notes", "clinical_notes"],
-            ["treatmentplans", "treatment-plans", "treatment_plans"],
-            ["expenses", "expense"],
-            ["payments", "payment"],
-            ["invoices", "invoice"],
-            ["procedurecatalog", "procedure-catalog", "procedure_catalog"]
+            {
+                "patterns": ["patients", "patient"],
+                "processor": process_patient_data
+            },
+            {
+                "patterns": ["appointments", "appointment"],
+                "processor": process_appointment_data
+            },
+            {
+                "patterns": ["treatment.csv"],
+                "processor": process_treatment_data
+            },
+            {
+                "patterns": ["clinicalnotes", "clinical-notes", "clinical_notes"],
+                "processor": process_clinical_note_data
+            },
+            {
+                "patterns": ["treatmentplans", "treatment-plans", "treatment_plans"],
+                "processor": process_treatment_plan_data
+            },
+            {
+                "patterns": ["expenses", "expense"],
+                "processor": process_expense_data
+            },
+            {
+                "patterns": ["payments", "payment"],
+                "processor": process_payment_data
+            },
+            {
+                "patterns": ["invoices", "invoice"],
+                "processor": process_invoice_data
+            },
+            {
+                "patterns": ["procedurecatalog", "procedure-catalog", "procedure_catalog"],
+                "processor": process_procedure_catalog_data
+            }
         ]
 
         # Process files in order
         for file_type in file_types:
-            print(f"\nProcessing file type: {file_type}")
+            print(f"\nProcessing file type: {file_type['patterns']}")
             for filename in csv_files:
-                normalized_filename = filename.lower().replace(" ", "").replace("-", "")
-                if not any(name in normalized_filename for name in file_type):
-                    continue
-
-                print(f"\nProcessing file: {filename}")
-                try:
-                    print(f"Reading CSV file: {filename}")
-                    df = pd.read_csv(f"uploads/imports/{filename}", keep_default_na=False)
-                    df = df.fillna("")
-                    print(f"Successfully read CSV with {len(df)} rows")
-                except Exception as e:
-                    print(f"Error reading CSV file {filename}: {str(e)}")
-                    continue
+                normalized_filename = filename.lower()
                 
-                try:
-                    with db.no_autoflush:
-                        if any(name in normalized_filename for name in ["patients.csv", "patient.csv"]):
-                            print("Processing patients data...")
-                            await process_patient_data(import_log, df, db, user)
-
-                        elif any(name in normalized_filename for name in ["appointments.csv", "appointment.csv"]):
-                            print("Processing appointments data...")
-                            await process_appointment_data(import_log, df, db, user)
-
-                        elif any(name in normalized_filename for name in ["treatments.csv", "treatment.csv"]):
-                            print("Processing treatments data...")
-                            await process_treatment_data(import_log, df, db)
-
-                        elif any(name in normalized_filename for name in ["clinicalnotes.csv", "clinical-notes.csv", "clinical_notes.csv"]):
-                            print("Processing clinical notes data...")
-                            await process_clinical_note_data(import_log, df, db)
-
-                        elif any(name in normalized_filename for name in ["treatmentplans.csv", "treatment-plans.csv", "treatment_plans.csv"]):
-                            print("Processing treatment plans data...")
-                            await process_treatment_plan_data(import_log, df, db)
-
-                        elif any(name in normalized_filename for name in ["expenses.csv", "expense.csv"]):
-                            print("Processing expenses data...")
-                            await process_expense_data(import_log, df, db, user)
-
-                        elif any(name in normalized_filename for name in ["payments.csv", "payment.csv"]):
-                            print("Processing payments data...")
-                            await process_payment_data(import_log, df, db, user)
-
-                        elif any(name in normalized_filename for name in ["invoices.csv", "invoice.csv"]):
-                            print("Processing invoices data...")
-                            await process_invoice_data(import_log, df, db, user)
-
-                        elif any(name in normalized_filename for name in ["procedurecatalog.csv", "procedure-catalog.csv", "procedure_catalog.csv"]):
-                            print("Processing procedure catalog data...")
-                            await process_procedure_catalog_data(import_log, df, db, user)
-
-                except Exception as e:
-                    print(f"Error processing file {filename}: {str(e)}")
-                    db.rollback()
-                    continue
+                # Check if current file matches any pattern for this type
+                if any(pattern in normalized_filename for pattern in file_type["patterns"]):
+                    print(f"\nProcessing file: {filename}")
+                    try:
+                        print(f"Reading CSV file: {filename}")
+                        df = pd.read_csv(f"uploads/imports/{uuid}/{filename}", keep_default_na=False)
+                        df = df.fillna("")
+                        print(f"Successfully read CSV with {len(df)} rows")
+                        
+                        # Call appropriate processor function
+                        processor = file_type["processor"]
+                        if processor in [process_patient_data, process_appointment_data, process_expense_data, 
+                                      process_payment_data, process_invoice_data, process_procedure_catalog_data]:
+                            await processor(import_log, df, db, user)
+                        else:
+                            await processor(import_log, df, db)
+                            
+                    except Exception as e:
+                        print(f"Error processing file {filename}: {str(e)}")
+                        continue
 
         # Update import log status to completed
         import_log.status = ImportStatus.COMPLETED
@@ -1341,6 +1414,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                 print("Updated import status to FAILED")
     finally:
         db.close()
+        shutil.rmtree(f"uploads/imports/{uuid}")
         print("Database connection closed")
 
 @user_router.post("/import-data",
@@ -1411,9 +1485,9 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
         file_ext = os.path.splitext(str(file.filename))[1].lower()
         if file_ext not in allowed_extensions:
             return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
-        
+        uuid = generate_uuid()
         # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join("uploads", "imports")
+        upload_dir = os.path.join("uploads", "imports", uuid)
         os.makedirs(upload_dir, exist_ok=True)
         
         # Create import log entry
@@ -1427,7 +1501,7 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
         
         # Read and save file
         file_contents = await file.read()
-        file_path = f"uploads/imports/{file.filename}"
+        file_path = f"uploads/imports/{uuid}/{file.filename}"
         with open(file_path, "wb") as f:
             f.write(file_contents)
             
@@ -1436,7 +1510,7 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             db.commit()
 
         # Start background processing
-        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db)
+        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid)
 
         return JSONResponse(status_code=200, content={
             "message": "Data import started",

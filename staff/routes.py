@@ -135,6 +135,9 @@ async def create_user(
         for permission_name in user_data.permissions:
             add_permission_to_user(new_user, permission_name, db)
 
+        current_user.created_doctors.append(new_user)
+        db.commit()
+        db.refresh(current_user)
         return JSONResponse(status_code=201, content={"message": "User created successfully"})
     
     except Exception as e:
@@ -560,9 +563,10 @@ async def delete_staff(
         if not staff_user:
             return JSONResponse(status_code=404, content={"error": "Staff user not found"})
         
+        current_user.created_doctors.remove(staff_user)
         db.delete(staff_user)
         db.commit()
-
+        db.refresh(current_user)
         return JSONResponse(status_code=200, content={"message": "Staff user deleted successfully"})
     
     except Exception as e:

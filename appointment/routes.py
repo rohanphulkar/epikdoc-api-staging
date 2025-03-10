@@ -65,7 +65,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         new_appointment = Appointment(
             patient_id=appointment.patient_id,
             doctor_id=user.id,
-            patient_number=patient.patient_number,
+            patient_number=patient.patient_number if patient.patient_number else "",
             patient_name=patient.name,
             doctor_name=user.name,
             notes=appointment.notes,
@@ -151,10 +151,9 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
                 },
                 "patient": {
                     "id": patient.id,
-                    "first_name": patient.first_name,
-                    "last_name": patient.last_name,
+                    "name": patient.name,
                     "email": patient.email,
-                    "phone": patient.phone,
+                    "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat(),
                     "gender": patient.gender.value
                 }
@@ -228,10 +227,9 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
                 },
                 "patient": {
                     "id": patient.id,
-                    "first_name": patient.first_name,
-                    "last_name": patient.last_name,
+                    "name": patient.name,
                     "email": patient.email,
-                    "phone": patient.phone,
+                    "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat(),
                     "gender": patient.gender.value
                 }
@@ -299,8 +297,7 @@ async def search_appointments(
         search_filters = []
         if patient_name:
             search_filters.append(or_(
-                Patient.first_name.ilike(f"%{patient_name}%"),
-                Patient.last_name.ilike(f"%{patient_name}%")
+                Patient.name.ilike(f"%{patient_name}%"),
             ))
         if patient_email:
             search_filters.append(Patient.email.ilike(f"%{patient_email}%"))
@@ -352,10 +349,9 @@ async def search_appointments(
                 },
                 "patient": {
                     "id": patient.id,
-                    "first_name": patient.first_name,
-                    "last_name": patient.last_name,
+                    "name": patient.name,
                     "email": patient.email,
-                    "phone": patient.phone,
+                    "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat(),
                     "gender": patient.gender.value
                 }
@@ -430,10 +426,9 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
                 },
                 "patient": {
                     "id": patient.id,
-                    "first_name": patient.first_name,
-                    "last_name": patient.last_name,
+                    "name": patient.name,
                     "email": patient.email,
-                    "phone": patient.phone,
+                    "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat(),
                     "gender": patient.gender.value
                 }

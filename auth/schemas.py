@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-
+from fastapi import UploadFile
 class UserSchema(BaseModel):
     email: str
     password: str
@@ -15,8 +15,7 @@ class UserProfileUpdateSchema(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     bio: Optional[str] = None
-
-
+    profile_pic: Optional[UploadFile] = None
 class UserResponse(BaseModel):
     id: str
     email: str

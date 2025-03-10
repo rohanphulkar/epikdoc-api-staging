@@ -56,9 +56,9 @@ class MedicineSchema(BaseModel):
         from_attributes = True
 
 class MedicalRecordCreateSchema(BaseModel):
-    complaint: str
-    diagnosis: str
-    vital_signs: str
+    complaint: Optional[str] = None
+    diagnosis: Optional[str] = None
+    vital_signs: Optional[str] = None
     treatments: Optional[List[MedicalRecordTreatmentSchema]] = []
     medicines: Optional[List[MedicineSchema]] = []
 

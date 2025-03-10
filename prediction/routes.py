@@ -182,11 +182,21 @@ async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
         xrays = db.query(XRay).filter(XRay.patient == patient.id).order_by(XRay.created_at.desc()).all()
-        xray_responses = [XRayResponse.model_validate(xray) for xray in xrays]
+        xray_data = []
+        for xray in xrays:
+            xray_data.append({
+                "id": xray.id,
+                "patient": xray.patient,
+                "original_image": update_image_url(xray.original_image, request),
+                "predicted_image": update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None,
+                "is_annotated": xray.is_annotated,
+                "created_at": xray.created_at.isoformat() if xray.created_at else None,
+                "updated_at": xray.updated_at.isoformat() if xray.updated_at else None
+            })
         
         return JSONResponse(status_code=200, content={
             "message": "X-Ray images retrieved successfully",
-            "xrays": [xray.model_dump() for xray in xray_responses]
+            "xrays": xray_data
         })
         
     except Exception as e:
@@ -347,7 +357,7 @@ def save_prediction_results(db, xray, prediction_str, output_path, class_percent
     """Save prediction results to database"""
     prediction = Prediction(
         xray_id=xray.id,
-        prediction=prediction_str
+        prediction=prediction_str,
     )
     db.add(prediction)
     db.commit()
@@ -368,10 +378,6 @@ def save_prediction_results(db, xray, prediction_str, output_path, class_percent
     xray.predicted_image = output_path
     xray.prediction_id = prediction.id
     xray.is_annotated = True
-    db.commit()
-
-    user.credits -= 1
-    user.used_credits += 1
     db.commit()
 
     return prediction
@@ -462,7 +468,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
         try:
             class_percentages = calculate_class_percentage(prediction_json)
             prediction = save_prediction_results(db, xray, prediction_str, output_path, class_percentages, hex_codes, user)
-            annotated_image_url = update_image_url(prediction.predicted_image, request) if prediction.predicted_image else None
+            annotated_image_url = update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None
             
             return JSONResponse(status_code=200, content={
                 "message": "Prediction created successfully",
@@ -538,13 +544,12 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
         prediction_details = {
             "id": prediction.id,
             "xray_id": prediction.xray_id,
-            "prediction": prediction.prediction,
             "notes": prediction.notes,
-            "original_image": xray.original_image,
-            "predicted_image": xray.predicted_image,
+            "original_image": update_image_url(str(xray.original_image), request),
+            "predicted_image": update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None,
             "legends": legend_details,
-            "created_at": prediction.created_at,
-            "updated_at": prediction.updated_at
+            "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
+            "updated_at": prediction.updated_at.isoformat() if prediction.updated_at else None
         }
         
         return JSONResponse(status_code=200, content={
@@ -575,7 +580,7 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
         500: {"description": "Internal server error"}
     }
 )
-async def add_notes(request: Request, prediction_id: str, notes: str, db: Session = Depends(get_db)):
+async def add_notes(request: Request, prediction_id: str, notes: AddNotesRequest, db: Session = Depends(get_db)):
     try:
         # Validate user
         decoded_token = verify_token(request)
@@ -583,6 +588,10 @@ async def add_notes(request: Request, prediction_id: str, notes: str, db: Sessio
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        # Validate notes
+        if not notes or not notes.notes:
+            return JSONResponse(status_code=400, content={"error": "Notes are required"})
 
         # Validate prediction
         if not prediction_id:
@@ -590,9 +599,10 @@ async def add_notes(request: Request, prediction_id: str, notes: str, db: Sessio
         prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         if not prediction:
             return JSONResponse(status_code=400, content={"error": "Prediction not found"})
+        
 
         # Update notes
-        prediction.notes = notes
+        prediction.notes = notes.notes
         db.commit()
 
         return JSONResponse(status_code=200, content={"message": "Notes added successfully"})
@@ -635,6 +645,10 @@ async def delete_prediction(request: Request, prediction_id: str, db: Session = 
         prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         if not prediction:
             return JSONResponse(status_code=400, content={"error": "Prediction not found"})
+        
+        legends = db.query(Legend).filter(Legend.prediction_id == prediction_id).all()
+        for legend in legends:
+            db.delete(legend)
         
         db.delete(prediction)
         db.commit()
@@ -688,11 +702,9 @@ async def reset_prediction(request: Request, prediction_id: str, db: Session = D
             return JSONResponse(status_code=400, content={"error": "X-ray image file not found"})
 
         # Delete old prediction and legends
-        old_legends = db.query(Legend).filter(Legend.prediction_id == prediction_id).all()
+        old_legends = db.query(Legend).filter(Legend.prediction_id == prediction.id).all()
         for legend in old_legends:
             db.delete(legend)
-        db.delete(prediction)
-        db.commit()
 
         # Run prediction model
         try:
@@ -704,7 +716,10 @@ async def reset_prediction(request: Request, prediction_id: str, db: Session = D
 
         # Generate annotated image
         try:
-            image = cv2.imread(str(xray.original_image))
+            image_path = str(xray.original_image)
+            if not os.path.exists(image_path):
+                return JSONResponse(status_code=400, content={"error": "X-ray image file not found"})
+            image = cv2.imread(image_path)
             if image is None:
                 return JSONResponse(status_code=400, content={"error": "Failed to load image"})
 
@@ -738,12 +753,21 @@ async def reset_prediction(request: Request, prediction_id: str, db: Session = D
         # Save results
         try:
             class_percentages = calculate_class_percentage(prediction_json)
-            new_prediction = save_prediction_results(db, xray, prediction_str, output_path, class_percentages, hex_codes, user)
-            annotated_image_url = update_image_url(new_prediction.predicted_image, request) if new_prediction.predicted_image else None
+            for legend in class_percentages:
+                legend_obj = Legend(
+                    prediction_id=prediction.id,
+                    name=legend,
+                    percentage=class_percentages[legend],
+                    color_hex=hex_codes[legend]
+                )
+                db.add(legend_obj)
+            db.commit()
+            xray.predicted_image = output_path
+            db.commit()
+            annotated_image_url = update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None
             
             return JSONResponse(status_code=200, content={
                 "message": "Prediction reset successfully",
-                "prediction_id": new_prediction.id,
                 "annotated_image": annotated_image_url
             })
             
