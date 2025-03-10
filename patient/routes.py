@@ -396,7 +396,7 @@ async def get_patient_by_id(
 async def search_patients(
     request: Request,
     search_query: Optional[str] = None,
-    gender: Optional[Gender] = None,
+    gender: Optional[str] = None,
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
     db: Session = Depends(get_db)
@@ -422,7 +422,14 @@ async def search_patients(
             
         # Add gender filter if provided
         if gender:
-            query = query.filter(Patient.gender == gender)
+            if gender == "male":
+                query = query.filter(Patient.gender == Gender.MALE)
+            elif gender == "female":
+                query = query.filter(Patient.gender == Gender.FEMALE)
+            elif gender == "other":
+                query = query.filter(Patient.gender == Gender.OTHER)
+            elif gender == "all":
+                pass
             
         # Add age filter if provided
         if min_age:

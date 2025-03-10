@@ -605,7 +605,7 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
             setattr(db_user, 'phone', phone)
         if bio:
             setattr(db_user, 'bio', bio)
-            
+        
         if image:
             # Read file contents
             file_contents = await image.read()
@@ -630,6 +630,8 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+    
 @user_router.delete("/delete-profile",
     response_model=dict,
     status_code=200,
