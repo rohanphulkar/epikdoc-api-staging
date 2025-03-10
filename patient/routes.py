@@ -265,7 +265,7 @@ async def get_patient_by_id(
         for treatment in patient.treatments:
             treatment_data = {
                 "id": treatment.id,
-                "treatment_date": treatment.treatment_date,
+                "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
                 "treatment_name": treatment.treatment_name,
                 "tooth_number": treatment.tooth_number,
                 "treatment_notes": treatment.treatment_notes,
