@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 class ExpenseResponse(BaseModel):
     id: str
@@ -36,6 +36,36 @@ class ExpenseUpdate(BaseModel):
     class Config:
         from_attributes = True
 
+class PaymentMethodResponse(BaseModel):
+    id: str
+    payment_id: str
+    payment_mode: Optional[str]
+    card_number: Optional[str]
+    card_type: Optional[str]
+    cheque_number: Optional[str]
+    cheque_bank: Optional[str]
+    netbanking_bank_name: Optional[str]
+    vendor_name: Optional[str]
+    vendor_fees_percent: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class PaymentMethodCreate(BaseModel):
+    payment_mode: Optional[str] = None
+    card_number: Optional[str] = None
+    card_type: Optional[str] = None
+    cheque_number: Optional[str] = None
+    cheque_bank: Optional[str] = None
+    netbanking_bank_name: Optional[str] = None
+    vendor_name: Optional[str] = None
+    vendor_fees_percent: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
 class PaymentResponse(BaseModel):
     id: str
     date: Optional[datetime]
@@ -51,24 +81,16 @@ class PaymentResponse(BaseModel):
     refund: Optional[bool]
     refund_receipt_number: Optional[str]
     refunded_amount: Optional[float]
-    payment_mode: Optional[str]
-    card_number: Optional[str]
-    card_type: Optional[str]
-    cheque_number: Optional[str]
-    cheque_bank: Optional[str]
-    netbanking_bank_name: Optional[str]
-    vendor_name: Optional[str]
-    vendor_fees_percent: Optional[float]
     cancelled: Optional[bool]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    payment_methods: List[PaymentMethodResponse]
 
     class Config:
         from_attributes = True
 
 class PaymentCreate(BaseModel):
     date: Optional[datetime] = None
-    patient_id: str
     receipt_number: Optional[str] = None
     treatment_name: Optional[str] = None
     amount_paid: Optional[float] = None
@@ -77,15 +99,8 @@ class PaymentCreate(BaseModel):
     refund: Optional[bool] = False
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
-    payment_mode: Optional[str] = None
-    card_number: Optional[str] = None
-    card_type: Optional[str] = None
-    cheque_number: Optional[str] = None
-    cheque_bank: Optional[str] = None
-    netbanking_bank_name: Optional[str] = None
-    vendor_name: Optional[str] = None
-    vendor_fees_percent: Optional[float] = None
     cancelled: Optional[bool] = False
+    payment_methods: List[PaymentMethodCreate]
 
     class Config:
         from_attributes = True
@@ -100,15 +115,40 @@ class PaymentUpdate(BaseModel):
     refund: Optional[bool] = None
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
-    payment_mode: Optional[str] = None
-    card_number: Optional[str] = None
-    card_type: Optional[str] = None
-    cheque_number: Optional[str] = None
-    cheque_bank: Optional[str] = None
-    netbanking_bank_name: Optional[str] = None
-    vendor_name: Optional[str] = None
-    vendor_fees_percent: Optional[float] = None
     cancelled: Optional[bool] = None
+    payment_methods: Optional[List[PaymentMethodCreate]] = None
+
+    class Config:
+        from_attributes = True
+
+class InvoiceItemResponse(BaseModel):
+    id: str
+    invoice_id: str
+    treatment_name: Optional[str]
+    unit_cost: Optional[float]
+    quantity: Optional[int]
+    discount: Optional[float]
+    discount_type: Optional[str]
+    type: Optional[str]
+    invoice_level_tax_discount: Optional[float]
+    tax_name: Optional[str]
+    tax_percent: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class InvoiceItemCreate(BaseModel):
+    treatment_name: Optional[str] = None
+    unit_cost: Optional[float] = None
+    quantity: Optional[int] = None
+    discount: Optional[float] = None
+    discount_type: Optional[str] = None
+    type: Optional[str] = None
+    invoice_level_tax_discount: Optional[float] = None
+    tax_name: Optional[str] = None
+    tax_percent: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -122,21 +162,13 @@ class InvoiceResponse(BaseModel):
     patient_name: Optional[str]
     doctor_name: Optional[str]
     invoice_number: Optional[str]
-    treatment_name: Optional[str]
-    unit_cost: Optional[float]
-    quantity: Optional[int]
-    discount: Optional[float]
-    discount_type: Optional[str]
-    type: Optional[str]
-    invoice_level_tax_discount: Optional[float]
-    tax_name: Optional[str]
-    tax_percent: Optional[float]
     cancelled: Optional[bool]
     notes: Optional[str]
     description: Optional[str]
     file_path: Optional[str]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    invoice_items: List[InvoiceItemResponse]
 
     class Config:
         from_attributes = True
@@ -145,18 +177,10 @@ class InvoiceCreate(BaseModel):
     date: Optional[datetime] = None
     patient_id: str
     invoice_number: Optional[str] = None
-    treatment_name: Optional[str] = None
-    unit_cost: Optional[float] = None
-    quantity: Optional[int] = None
-    discount: Optional[float] = None
-    discount_type: Optional[str] = None
-    type: Optional[str] = None
-    invoice_level_tax_discount: Optional[float] = None
-    tax_name: Optional[str] = None
-    tax_percent: Optional[float] = None
     cancelled: Optional[bool] = False
     notes: Optional[str] = None
     description: Optional[str] = None
+    invoice_items: List[InvoiceItemCreate]
 
     class Config:
         from_attributes = True
@@ -164,18 +188,10 @@ class InvoiceCreate(BaseModel):
 class InvoiceUpdate(BaseModel):
     date: Optional[datetime] = None
     invoice_number: Optional[str] = None
-    treatment_name: Optional[str] = None
-    unit_cost: Optional[float] = None
-    quantity: Optional[int] = None
-    discount: Optional[float] = None
-    discount_type: Optional[str] = None
-    type: Optional[str] = None
-    invoice_level_tax_discount: Optional[float] = None
-    tax_name: Optional[str] = None
-    tax_percent: Optional[float] = None
     cancelled: Optional[bool] = None
     notes: Optional[str] = None
     description: Optional[str] = None
+    invoice_items: Optional[List[InvoiceItemCreate]] = None
 
     class Config:
         from_attributes = True

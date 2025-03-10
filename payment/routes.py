@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import ExpenseCreate, ExpenseUpdate, ExpenseResponse, PaymentCreate, PaymentUpdate, PaymentResponse, InvoiceCreate, InvoiceUpdate, InvoiceResponse
-from .models import Expense, Payment, Invoice
+from .models import Expense, Payment, Invoice, PaymentMethod, InvoiceItem
 from db.db import get_db
 from auth.models import User
 from patient.models import Patient
@@ -13,6 +13,10 @@ import uuid
 import os
 from datetime import datetime
 payment_router = APIRouter()
+
+def update_url(url: str, request: Request):
+    base_url = str(request.base_url).rstrip('/')
+    return f"{base_url}/{url}"
 
 @payment_router.post("/create-expense", 
     response_model=ExpenseResponse,
@@ -241,7 +245,7 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
-@payment_router.post("/create-payment",
+@payment_router.post("/create-payment/{patient_id}",
     response_model=PaymentResponse,
     status_code=201,
     summary="Create new payment",
@@ -251,7 +255,18 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     Required parameters:
     - date: Date of payment
     - patient_id: ID of the patient
-    - amount: Amount paid
+    - receipt_number: Receipt number
+    - treatment_name: Name of treatment
+    - amount_paid: Amount paid
+    - payment_methods: List of payment methods used
+    
+    Optional parameters:
+    - invoice_number: Invoice number
+    - notes: Additional notes
+    - refund: Whether this is a refund payment
+    - refund_receipt_number: Receipt number for refund
+    - refunded_amount: Amount refunded
+    - cancelled: Whether payment is cancelled
 
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -263,7 +278,7 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
         500: {"description": "Internal server error"}
     }
 )
-async def create_payment(request: Request, payment: PaymentCreate, db: Session = Depends(get_db)):
+async def create_payment(request: Request, patient_id: str, payment: PaymentCreate, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -272,21 +287,38 @@ async def create_payment(request: Request, payment: PaymentCreate, db: Session =
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+            
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=404, content={"message": "Patient not found"})
+            
         payment_data = payment.model_dump()
+        payment_methods = payment_data.pop("payment_methods")
+        
         payment_data["doctor_id"] = user.id
+        payment_data["patient_id"] = patient_id
+        payment_data["patient_name"] = patient.name
+        payment_data["patient_number"] = patient.patient_number
 
         new_payment = Payment(**payment_data)
         db.add(new_payment)
+        db.flush()
+        
+        for method in payment_methods:
+            method["payment_id"] = new_payment.id
+            payment_method = PaymentMethod(**method)
+            db.add(payment_method)
+            
         db.commit()
         db.refresh(new_payment)
-    
+
         return JSONResponse(status_code=201, content={"message": "Payment created successfully"})
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.get("/get-payments",
-    response_model=list[PaymentResponse],
+    response_model=dict,
     status_code=200,
     summary="Get all payments",
     description="""
@@ -351,17 +383,23 @@ async def get_payments(
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
-                "payment_mode": payment.payment_mode,
-                "card_number": payment.card_number,
-                "card_type": payment.card_type,
-                "cheque_number": payment.cheque_number,
-                "cheque_bank": payment.cheque_bank,
-                "netbanking_bank_name": payment.netbanking_bank_name,
-                "vendor_name": payment.vendor_name,
-                "vendor_fees_percent": payment.vendor_fees_percent,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                "payment_methods": [{
+                    "id": pm.id,
+                    "payment_id": pm.payment_id,
+                    "payment_mode": pm.payment_mode,
+                    "card_number": pm.card_number,
+                    "card_type": pm.card_type,
+                    "cheque_number": pm.cheque_number,
+                    "cheque_bank": pm.cheque_bank,
+                    "netbanking_bank_name": pm.netbanking_bank_name,
+                    "vendor_name": pm.vendor_name,
+                    "vendor_fees_percent": pm.vendor_fees_percent,
+                    "created_at": pm.created_at.isoformat(),
+                    "updated_at": pm.updated_at.isoformat()
+                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -449,17 +487,23 @@ async def get_payments_by_patient_id(
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
-                "payment_mode": payment.payment_mode,
-                "card_number": payment.card_number,
-                "card_type": payment.card_type,
-                "cheque_number": payment.cheque_number,
-                "cheque_bank": payment.cheque_bank,
-                "netbanking_bank_name": payment.netbanking_bank_name,
-                "vendor_name": payment.vendor_name,
-                "vendor_fees_percent": payment.vendor_fees_percent,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                "payment_methods": [{
+                    "id": pm.id,
+                    "payment_id": pm.payment_id,
+                    "payment_mode": pm.payment_mode,
+                    "card_number": pm.card_number,
+                    "card_type": pm.card_type,
+                    "cheque_number": pm.cheque_number,
+                    "cheque_bank": pm.cheque_bank,
+                    "netbanking_bank_name": pm.netbanking_bank_name,
+                    "vendor_name": pm.vendor_name,
+                    "vendor_fees_percent": pm.vendor_fees_percent,
+                    "created_at": pm.created_at.isoformat(),
+                    "updated_at": pm.updated_at.isoformat()
+                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -525,20 +569,26 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
             "refund": payment.refund,
             "refund_receipt_number": payment.refund_receipt_number,
             "refunded_amount": payment.refunded_amount,
-            "payment_mode": payment.payment_mode,
-            "card_number": payment.card_number,
-            "card_type": payment.card_type,
-            "cheque_number": payment.cheque_number,
-            "cheque_bank": payment.cheque_bank,
-            "netbanking_bank_name": payment.netbanking_bank_name,
-            "vendor_name": payment.vendor_name,
-            "vendor_fees_percent": payment.vendor_fees_percent,
             "cancelled": payment.cancelled,
             "created_at": payment.created_at.isoformat() if payment.created_at else None,
-            "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+            "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+            "payment_methods": [{
+                "id": pm.id,
+                "payment_id": pm.payment_id,
+                "payment_mode": pm.payment_mode,
+                "card_number": pm.card_number,
+                "card_type": pm.card_type,
+                "cheque_number": pm.cheque_number,
+                "cheque_bank": pm.cheque_bank,
+                "netbanking_bank_name": pm.netbanking_bank_name,
+                "vendor_name": pm.vendor_name,
+                "vendor_fees_percent": pm.vendor_fees_percent,
+                "created_at": pm.created_at.isoformat(),
+                "updated_at": pm.updated_at.isoformat()
+            } for pm in payment.payment_methods]
         }
         
-        return JSONResponse(status_code=200, content={"payment": payment_dict})
+        return JSONResponse(status_code=200, content=payment_dict)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
@@ -643,17 +693,23 @@ async def search_payments(
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
-                "payment_mode": payment.payment_mode,
-                "card_number": payment.card_number,
-                "card_type": payment.card_type,
-                "cheque_number": payment.cheque_number,
-                "cheque_bank": payment.cheque_bank,
-                "netbanking_bank_name": payment.netbanking_bank_name,
-                "vendor_name": payment.vendor_name,
-                "vendor_fees_percent": payment.vendor_fees_percent,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                "payment_methods": [{
+                    "id": pm.id,
+                    "payment_id": pm.payment_id,
+                    "payment_mode": pm.payment_mode,
+                    "card_number": pm.card_number,
+                    "card_type": pm.card_type,
+                    "cheque_number": pm.cheque_number,
+                    "cheque_bank": pm.cheque_bank,
+                    "netbanking_bank_name": pm.netbanking_bank_name,
+                    "vendor_name": pm.vendor_name,
+                    "vendor_fees_percent": pm.vendor_fees_percent,
+                    "created_at": pm.created_at.isoformat(),
+                    "updated_at": pm.updated_at.isoformat()
+                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -681,8 +737,16 @@ async def search_payments(
     
     Optional parameters:
     - date: Date of payment
-    - patient_id: ID of the patient
-    - amount: Amount paid
+    - receipt_number: Receipt number
+    - treatment_name: Name of treatment
+    - amount_paid: Amount paid
+    - invoice_number: Invoice number
+    - notes: Additional notes
+    - refund: Whether this is a refund payment
+    - refund_receipt_number: Receipt number for refund
+    - refunded_amount: Amount refunded
+    - cancelled: Whether payment is cancelled
+    - payment_methods: List of payment methods used
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -704,21 +768,32 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        payment_data = payment.model_dump()
-        payment_data["doctor_id"] = user.id
-
         existing_payment = db.query(Payment).filter(Payment.id == payment_id).first()
         if not existing_payment:
             return JSONResponse(status_code=404, content={"message": "Payment not found"})
 
+        payment_data = payment.model_dump(exclude_unset=True)
+        payment_methods = payment_data.pop("payment_methods", None)
+
         for key, value in payment_data.items():
             setattr(existing_payment, key, value)
+
+        if payment_methods:
+            # Delete existing payment methods
+            db.query(PaymentMethod).filter(PaymentMethod.payment_id == payment_id).delete()
+            
+            # Add new payment methods
+            for method in payment_methods:
+                method["payment_id"] = payment_id
+                payment_method = PaymentMethod(**method)
+                db.add(payment_method)
 
         db.commit()
         db.refresh(existing_payment)
 
         return JSONResponse(status_code=200, content={"message": "Payment updated successfully"})
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.delete("/delete-payment/{payment_id}",
@@ -737,6 +812,7 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
     responses={
         200: {"description": "Payment deleted successfully"},
         401: {"description": "Unauthorized - Invalid token"},
+        404: {"description": "Payment not found"},
         500: {"description": "Internal server error"}
     }
 )
@@ -749,12 +825,22 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+
+        # First check if payment exists
+        payment = db.query(Payment).filter(Payment.id == payment_id).first()
+        if not payment:
+            return JSONResponse(status_code=404, content={"message": "Payment not found"})
+
+        # Delete associated payment methods first due to foreign key constraint
+        db.query(PaymentMethod).filter(PaymentMethod.payment_id == payment_id).delete()
         
+        # Then delete the payment
         db.query(Payment).filter(Payment.id == payment_id).delete()
         db.commit()
 
         return JSONResponse(status_code=200, content={"message": "Payment deleted successfully"})
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @payment_router.post("/create-invoice",
@@ -766,19 +852,11 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
     
     Required fields:
     - patient_id: ID of the patient
+    - invoice_items: List of invoice items with treatment details
     
     Optional fields:
     - date: Invoice date (defaults to current date)
     - invoice_number: Custom invoice number
-    - treatment_name: Name of the treatment/procedure
-    - unit_cost: Cost per unit
-    - quantity: Number of units
-    - discount: Discount amount or percentage (default: 0)
-    - discount_type: discount type (default: '')
-    - type: Invoice type
-    - invoice_level_tax_discount: Tax discount percentage
-    - tax_name: Name of tax
-    - tax_percent: Tax percentage
     - notes: Additional notes
     - description: Detailed description
     
@@ -815,18 +893,9 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
             "patient_number": patient.patient_number,
             "doctor_name": user.name,
             "invoice_number": invoice.invoice_number or f"INV-{current_time.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}",
-            "treatment_name": invoice.treatment_name or "General Consultation",
-            "unit_cost": invoice.unit_cost or 0.0,
-            "quantity": invoice.quantity or 1,
-            "discount": invoice.discount or 0.0,
-            "discount_type": invoice.discount_type or "",
-            "type": invoice.type,
-            "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
-            "tax_name": invoice.tax_name,
-            "tax_percent": invoice.tax_percent,
             "notes": invoice.notes,
             "description": invoice.description,
-            "cancelled": False,
+            "cancelled": invoice.cancelled,
             "created_at": current_time,
             "updated_at": current_time
         }
@@ -837,39 +906,54 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         db.commit()
         db.refresh(new_invoice)
 
+        # Create invoice items and store them for PDF generation
+        invoice_items_for_pdf = []
+        for item in invoice.invoice_items:
+            invoice_item_data = {
+                "id": str(uuid.uuid4()),
+                "invoice_id": new_invoice.id,
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "discount": item.discount,
+                "discount_type": item.discount_type,
+                "type": item.type,
+                "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                "tax_name": item.tax_name,
+                "tax_percent": item.tax_percent,
+                "created_at": current_time,
+                "updated_at": current_time
+            }
+            
+            invoice_item = InvoiceItem(**invoice_item_data)
+            db.add(invoice_item)
+            invoice_items_for_pdf.append(invoice_item_data)
+        
+        db.commit()
+
+        invoice_data["doctor_phone"] = user.phone
+        invoice_data["doctor_email"] = user.email
+        invoice_data["patient_phone"] = patient.mobile_number
+        invoice_data["patient_email"] = patient.email
+        
         # Generate PDF invoice
         try:
             pdf_path = create_professional_invoice(
-                id=invoice_data["id"],
-                date=invoice_data["date"],
-                patient_id=invoice_data["patient_id"],
-                doctor_id=invoice_data["doctor_id"],
-                patient_number=invoice_data["patient_number"],
-                patient_name=invoice_data["patient_name"],
-                doctor_name=invoice_data["doctor_name"],
-                invoice_number=invoice_data["invoice_number"],
-                treatment_name=invoice_data["treatment_name"],
-                unit_cost=invoice_data["unit_cost"],
-                quantity=invoice_data["quantity"],
-                discount=invoice_data["discount"],
-                discount_type=invoice_data["discount_type"],
-                type=invoice_data["type"],
-                invoice_level_tax_discount=invoice_data["invoice_level_tax_discount"],
-                tax_name=invoice_data["tax_name"],
-                tax_percent=invoice_data["tax_percent"],
-                notes=invoice_data["notes"],
-                description=invoice_data["description"]
+                invoice_data=invoice_data,
+                invoice_items=invoice_items_for_pdf
             )
             
             # Update invoice with PDF path
-            new_invoice.file_path = pdf_path
+            new_invoice.file_path = update_url(pdf_path, request)
             db.commit()
             
         except Exception as e:
             # Log PDF generation error but don't fail the request
             print(f"Failed to generate PDF invoice: {str(e)}")
         
-        return JSONResponse(status_code=201, content={"message": "Invoice created successfully"})
+        # Return full invoice response with items
+        db.refresh(new_invoice)
+        return new_invoice
         
     except Exception as e:
         db.rollback()
@@ -931,29 +1015,38 @@ async def get_invoices(
         for invoice in invoices:
             invoice_dict = {
                 "id": invoice.id,
-                "date": invoice.date,
+                "date": invoice.date.isoformat() if invoice.date else None,
                 "patient_id": invoice.patient_id,
                 "doctor_id": invoice.doctor_id,
                 "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
                 "invoice_number": invoice.invoice_number,
-                "treatment_name": invoice.treatment_name,
-                "unit_cost": invoice.unit_cost,
-                "quantity": invoice.quantity,
-                "discount": invoice.discount,
-                "discount_type": invoice.discount_type if invoice.discount_type else None,
-                "type": invoice.type,
-                "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
-                "tax_name": invoice.tax_name,
-                "tax_percent": invoice.tax_percent,
                 "cancelled": invoice.cancelled,
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
-                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+                "items": []
             }
+            
+            # Get invoice items
+            items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            for item in items:
+                item_dict = {
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent
+                }
+                invoice_dict["items"].append(item_dict)
+                
             invoice_list.append(invoice_dict)
             
         return JSONResponse(status_code=200, content=invoice_list)
@@ -995,29 +1088,38 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
         for invoice in invoices:
             invoice_dict = {
                 "id": invoice.id,
-                "date": invoice.date,
+                "date": invoice.date.isoformat() if invoice.date else None,
                 "patient_id": invoice.patient_id,
                 "doctor_id": invoice.doctor_id, 
                 "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
                 "invoice_number": invoice.invoice_number,
-                "treatment_name": invoice.treatment_name,
-                "unit_cost": invoice.unit_cost,
-                "quantity": invoice.quantity,
-                "discount": invoice.discount,
-                "discount_type": invoice.discount_type if invoice.discount_type else None,
-                "type": invoice.type,
-                "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
-                "tax_name": invoice.tax_name,
-                "tax_percent": invoice.tax_percent,
                 "cancelled": invoice.cancelled,
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
-                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+                "items": []
             }
+            
+            # Get invoice items
+            items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            for item in items:
+                item_dict = {
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent
+                }
+                invoice_dict["items"].append(item_dict)
+                
             invoice_list.append(invoice_dict)
             
         return JSONResponse(status_code=200, content=invoice_list)
@@ -1060,29 +1162,37 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
         
         invoice_dict = {
             "id": invoice.id,
-            "date": invoice.date,
+            "date": invoice.date.isoformat() if invoice.date else None,
             "patient_id": invoice.patient_id,
             "doctor_id": invoice.doctor_id,
             "patient_number": invoice.patient_number,
             "patient_name": invoice.patient_name,
             "doctor_name": invoice.doctor_name,
             "invoice_number": invoice.invoice_number,
-            "treatment_name": invoice.treatment_name,
-            "unit_cost": invoice.unit_cost,
-            "quantity": invoice.quantity,
-            "discount": invoice.discount,
-            "discount_type": invoice.discount_type if invoice.discount_type else None,
-            "type": invoice.type,
-            "invoice_level_tax_discount": invoice.invoice_level_tax_discount,
-            "tax_name": invoice.tax_name,
-            "tax_percent": invoice.tax_percent,
             "cancelled": invoice.cancelled,
             "notes": invoice.notes,
             "description": invoice.description,
-            "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+            "file_path": f"{invoice.file_path}" if invoice.file_path else None,
             "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
-            "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
+            "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+            "items": []
         }
+        
+        # Get invoice items
+        items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).all()
+        for item in items:
+            item_dict = {
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "discount": item.discount,
+                "discount_type": item.discount_type,
+                "type": item.type,
+                "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                "tax_name": item.tax_name,
+                "tax_percent": item.tax_percent
+            }
+            invoice_dict["items"].append(item_dict)
         
         return JSONResponse(status_code=200, content=invoice_dict)
     except Exception as e:
@@ -1101,17 +1211,9 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
     Optional parameters:
     - date: Invoice date
     - invoice_number: Custom invoice number
-    - treatment_name: Name of the treatment/procedure
-    - unit_cost: Cost per unit
-    - quantity: Number of units
-    - discount: Discount amount or percentage
-    - discount_type: "fixed" or "percentage"
-    - type: Invoice type
-    - invoice_level_tax_discount: Tax discount percentage
-    - tax_name: Name of tax
-    - tax_percent: Tax percentage
     - notes: Additional notes
     - description: Detailed description
+    - invoice_items: List of invoice items with treatment details
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -1137,47 +1239,110 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
         if not existing_invoice:
             return JSONResponse(status_code=404, content={"message": "Invoice not found"})
         
-        for field, value in invoice.model_dump().items():
-            setattr(existing_invoice, field, value)
+        # Update invoice fields
+        for field, value in invoice.model_dump(exclude={'invoice_items'}).items():
+            if value is not None:
+                setattr(existing_invoice, field, value)
         
+        # Update invoice items if provided
+        if invoice.invoice_items:
+            # Delete existing items
+            db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete()
+            
+            # Create new items
+            for item in invoice.invoice_items:
+                invoice_item = InvoiceItem(
+                    id=str(uuid.uuid4()),
+                    invoice_id=invoice_id,
+                    treatment_name=item.treatment_name,
+                    unit_cost=item.unit_cost,
+                    quantity=item.quantity,
+                    discount=item.discount,
+                    discount_type=item.discount_type,
+                    type=item.type,
+                    invoice_level_tax_discount=item.invoice_level_tax_discount,
+                    tax_name=item.tax_name,
+                    tax_percent=item.tax_percent,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                db.add(invoice_item)
+
         db.commit()
         db.refresh(existing_invoice)
 
+        # Get all invoice items
+        items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).all()
+        if not items:
+            # Create default item if none exist
+            invoice_item = InvoiceItem(
+                id=str(uuid.uuid4()),
+                invoice_id=invoice_id,
+                treatment_name="General Consultation",
+                unit_cost=0.0,
+                quantity=1,
+                discount=0.0,
+                discount_type="",
+                type=None,
+                invoice_level_tax_discount=None,
+                tax_name=None,
+                tax_percent=None,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            db.add(invoice_item)
+            db.commit()
+            items = [invoice_item]
+
         # Generate PDF invoice
         try:
+            invoice_data = {
+                "id": existing_invoice.id,
+                "date": existing_invoice.date or datetime.now(),
+                "patient_id": existing_invoice.patient_id,
+                "doctor_id": existing_invoice.doctor_id,
+                "patient_number": existing_invoice.patient_number,
+                "patient_name": existing_invoice.patient_name,
+                "doctor_name": existing_invoice.doctor_name,
+                "invoice_number": existing_invoice.invoice_number,
+                "notes": existing_invoice.notes,
+                "description": existing_invoice.description,
+                "doctor_phone": user.phone,
+                "doctor_email": user.email
+            }
+
+            invoice_items = [{
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "discount": item.discount,
+                "discount_type": item.discount_type or "fixed",
+                "type": item.type,
+                "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                "tax_name": item.tax_name,
+                "tax_percent": item.tax_percent
+            } for item in items]
+
             pdf_path = create_professional_invoice(
-                id=existing_invoice.id or "",
-                date=existing_invoice.date or datetime.now(),
-                patient_id=existing_invoice.patient_id,
-                doctor_id=existing_invoice.doctor_id or "",
-                patient_number=existing_invoice.patient_number or "",
-                patient_name=existing_invoice.patient_name or "",
-                doctor_name=existing_invoice.doctor_name or "",
-                invoice_number=existing_invoice.invoice_number or "",
-                treatment_name=existing_invoice.treatment_name or "",
-                unit_cost=existing_invoice.unit_cost or 0.0,
-                quantity=existing_invoice.quantity or 0,
-                discount=existing_invoice.discount or 0.0,
-                discount_type=existing_invoice.discount_type if existing_invoice.discount_type else "fixed",
-                type=existing_invoice.type,
-                invoice_level_tax_discount=existing_invoice.invoice_level_tax_discount,
-                tax_name=existing_invoice.tax_name,
-                tax_percent=existing_invoice.tax_percent,
-                notes=existing_invoice.notes,
-                description=existing_invoice.description
+                invoice_data=invoice_data,
+                invoice_items=invoice_items
             )
 
-            # remove old pdf file
+            # Remove old pdf file
             if existing_invoice.file_path:
-                os.remove(existing_invoice.file_path)
-            
-            existing_invoice.file_path = pdf_path
+                try:
+                    os.remove(existing_invoice.file_path)
+                except OSError:
+                    pass
+            existing_invoice.file_path = update_url(pdf_path, request)
             db.commit()
 
         except Exception as e:
             # Log PDF generation error but don't fail the request
             print(f"Failed to generate PDF invoice: {str(e)}")
-        return JSONResponse(status_code=200, content={"message": "Invoice updated successfully"})
+
+        return existing_invoice
+
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"message": f"Failed to update invoice: {str(e)}"})
@@ -1211,7 +1376,26 @@ async def delete_invoice(request: Request, invoice_id: str, db: Session = Depend
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+
+        # First check if invoice exists
+        invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if not invoice:
+            return JSONResponse(status_code=404, content={"message": "Invoice not found"})
+            
+        # Delete invoice items first due to foreign key constraint
+        db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete()
         
+        # Delete PDF file if it exists
+        if invoice.file_path:
+            try:
+                file_path = invoice.file_path.replace(str(request.base_url).rstrip('/'), '')
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError:
+                # Log error but continue with deletion
+                print(f"Failed to delete PDF file: {invoice.file_path}")
+                
+        # Delete the invoice
         db.query(Invoice).filter(Invoice.id == invoice_id).delete()
         db.commit()
         

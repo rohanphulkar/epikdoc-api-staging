@@ -1126,7 +1126,6 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     # Safely convert numeric columns
     df["Amount Paid"] = df["Amount Paid"].apply(safe_float_convert)
     df["Refunded amount"] = df["Refunded amount"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else None)
-    df["Vendor Fees Percent"] = df["Vendor Fees Percent"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else None)
     df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
     df["Patient Number"] = df["Patient Number"].astype(str)
     
@@ -1139,42 +1138,48 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
     
-    payments = []
-    for _, row in df.iterrows():
-        patient_number = row["Patient Number"]
-        patient = patients.get(patient_number)
-        
-        if  patient:            
-            payment = Payment(
-                date=row["Date"] if pd.notna(row["Date"]) else None,
-                doctor_id=user.id,
-                patient_id=patient.id,
-                patient_number=str(row.get("Patient Number", ""))[:255],
-                patient_name=str(row.get("Patient Name", ""))[:255],
-                receipt_number=str(row.get("Receipt Number", ""))[:255],
-                treatment_name=str(row.get("Treatment name", ""))[:255],
-                amount_paid=row["Amount Paid"],
-                invoice_number=str(row.get("Invoice Number", ""))[:255],
-                notes=str(row.get("Notes", "")),
-                refund=bool(row.get("Refund", False)),
-                refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
-                refunded_amount=row["Refunded amount"],
-                payment_mode=str(row.get("Payment Mode", ""))[:255],
-                card_number=str(row.get("Card Number", ""))[:255],
-                card_type=str(row.get("Card Type", ""))[:255],
-                cheque_number=str(row.get("Cheque Number", ""))[:255],
-                cheque_bank=str(row.get("Cheque Bank", ""))[:255],
-                netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
-                vendor_name=str(row.get("Vendor Name", ""))[:255],
-                vendor_fees_percent=row["Vendor Fees Percent"],
-                cancelled=bool(row.get("Cancelled", False))
-            )
-            payments.append(payment)
-
     try:
-        if payments:
-            db.bulk_save_objects(payments)
-            db.commit()
+        for _, row in df.iterrows():
+            patient_number = row["Patient Number"]
+            patient = patients.get(patient_number)
+            
+            if patient:            
+                payment = Payment(
+                    date=row["Date"] if pd.notna(row["Date"]) else None,
+                    doctor_id=user.id,
+                    patient_id=patient.id,
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    receipt_number=str(row.get("Receipt Number", ""))[:255],
+                    treatment_name=str(row.get("Treatment name", ""))[:255],
+                    amount_paid=row["Amount Paid"],
+                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                    notes=str(row.get("Notes", "")),
+                    refund=bool(row.get("Refund", False)),
+                    refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
+                    refunded_amount=row["Refunded amount"],
+                    cancelled=bool(row.get("Cancelled", False))
+                )
+                
+                # Save payment first to get ID
+                db.add(payment)
+                db.flush()
+
+                # Create payment method with payment ID
+                payment_method = PaymentMethod(
+                    payment_id=payment.id,
+                    payment_mode=str(row.get("Payment Mode", ""))[:255],
+                    card_number=str(row.get("Card Number", ""))[:255],
+                    card_type=str(row.get("Card Type", ""))[:255],
+                    cheque_number=str(row.get("Cheque Number", ""))[:255],
+                    cheque_bank=str(row.get("Cheque Bank", ""))[:255],
+                    netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
+                    vendor_name=str(row.get("Vendor Name", ""))[:255],
+                    vendor_fees_percent=safe_float_convert(row.get("Vendor Fees Percent"))
+                )
+                db.add(payment_method)
+
+        db.commit()
     except Exception as e:
         print(f"Error during bulk insert: {str(e)}")
         db.rollback()
@@ -1194,13 +1199,29 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
     
-    invoices = []
-    for _, row in df.iterrows():
-        try:
+    try:
+        for _, row in df.iterrows():
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
             
             if patient:
+                invoice = Invoice(
+                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                    doctor_id=user.id,
+                    patient_id=patient.id,
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    doctor_name=str(row.get("Doctor Name", ""))[:255],
+                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                    cancelled=bool(row.get("Cancelled", False)),
+                    notes=str(row.get("Notes", "")),
+                    description=str(row.get("Description", ""))
+                )
+                
+                # Save invoice first to get ID
+                db.add(invoice)
+                db.flush()
+
                 # Parse discount type
                 discount_type = row.get("DiscountType", "").upper() if row.get("DiscountType") else None
 
@@ -1214,14 +1235,8 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     except (ValueError, TypeError):
                         return default
 
-                invoice = Invoice(
-                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor_id=user.id,
-                    patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
-                    doctor_name=str(row.get("Doctor Name", ""))[:255],
-                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                invoice_item = InvoiceItem(
+                    invoice_id=invoice.id,
                     treatment_name=str(row.get("Treatment Name", ""))[:255],
                     unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
                     quantity=safe_parse_number(row.get("Quantity"), int, 1),
@@ -1230,25 +1245,11 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     type=str(row.get("Type", ""))[:255],
                     invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
                     tax_name=str(row.get("Tax name", ""))[:255],
-                    tax_percent=safe_parse_number(row.get("Tax Percent"), float),
-                    cancelled=bool(row.get("Cancelled", False)),
-                    notes=str(row.get("Notes", "")),
-                    description=str(row.get("Description", ""))
+                    tax_percent=safe_parse_number(row.get("Tax Percent"), float)
                 )
-                invoices.append(invoice)
-            
-        except Exception as e:
-            print(f"Error processing invoice row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
-            db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing invoice row: {str(e)}"})
+                db.add(invoice_item)
 
-    # Bulk save all invoices at once
-    try:
-        if invoices:
-            db.bulk_save_objects(invoices)
-            db.commit()
+        db.commit()
     except Exception as e:
         print(f"Error during bulk insert: {str(e)}")
         db.rollback()

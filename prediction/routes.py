@@ -1057,9 +1057,13 @@ async def add_missing_legends(
         db.commit()
         db.refresh(new_label)
 
+        xray = db.query(XRay).filter(XRay.prediction_id == prediction.id).first()
+        if not xray:
+            return JSONResponse(status_code=404, content={"error": "X-ray not found"})
+
         # Update annotation with new label
         try:
-            image = cv2.imread(str(prediction.predicted_image))
+            image = cv2.imread(str(xray.predicted_image))
             if image is None:
                 return JSONResponse(status_code=400, content={"error": "Failed to load image"})
 
@@ -1161,19 +1165,15 @@ async def add_missing_legends(
             output_path = os.path.join(output_dir, random_filename)
             
             annotated_image_pil.save(output_path, optimize=True, quality=98, subsampling=0)
-            
-            prediction.predicted_image = output_path
-            xray = db.query(XRay).filter(XRay.id == prediction.xray_id).first()
-            if xray:
-                xray.predicted_image = output_path
-                xray.is_annotated = True
+            xray.predicted_image = output_path
+            xray.is_annotated = True
             db.commit()
 
         except Exception as e:
             db.rollback()
             return JSONResponse(status_code=500, content={"error": f"Error processing image: {str(e)}"})
 
-        new_annotated_image = update_image_url(prediction.predicted_image, request) if prediction.predicted_image else None
+        new_annotated_image = update_image_url(xray.predicted_image, request) if xray.predicted_image else None
 
         # Convert to response dict
         response_dict = {
