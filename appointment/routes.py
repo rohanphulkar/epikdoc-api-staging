@@ -137,12 +137,12 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
                 "doctor_id": appointment.doctor_id,
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat(),
+                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
-                "created_at": appointment.created_at.isoformat(),
-                "updated_at": appointment.updated_at.isoformat(),
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
                     "id": doctor.id,
                     "name": doctor.name,
@@ -154,7 +154,7 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
                     "name": patient.name,
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat(),
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value
                 }
             }
@@ -213,12 +213,12 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
                 "doctor_id": appointment.doctor_id,
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat(),
+                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
-                "created_at": appointment.created_at.isoformat(),
-                "updated_at": appointment.updated_at.isoformat(),
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
                     "id": doctor.id,
                     "name": doctor.name,
@@ -230,7 +230,7 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
                     "name": patient.name,
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat(),
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value
                 }
             }
@@ -335,12 +335,12 @@ async def search_appointments(
                 "doctor_id": appointment.doctor_id,
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat(),
+                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
-                "created_at": appointment.created_at.isoformat(),
-                "updated_at": appointment.updated_at.isoformat(),
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
                     "id": doctor.id,
                     "name": doctor.name,
@@ -352,7 +352,7 @@ async def search_appointments(
                     "name": patient.name,
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat(),
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value
                 }
             }
@@ -412,12 +412,12 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
                 "doctor_id": appointment.doctor_id,
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat(),
+                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
-                "created_at": appointment.created_at.isoformat(),
-                "updated_at": appointment.updated_at.isoformat(),
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
                     "id": doctor.id,
                     "name": doctor.name,
@@ -429,7 +429,7 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
                     "name": patient.name,
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat(),
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value
                 }
             }
