@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Body, Query
 from db.db import get_db
 from sqlalchemy.orm import Session
 from .models import User, ProcedureCatalog, ImportLog, ImportStatus
@@ -21,6 +21,7 @@ from payment.models import *
 from prediction.models import *
 from typing import List
 import json, shutil
+from math import ceil
 
 user_router = APIRouter()
 
@@ -29,37 +30,53 @@ user_router = APIRouter()
     status_code=201,
     summary="Register a new user",
     description="""
-    Create a new user account with the following required fields:
+    Create a new user account.
     
+    Required fields:
     - email: Valid email address (e.g. user@example.com)
-    - password: Strong password that meets security requirements:
-        - Minimum 8 characters
-        - At least 1 uppercase letter
-        - At least 1 lowercase letter 
-        - At least 1 number
+    - password: Strong password that meets security requirements
     - name: User's full name
     - phone: Valid phone number with country code (e.g. +1234567890)
     - user_type: Type of user account ("doctor" or "admin")
     
-    Returns success message on successful registration.
+    Password requirements:
+    - Minimum 8 characters
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 number
     """,
     responses={
         201: {
             "description": "User created successfully",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "User created successfully"
-                    }
+                    "example": {"message": "User created successfully"}
                 }
             }
         },
         400: {
-            "description": "Bad request - Invalid input or user already exists",
+            "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {
-                        "error": "Invalid email format | User already exists with this email/phone"
+                    "examples": {
+                        "missing_fields": {
+                            "value": {"error": "All fields are required"}
+                        },
+                        "invalid_email": {
+                            "value": {"error": "Invalid email format"}
+                        },
+                        "invalid_phone": {
+                            "value": {"error": "Invalid phone number"}
+                        },
+                        "invalid_password": {
+                            "value": {"error": "Password must contain at least 8 characters, one uppercase letter, one lowercase letter, and one number"}
+                        },
+                        "email_exists": {
+                            "value": {"error": "User already exists with this email"}
+                        },
+                        "phone_exists": {
+                            "value": {"error": "User already exists with this phone number"}
+                        }
                     }
                 }
             }
@@ -68,7 +85,7 @@ user_router = APIRouter()
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"error": "Internal server error message"}
+                    "example": {"error": "Internal server error"}
                 }
             }
         }
@@ -128,7 +145,10 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
     - email: Registered email address
     - password: Account password
     
-    Returns JWT access token on successful login.
+    Returns:
+    - access_token: JWT token for authentication
+    - token_type: Token type (bearer)
+    - message: Success message
     """,
     responses={
         200: {
@@ -143,11 +163,34 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
                 }
             }
         },
-        401: {
-            "description": "Authentication failed",
+        400: {
+            "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {"error": "Invalid credentials"}
+                    "example": {"error": "Email and password are required"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_credentials": {
+                            "value": {"error": "Invalid credentials"}
+                        },
+                        "account_inactive": {
+                            "value": {"error": "Your account is deactivated or deleted. Please contact support."}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
                 }
             }
         }
@@ -183,26 +226,26 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
     status_code=200,
     summary="Get user profile",
     description="""
-    Get authenticated user's complete profile information.
+    Get authenticated user's profile information.
     
     Required headers:
     - Authorization: Bearer {access_token}
     
-    Returns user profile data including:
-    - Name
-    - Email
-    - Phone number
-    - Bio
-    - Profile picture URL
+    Returns:
+    - name: User's full name
+    - email: Email address
+    - phone: Phone number
+    - bio: User biography
+    - profile_pic: URL to profile picture (null if not set)
     """,
     responses={
         200: {
-            "description": "User profile retrieved successfully",
+            "description": "Profile retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
                         "name": "John Doe",
-                        "email": "john@example.com",
+                        "email": "john@example.com", 
                         "phone": "+1234567890",
                         "bio": "Doctor specializing in pediatrics",
                         "profile_pic": "http://example.com/uploads/profile.jpg"
@@ -210,8 +253,22 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
                 }
             }
         },
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
     }
 )
 async def get_user(request: Request, db: Session = Depends(get_db)):   
@@ -248,24 +305,24 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
     Required headers:
     - Authorization: Bearer {access_token}
     
-    Returns array of doctor profiles including:
-    - ID
-    - Name  
-    - Email
-    - Phone
-    - User type
+    Returns array of doctor profiles containing:
+    - id: Doctor's unique ID
+    - name: Doctor's full name
+    - email: Doctor's email address
+    - phone: Doctor's phone number
+    - user_type: User type (always "doctor")
     """,
     responses={
         200: {
-            "description": "Created doctors retrieved successfully",
+            "description": "Doctors retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
                         "doctors": [
                             {
-                                "id": "uuid",
-                                "name": "Dr. Smith",
-                                "email": "smith@hospital.com",
+                                "id": "550e8400-e29b-41d4-a716-446655440000",
+                                "name": "Dr. Jane Smith",
+                                "email": "jane.smith@hospital.com",
                                 "phone": "+1234567890",
                                 "user_type": "doctor"
                             }
@@ -274,8 +331,22 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
                 }
             }
         },
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
     }
 )
 async def get_created_doctors(request: Request, db: Session = Depends(get_db)):
@@ -303,28 +374,66 @@ async def get_created_doctors(request: Request, db: Session = Depends(get_db)):
 @user_router.post("/forgot-password",
     response_model=dict,
     status_code=200,
-    summary="Forgot password",
+    summary="Initiate password reset",
     description="""
-    Initiate password reset process by sending reset link via email.
+    Send password reset link to user's email.
     
     Required fields:
     - email: Registered email address
     
-    A password reset link will be sent to the provided email if it exists in the system.
-    The reset token expires after 3 hours.
+    Process:
+    1. Validates email exists in system
+    2. Generates reset token (expires in 3 hours)
+    3. Sends reset link to user's email
+    4. User clicks link to access reset password page
     """,
     responses={
         200: {
-            "description": "Password reset email sent",
+            "description": "Reset email sent successfully",
             "content": {
                 "application/json": {
                     "example": {"message": "Password reset email sent"}
                 }
             }
         },
-        400: {"description": "Invalid email"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_email": {
+                            "value": {"error": "Email is required"}
+                        },
+                        "invalid_email": {
+                            "value": {"error": "Invalid email"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "email_failed": {
+                            "value": {"error": "Failed to send email"}
+                        },
+                        "server_error": {
+                            "value": {"error": "Internal server error"}
+                        }
+                    }
+                }
+            }
+        }
     }
 )
 async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Session = Depends(get_db)):
@@ -358,15 +467,15 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
 @user_router.post("/reset-password",
     response_model=dict,
     status_code=200,
-    summary="Reset password",
+    summary="Reset password with token",
     description="""
-    Reset user password using the token received via email.
+    Reset user password using token from email.
     
     Required query parameter:
-    - token: Reset token from email link
+    - token: Valid reset token from email link
     
-    Required fields in request body:
-    - password: New password meeting security requirements
+    Required fields:
+    - password: New password meeting requirements
     - confirm_password: Must match new password
     
     Password requirements:
@@ -374,19 +483,59 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
     - At least 1 uppercase letter
     - At least 1 lowercase letter
     - At least 1 number
+    
+    Process:
+    1. Validates reset token exists and not expired
+    2. Validates password requirements
+    3. Updates user's password
+    4. Clears reset token
     """,
     responses={
         200: {
-            "description": "Password reset successfully",
+            "description": "Password reset successful",
             "content": {
                 "application/json": {
                     "example": {"message": "Password reset successfully"}
                 }
             }
         },
-        400: {"description": "Invalid input or expired token"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "expired_token": {
+                            "value": {"error": "Reset token expired"}
+                        },
+                        "missing_passwords": {
+                            "value": {"error": "Password and confirm password are required"}
+                        },
+                        "invalid_password": {
+                            "value": {"error": "Password must contain at least 8 characters, one uppercase letter, one lowercase letter, and one number"}
+                        },
+                        "passwords_mismatch": {
+                            "value": {"error": "Passwords do not match"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
     }
 )
 async def reset_password(token: str, user: ResetPasswordSchema, db: Session = Depends(get_db)):
@@ -433,7 +582,7 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: Session = De
     
     Required fields:
     - old_password: Current password for verification
-    - new_password: New password meeting security requirements
+    - new_password: New password meeting requirements
     - confirm_new_password: Must match new password
     
     Password requirements:
@@ -441,6 +590,11 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: Session = De
     - At least 1 uppercase letter
     - At least 1 lowercase letter
     - At least 1 number
+    
+    Process:
+    1. Verifies old password matches current password
+    2. Validates new password requirements
+    3. Updates user's password
     """,
     responses={
         200: {
@@ -451,9 +605,40 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: Session = De
                 }
             }
         },
-        400: {"description": "Invalid input"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "incorrect_old_password": {
+                            "value": {"error": "Incorrect old password"}
+                        },
+                        "invalid_new_password": {
+                            "value": {"error": "Password must contain at least 8 characters, one uppercase letter, one lowercase letter, and one number"}
+                        },
+                        "passwords_mismatch": {
+                            "value": {"error": "New passwords do not match"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
     }
 )
 async def change_password(user: ChangePasswordSchema, request: Request, db: Session = Depends(get_db)):
@@ -485,42 +670,40 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
 @user_router.patch("/update-profile",
     response_model=dict,
     status_code=200,
-    summary="Update profile", 
+    summary="Update user profile",
     description="""
     Update authenticated user's profile information.
     
     Required headers:
     - Authorization: Bearer {access_token}
     
-    The request can be sent in two ways:
-    1. As multipart/form-data with:
-       - json: A JSON string containing the profile fields:
-         {
-           "name": "John Doe",           # Optional: New display name
-           "phone": "+1234567890",       # Optional: Phone with country code
-           "bio": "Doctor profile..."    # Optional: Brief biography
-         }
-       - image: Optional profile image file
-       
-    2. As application/json with the same profile fields in request body
+    Request can be sent in two formats:
     
-    Image requirements if provided:
+    1. multipart/form-data:
+       - json: JSON string with profile fields
+         {
+           "name": "John Doe",        # Optional
+           "phone": "+1234567890",    # Optional
+           "bio": "Doctor bio..."     # Optional
+         }
+       - image: Profile picture file (optional)
+       
+    2. application/json:
+       - Same profile fields in request body
+       
+    Image requirements:
     - Format: JPG/PNG
     - Max size: 5MB
-    - Will be stored in uploads/profile_pictures directory
-    - File path saved in user's profile_pic field
+    - Stored in: uploads/profile_pictures/
     
-    All fields are optional - only provided fields will be updated.
-    Returns a success message on successful update.
+    Only provided fields will be updated.
     """,
     responses={
         200: {
             "description": "Profile updated successfully",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Profile updated successfully"
-                    }
+                    "example": {"message": "Profile updated successfully"}
                 }
             }
         },
@@ -528,19 +711,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
             "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {
-                        "error": "Invalid phone number format"
-                    }
-                }
-            }
-        },
-        401: {
-            "description": "Unauthorized",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "error": "Invalid or expired token"
-                    }
+                    "example": {"error": "Invalid input format"}
                 }
             }
         },
@@ -548,9 +719,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
             "description": "User not found",
             "content": {
                 "application/json": {
-                    "example": {
-                        "error": "User not found"
-                    }
+                    "example": {"error": "User not found"}
                 }
             }
         },
@@ -558,9 +727,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {
-                        "error": "Failed to update profile"
-                    }
+                    "example": {"error": "Internal server error"}
                 }
             }
         }
@@ -630,19 +797,24 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
-    
+
 @user_router.delete("/delete-profile",
     response_model=dict,
     status_code=200,
-    summary="Delete profile",
+    summary="Delete user profile",
     description="""
     Permanently delete authenticated user's profile and all associated data.
     
-    Required headers:
-    - Authorization: Bearer {access_token}
+    **Authentication:**
+    - Requires valid Bearer token in Authorization header
     
-    This action cannot be undone. All user data will be removed from the database.
+    **Warning:**
+    This action cannot be undone. All user data including appointments, patients, payments and other records will be permanently deleted.
+    
+    **Response:**
+    - 200: Profile successfully deleted
+    - 404: User not found
+    - 500: Server error
     """,
     responses={
         200: {
@@ -653,8 +825,22 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
                 }
             }
         },
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def delete_profile(request: Request, db: Session = Depends(get_db)):
@@ -675,19 +861,25 @@ async def delete_profile(request: Request, db: Session = Depends(get_db)):
 @user_router.post("/google-login",
     response_model=dict,
     status_code=200,
-    summary="Google login",
+    summary="Login with Google",
     description="""
     Authenticate user using Google OAuth token.
     
-    Required fields:
-    - token: Valid Google OAuth token
+    **Request body:**
+    - token (str): Valid Google OAuth token
     
-    If user doesn't exist, a new account will be created using Google profile data.
-    Returns JWT access token on successful authentication.
+    **Notes:**
+    - If user doesn't exist, a new account will be created using Google profile data
+    - If account is deactivated, login will be rejected
+    
+    **Response:**
+    - 200: Login successful, returns JWT access token
+    - 401: Account deactivated
+    - 500: Server error
     """,
     responses={
         200: {
-            "description": "Google login successful",
+            "description": "Login successful",
             "content": {
                 "application/json": {
                     "example": {
@@ -698,8 +890,22 @@ async def delete_profile(request: Request, db: Session = Depends(get_db)):
                 }
             }
         },
-        401: {"description": "Account deactivated"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Account deactivated",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Your account is deactivated or deleted. Please contact support."}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def google_login(user: GoogleLoginSchema, db: Session = Depends(get_db)):
@@ -728,12 +934,16 @@ async def google_login(user: GoogleLoginSchema, db: Session = Depends(get_db)):
 @user_router.get("/check-token-validity",
     response_model=dict,
     status_code=200,
-    summary="Check token validity",
+    summary="Validate JWT token",
     description="""
     Verify if the provided JWT token is valid and not expired.
     
-    Required headers:
-    - Authorization: Bearer {access_token}
+    **Authentication:**
+    - Requires Bearer token in Authorization header
+    
+    **Response:**
+    - 200: Token is valid
+    - 401: Token is invalid or missing
     """,
     responses={
         200: {
@@ -745,10 +955,17 @@ async def google_login(user: GoogleLoginSchema, db: Session = Depends(get_db)):
             }
         },
         401: {
-            "description": "Token is invalid",
+            "description": "Invalid or missing token",
             "content": {
                 "application/json": {
-                    "example": {"error": "Invalid token"}
+                    "examples": {
+                        "invalid": {
+                            "value": {"error": "Invalid token"}
+                        },
+                        "missing": {
+                            "value": {"error": "Invalid or missing Authorization header"}
+                        }
+                    }
                 }
             }
         }
@@ -772,14 +989,24 @@ async def check_token_validity(request: Request):
         return JSONResponse(status_code=401, content={"error": str(e)})
     
 @user_router.get("/deactivate-account", 
-    summary="Deactivate account",
+    response_model=dict,
+    status_code=200,
+    summary="Deactivate user account",
     description="""
     Temporarily deactivate authenticated user's account.
     
-    Required headers:
-    - Authorization: Bearer {access_token}
+    **Authentication:**
+    - Requires valid Bearer token in Authorization header
     
-    Account can be reactivated by admin later.
+    **Notes:**
+    - Account can only be reactivated by an administrator
+    - All data is preserved but user cannot login while deactivated
+    
+    **Response:**
+    - 200: Account successfully deactivated
+    - 401: Invalid or missing authentication
+    - 404: User not found
+    - 500: Server error
     """,
     responses={
         200: {
@@ -790,9 +1017,30 @@ async def check_token_validity(request: Request):
                 }
             }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def deactivate_account(request: Request, db: Session = Depends(get_db)):
@@ -843,27 +1091,27 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 
             new_patients.append(Patient(
                 doctor_id=user.id,
-                patient_number=str(row.get("Patient Number", ""))[:255],
-                name=str(row.get("Patient Name", ""))[:255],
-                mobile_number=str(row.get("Mobile Number", ""))[:255],
-                contact_number=str(row.get("Contact Number", ""))[:255],
-                email=str(row.get("Email Address", ""))[:255],
-                secondary_mobile=str(row.get("Secondary Mobile", ""))[:255],
+                patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
+                name=str(row.get("Patient Name", "")).strip("'")[:255],
+                mobile_number=str(row.get("Mobile Number", "")).strip("'")[:255],
+                contact_number=str(row.get("Contact Number", "")).strip("'")[:255],
+                email=str(row.get("Email Address", "")).strip("'")[:255],
+                secondary_mobile=str(row.get("Secondary Mobile", "")).strip("'")[:255],
                 gender=gender_map[idx],
-                address=str(row.get("Address", ""))[:255],
-                locality=str(row.get("Locality", ""))[:255],
-                city=str(row.get("City", ""))[:255],
-                pincode=str(row.get("Pincode", ""))[:255],
-                national_id=str(row.get("National Id", ""))[:255],
+                address=str(row.get("Address", "")).strip("'")[:255],
+                locality=str(row.get("Locality", "")).strip("'")[:255],
+                city=str(row.get("City", "")).strip("'")[:255],
+                pincode=str(row.get("Pincode", "")).strip("'")[:255],
+                national_id=str(row.get("National Id", "")).strip("'")[:255],
                 date_of_birth=dob,
-                age=str(row.get("Age", ""))[:5],
+                age=str(row.get("Age", "")).strip("'")[:5],
                 anniversary_date=anniversary,
-                blood_group=str(row.get("Blood Group", ""))[:50],
-                remarks=str(row.get("Remarks", "")),
-                medical_history=str(row.get("Medical History", "")),
-                referred_by=str(row.get("Referred By", ""))[:255],
-                groups=str(row.get("Groups", ""))[:255],
-                patient_notes=str(row.get("Patient Notes", ""))
+                blood_group=str(row.get("Blood Group", "")).strip("'")[:50],
+                remarks=str(row.get("Remarks", "")).strip("'"),
+                medical_history=str(row.get("Medical History", "")).strip("'"),
+                referred_by=str(row.get("Referred By", "")).strip("'")[:255],
+                groups=str(row.get("Groups", "")).strip("'")[:255],
+                patient_notes=str(row.get("Patient Notes", "")).strip("'")
             ))
             
         except Exception as e:
@@ -906,11 +1154,11 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
             if patient:
                 appointments.append(Appointment(
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
                     doctor_id=user.id,
-                    doctor_name=str(row.get("DoctorName", ""))[:255],
-                    notes=str(row.get("Notes", "")),
+                    doctor_name=str(row.get("DoctorName", "")).strip("'")[:255],
+                    notes=str(row.get("Notes", "")).strip("'"),
                     appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
                     checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
@@ -1001,9 +1249,9 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 clinical_notes.append(ClinicalNote(
                     patient_id=patient.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", ""))[:255],
-                    note_type=str(row.get("Type", ""))[:255],
-                    description=str(row.get("Description", "")),
+                    doctor=str(row.get("Doctor", "")).strip("'")[:255],
+                    note_type=str(row.get("Type", "")).strip("'")[:255],
+                    description=str(row.get("Description", "")).strip("'"),
                     is_revised=bool(row.get("Revised", False))
                 ))
         except Exception as e:
@@ -1043,8 +1291,8 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 treatment_plans.append(TreatmentPlan(
                     patient_id=patient.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", ""))[:255],
-                    treatment_name=str(row.get("Treatment Name", ""))[:255],
+                    doctor=str(row.get("Doctor", "")).strip("'")[:255],
+                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
                     unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
                     quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
                     discount=float(str(row.get("Discount", 0)).strip("'")) if row.get("Discount") else None,
@@ -1148,15 +1396,15 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     date=row["Date"] if pd.notna(row["Date"]) else None,
                     doctor_id=user.id,
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
-                    receipt_number=str(row.get("Receipt Number", ""))[:255],
-                    treatment_name=str(row.get("Treatment name", ""))[:255],
+                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
+                    receipt_number=str(row.get("Receipt Number", "")).strip("'")[:255],
+                    treatment_name=str(row.get("Treatment name", "")).strip("'")[:255],
                     amount_paid=row["Amount Paid"],
-                    invoice_number=str(row.get("Invoice Number", ""))[:255],
-                    notes=str(row.get("Notes", "")),
+                    invoice_number=str(row.get("Invoice Number", "")).strip("'")[:255],
+                    notes=str(row.get("Notes", "")).strip("'"),
                     refund=bool(row.get("Refund", False)),
-                    refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
+                    refund_receipt_number=str(row.get("Refund Receipt Number", "")).strip("'")[:255],
                     refunded_amount=row["Refunded amount"],
                     cancelled=bool(row.get("Cancelled", False))
                 )
@@ -1168,13 +1416,13 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 # Create payment method with payment ID
                 payment_method = PaymentMethod(
                     payment_id=payment.id,
-                    payment_mode=str(row.get("Payment Mode", ""))[:255],
-                    card_number=str(row.get("Card Number", ""))[:255],
-                    card_type=str(row.get("Card Type", ""))[:255],
-                    cheque_number=str(row.get("Cheque Number", ""))[:255],
-                    cheque_bank=str(row.get("Cheque Bank", ""))[:255],
-                    netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
-                    vendor_name=str(row.get("Vendor Name", ""))[:255],
+                    payment_mode=str(row.get("Payment Mode", "")).strip("'")[:255],
+                    card_number=str(row.get("Card Number", "")).strip("'")[:255],
+                    card_type=str(row.get("Card Type", "")).strip("'")[:255],
+                    cheque_number=str(row.get("Cheque Number", "")).strip("'")[:255],
+                    cheque_bank=str(row.get("Cheque Bank", "")).strip("'")[:255],
+                    netbanking_bank_name=str(row.get("Netbanking Bank Name", "")).strip("'")[:255],
+                    vendor_name=str(row.get("Vendor Name", "")).strip("'")[:255],
                     vendor_fees_percent=safe_float_convert(row.get("Vendor Fees Percent"))
                 )
                 db.add(payment_method)
@@ -1209,13 +1457,13 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     doctor_id=user.id,
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
-                    doctor_name=str(row.get("Doctor Name", ""))[:255],
-                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
+                    doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
+                    invoice_number=str(row.get("Invoice Number", "")).strip("'")[:255],
                     cancelled=bool(row.get("Cancelled", False)),
-                    notes=str(row.get("Notes", "")),
-                    description=str(row.get("Description", ""))
+                    notes=str(row.get("Notes", "")).strip("'"),
+                    description=str(row.get("Description", "")).strip("'")
                 )
                 
                 # Save invoice first to get ID
@@ -1237,12 +1485,12 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
 
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
-                    treatment_name=str(row.get("Treatment Name", ""))[:255],
+                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
                     unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
                     quantity=safe_parse_number(row.get("Quantity"), int, 1),
                     discount=safe_parse_number(row.get("Discount"), float),
                     discount_type=discount_type,
-                    type=str(row.get("Type", ""))[:255],
+                    type=str(row.get("Type", "")).strip("'")[:255],
                     invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
                     tax_name=str(row.get("Tax name", ""))[:255],
                     tax_percent=safe_parse_number(row.get("Tax Percent"), float)
@@ -1434,7 +1682,10 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
     The CSV files should contain data for:
     - Patients
     - Appointments
-    - Other related records
+    - Expenses
+    - Payments
+    - Invoices
+    - Procedure catalogs
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -1443,6 +1694,8 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
     - Files will be validated before processing
     - Data will be imported in a specific order to maintain referential integrity
     - Existing records may be updated based on unique identifiers
+    - Import status can be tracked via the returned import_log_id
+    - Files are processed asynchronously in the background
     """,
     responses={
         200: {
@@ -1457,7 +1710,14 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {"error": "Invalid file format. Only CSV and ZIP files are allowed."}
+                    "examples": {
+                        "invalid_format": {
+                            "value": {"error": "Invalid file format. Only CSV and ZIP files are allowed."}
+                        },
+                        "invalid_data": {
+                            "value": {"error": "Invalid data format in CSV file"}
+                        }
+                    }
                 }
             }
         },
@@ -1530,7 +1790,24 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
     response_model=dict,
     status_code=200,
     summary="Get all import logs",
-    description="Get all import logs for the authenticated user",
+    description="""
+    Get all import logs for the authenticated user.
+    
+    Returns a paginated list of import logs with details including:
+    - Import ID
+    - Original filename 
+    - Import status (pending/completed/failed)
+    - Creation timestamp
+    
+    Results are sorted by creation date in descending order (newest first).
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
     responses={
         200: {
             "description": "Import logs retrieved successfully",
@@ -1540,11 +1817,128 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
                         "import_logs": [
                             {
                                 "id": "uuid",
-                                "file_name": "data.csv",
+                                "file_name": "data.csv", 
                                 "status": "completed",
                                 "created_at": "2024-01-01T00:00:00"
                             }
-                        ]
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found", 
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error message"}
+                }
+            }
+        }
+    }
+)
+async def get_import_logs(
+    request: Request,
+    page: int = 1,
+    per_page: int = 10,
+    db: Session = Depends(get_db)
+):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+
+        # Validate pagination params
+        per_page = min(per_page, 100)  # Cap items per page
+        page = max(page, 1)  # Ensure page is at least 1
+        
+        # Get total count
+        total = db.query(ImportLog).filter(ImportLog.user_id == user.id).count()
+        
+        # Calculate pagination
+        total_pages = (total + per_page - 1) // per_page
+        offset = (page - 1) * per_page
+        
+        # Get paginated logs
+        import_logs = db.query(ImportLog)\
+            .filter(ImportLog.user_id == user.id)\
+            .order_by(ImportLog.created_at.desc())\
+            .offset(offset)\
+            .limit(per_page)\
+            .all()
+
+        return JSONResponse(status_code=200, content={
+            "import_logs": [
+                {
+                    "id": log.id,
+                    "file_name": log.file_name,
+                    "status": log.status.value,
+                    "created_at": log.created_at.isoformat()
+                } for log in import_logs
+            ],
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            }
+        })
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+
+@user_router.post("/add-procedure-catalog",
+    response_model=ProcedureCatalogResponse,
+    status_code=201,
+    summary="Add a new procedure catalog",
+    description="""
+    Add a new procedure catalog entry for the authenticated user.
+    
+    Required fields:
+    - treatment_name: Name/title of the procedure
+    - treatment_cost: Cost of the procedure
+    - treatment_notes: Additional notes/description (optional)
+    - locale: Currency/location code for the cost
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Notes:
+    - Each user can have multiple procedure catalogs
+    - Treatment costs should be in the specified locale's currency
+    """,
+    responses={
+        201: {
+            "description": "Procedure catalog created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Procedure catalog created successfully"
                     }
                 }
             }
@@ -1569,50 +1963,10 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"error": "Unexpected error message"}
+                    "example": {"error": "Unexpected error: {error details}"}
                 }
             }
         }
-    }
-)
-async def get_import_logs(request: Request, db: Session = Depends(get_db)):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-        
-        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
-        if not user:
-            return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        import_logs = db.query(ImportLog).filter(ImportLog.user_id == user.id).order_by(ImportLog.created_at.desc()).all()
-        return JSONResponse(status_code=200, content={
-            "import_logs": [
-                {
-                    "id": log.id,
-                    "file_name": log.file_name,
-                    "status": log.status.value,
-                    "created_at": log.created_at.isoformat()
-                } for log in import_logs
-            ]
-        })
-        
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
-
-@user_router.post("/add-procedure-catalog",
-    response_model=ProcedureCatalogResponse,
-    status_code=201,
-    summary="Add a new procedure catalog",
-    description="Add a new procedure catalog entry for the authenticated user",
-    responses={
-        201: {
-            "description": "Procedure catalog created successfully",
-            "model": ProcedureCatalogResponse
-        },
-        401: {"description": "Unauthorized"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
     }
 )
 async def add_procedure_catalog(request: Request, procedure: ProcedureCatalogSchema, db: Session = Depends(get_db)):
@@ -1644,21 +1998,84 @@ async def add_procedure_catalog(request: Request, procedure: ProcedureCatalogSch
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
 
 @user_router.get("/get-procedure-catalogs",
-    response_model=List[ProcedureCatalogResponse],
+    response_model=dict,
     status_code=200,
     summary="Get all procedure catalogs",
-    description="Get all procedure catalogs for the authenticated user",
+    description="""
+    Get all procedure catalogs for the authenticated user.
+    
+    Returns a paginated list of procedure catalogs with details including:
+    - Procedure ID
+    - Treatment name
+    - Treatment cost
+    - Treatment notes
+    - Locale
+    - Creation and update timestamps
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
     responses={
         200: {
             "description": "List of procedure catalogs",
-            "model": List[ProcedureCatalogResponse]
+            "content": {
+                "application/json": {
+                    "example": {
+                        "procedure_catalogs": [{
+                            "id": "uuid",
+                            "treatment_name": "Dental Cleaning",
+                            "treatment_cost": "100.00",
+                            "treatment_notes": "Basic cleaning procedure",
+                            "locale": "USD",
+                            "created_at": "2024-01-01T00:00:00",
+                            "updated_at": "2024-01-01T00:00:00"
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
     }
 )
-async def get_procedure_catalogs(request: Request, db: Session = Depends(get_db)):
+async def get_procedure_catalogs(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -1668,7 +2085,19 @@ async def get_procedure_catalogs(request: Request, db: Session = Depends(get_db)
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        procedure_catalogs = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id).all()
+        # Get total count
+        total = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id).count()
+        
+        # Calculate pagination
+        total_pages = ceil(total / per_page)
+        offset = (page - 1) * per_page
+        
+        # Get paginated results
+        procedure_catalogs = db.query(ProcedureCatalog)\
+            .filter(ProcedureCatalog.user_id == user.id)\
+            .offset(offset)\
+            .limit(per_page)\
+            .all()
 
         procedure_catalogs_list = []
         for procedure_catalog in procedure_catalogs:
@@ -1682,7 +2111,15 @@ async def get_procedure_catalogs(request: Request, db: Session = Depends(get_db)
                 "updated_at": procedure_catalog.updated_at.isoformat() if procedure_catalog.updated_at else None
             })
 
-        return JSONResponse(status_code=200, content=procedure_catalogs_list)
+        return JSONResponse(status_code=200, content={
+            "procedure_catalogs": procedure_catalogs_list,
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            }
+        })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
@@ -1691,15 +2128,68 @@ async def get_procedure_catalogs(request: Request, db: Session = Depends(get_db)
     response_model=ProcedureCatalogResponse,
     status_code=200,
     summary="Update a procedure catalog",
-    description="Update an existing procedure catalog entry",
+    description="""
+    Update an existing procedure catalog entry.
+    
+    Path parameters:
+    - procedure_id: ID of the procedure catalog to update
+    
+    Updatable fields (all optional):
+    - treatment_name: Name/title of the procedure
+    - treatment_cost: Cost of the procedure
+    - treatment_notes: Additional notes/description
+    - locale: Currency/location code for the cost
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Notes:
+    - Only the provided fields will be updated
+    - Other fields will retain their existing values
+    - Only the owner can update their procedure catalogs
+    """,
     responses={
         200: {
             "description": "Procedure catalog updated successfully",
-            "model": ProcedureCatalogResponse
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Procedure catalog updated successfully"
+                    }
+                }
+            }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "User or procedure catalog not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user": {
+                            "value": {"error": "User not found"}
+                        },
+                        "procedure": {
+                            "value": {"error": "Procedure catalog not found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
     }
 )
 async def update_procedure_catalog(
@@ -1725,13 +2215,13 @@ async def update_procedure_catalog(
             return JSONResponse(status_code=404, content={"error": "Procedure catalog not found"})
         
         if procedure.treatment_name is not None:
-            procedure_catalog.treatment_name = procedure.treatment_name
+            procedure_catalog.treatment_name = str(procedure.treatment_name)
         if procedure.treatment_cost is not None:
-            procedure_catalog.treatment_cost = procedure.treatment_cost
+            procedure_catalog.treatment_cost = str(procedure.treatment_cost)
         if procedure.treatment_notes is not None:
-            procedure_catalog.treatment_notes = procedure.treatment_notes
+            procedure_catalog.treatment_notes = str(procedure.treatment_notes)
         if procedure.locale is not None:
-            procedure_catalog.locale = procedure.locale
+            procedure_catalog.locale = str(procedure.locale)
         
         db.commit()
         db.refresh(procedure_catalog)
@@ -1746,7 +2236,20 @@ async def update_procedure_catalog(
 @user_router.delete("/delete-procedure-catalog/{procedure_id}",
     status_code=200,
     summary="Delete a procedure catalog",
-    description="Delete an existing procedure catalog entry",
+    description="""
+    Delete an existing procedure catalog entry.
+    
+    Path parameters:
+    - procedure_id: ID of the procedure catalog to delete
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Notes:
+    - Only the owner can delete their procedure catalogs
+    - This action cannot be undone
+    - Associated data may also be affected
+    """,
     responses={
         200: {
             "description": "Procedure catalog deleted successfully",
@@ -1756,9 +2259,37 @@ async def update_procedure_catalog(
                 }
             }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "User or procedure catalog not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user": {
+                            "value": {"error": "User not found"}
+                        },
+                        "procedure": {
+                            "value": {"error": "Procedure catalog not found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
     }
 )
 async def delete_procedure_catalog(request: Request, procedure_id: str, db: Session = Depends(get_db)):
@@ -1787,21 +2318,99 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
 
 @user_router.get("/get-all-users",
-    response_model=List[UserResponse],
+    response_model=dict,
     status_code=200,
-    summary="Get all users", 
-    description="Get all users in the system",
+    summary="Get all users",
+    description="""
+    Get all users in the system.
+    
+    Returns a paginated list of users with details including:
+    - User ID
+    - Name
+    - Email
+    - Phone
+    - User type
+    - Bio
+    - Profile picture URL
+    - Creation and update timestamps
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Notes:
+    - Sensitive information is excluded
+    - Results include all user types
+    """,
     responses={
         200: {
             "description": "List of all users",
-            "model": List[UserResponse]
+            "content": {
+                "application/json": {
+                    "example": {
+                        "users": [{
+                            "id": "uuid",
+                            "name": "John Doe",
+                            "email": "john@example.com",
+                            "phone": "+1234567890",
+                            "user_type": "doctor",
+                            "bio": "Experienced dentist",
+                            "profile_pic": "url/to/picture.jpg",
+                            "created_at": "2024-01-01T00:00:00",
+                            "updated_at": "2024-01-01T00:00:00"
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "No users found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user": {
+                            "value": {"error": "User not found"}
+                        },
+                        "no_users": {
+                            "value": {"error": "No users found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
     }
 )
-async def get_all_users(request: Request, db: Session = Depends(get_db)):
+async def get_all_users(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -1811,9 +2420,17 @@ async def get_all_users(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        users = db.query(User).all()
-        if not users:
+        # Get total count
+        total = db.query(User).count()
+        if total == 0:
             return JSONResponse(status_code=404, content={"error": "No users found"})
+            
+        # Calculate pagination
+        total_pages = ceil(total / per_page)
+        offset = (page - 1) * per_page
+        
+        # Get paginated users
+        users = db.query(User).offset(offset).limit(per_page).all()
         
         users_list = []
         for user in users:
@@ -1830,28 +2447,113 @@ async def get_all_users(request: Request, db: Session = Depends(get_db)):
             }
             users_list.append(user_data)
 
-        
-        return JSONResponse(status_code=200, content=users_list)
+        return JSONResponse(status_code=200, content={
+            "users": users_list,
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            }
+        })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
 
 @user_router.get("/doctor-list",
-    response_model=List[UserResponse],
+    response_model=dict,
     status_code=200,
     summary="Get all doctors",
-    description="Get all doctors in the system",
+    description="""
+    Get all doctors in the system.
+    
+    Returns a paginated list of users with user_type='doctor' including:
+    - Doctor ID
+    - Name
+    - Email
+    - Phone
+    - Bio
+    - Profile picture URL
+    - Creation and update timestamps
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Notes:
+    - Only returns users with type 'doctor'
+    - Sensitive information is excluded
+    - Used for displaying doctor selection lists
+    """,
     responses={
         200: {
             "description": "List of all doctors",
-            "model": List[UserResponse]
+            "content": {
+                "application/json": {
+                    "example": {
+                        "doctors": [{
+                            "id": "uuid",
+                            "name": "Dr. John Doe",
+                            "email": "dr.john@example.com",
+                            "phone": "+1234567890",
+                            "user_type": "doctor",
+                            "bio": "Experienced dentist",
+                            "profile_pic": "url/to/picture.jpg",
+                            "created_at": "2024-01-01T00:00:00",
+                            "updated_at": "2024-01-01T00:00:00"
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
         },
-        401: {"description": "Unauthorized"},
-        404: {"description": "No doctors found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user": {
+                            "value": {"error": "User not found"}
+                        },
+                        "no_doctors": {
+                            "value": {"error": "No doctors found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
     }
 )
-async def get_doctor_list(request: Request, db: Session = Depends(get_db)):
+async def get_doctor_list(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -1861,9 +2563,17 @@ async def get_doctor_list(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        doctors = db.query(User).filter(User.user_type == "doctor").all()
-        if not doctors:
+        # Get total count
+        total = db.query(User).filter(User.user_type == "doctor").count()
+        if total == 0:
             return JSONResponse(status_code=404, content={"error": "No doctors found"})
+            
+        # Calculate pagination
+        total_pages = ceil(total / per_page)
+        offset = (page - 1) * per_page
+        
+        # Get paginated doctors
+        doctors = db.query(User).filter(User.user_type == "doctor").offset(offset).limit(per_page).all()
         
         doctors_list = []
         for doctor in doctors:
@@ -1880,7 +2590,15 @@ async def get_doctor_list(request: Request, db: Session = Depends(get_db)):
             }
             doctors_list.append(doctor_data)
 
-        return JSONResponse(status_code=200, content=doctors_list)
+        return JSONResponse(status_code=200, content={
+            "doctors": doctors_list,
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            }
+        })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})

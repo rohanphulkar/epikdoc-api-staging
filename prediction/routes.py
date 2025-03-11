@@ -1,28 +1,22 @@
-from fastapi import APIRouter, Depends, Request, BackgroundTasks, Body, UploadFile, File
+from fastapi import APIRouter, Depends, Request, Body, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from db.db import get_db
-from utils import prediction
-from .models import XRay, Prediction, Legend, DeletedLegend
+from .models import XRay, Prediction, Legend
 from sqlalchemy.orm import Session
-from .schemas import XRayResponse, PredictionResponse, LabelResponse, AddNotesRequest, LabelCreateAndUpdate, NewImageAnnotation
+from .schemas import XRayResponse, AddNotesRequest, LabelCreateAndUpdate, NewImageAnnotation
 from typing import List
 from utils.auth import verify_token
 from utils.prediction import calculate_class_percentage, hex_to_bgr, colormap
 from auth.models import User
 from patient.models import Patient
 from roboflow import Roboflow
-import supervision as sv
 from PIL import Image
 import cv2
 import numpy as np
 import random, os
 import datetime
 import json
-import colorsys
 from decouple import config
-from utils.report import report_generate, create_dental_radiology_report, send_email_with_attachment
-from dateutil.utils import today
-from sqlalchemy import select, delete
 
 def update_image_url(url: str, request: Request):
     base_url = str(request.base_url).rstrip('/')
@@ -34,8 +28,22 @@ prediction_router = APIRouter()
     "/upload-xray/{patient_id}",
     status_code=201,
     summary="Upload X-Ray Image",
-    description="Upload an X-Ray image file for a specific patient",
-    response_description="X-Ray upload confirmation with X-Ray ID",
+    description="""
+    Upload an X-Ray image file for a specific patient.
+    
+    Parameters:
+    - patient_id (str): The unique identifier of the patient
+    - file (UploadFile): The X-Ray image file to upload (JPEG, PNG formats supported)
+    
+    Authentication:
+    - Requires valid Bearer token in Authorization header
+    
+    The uploaded file will be:
+    1. Saved to the server filesystem with a unique timestamp-based filename
+    2. Associated with the specified patient in the database
+    3. Made available for future analysis and predictions
+    """,
+    response_description="X-Ray upload confirmation with success message",
     responses={
         201: {
             "description": "X-Ray uploaded successfully",
@@ -48,15 +56,22 @@ prediction_router = APIRouter()
             }
         },
         401: {
-            "description": "Unauthorized - Invalid token or user not found",
+            "description": "Authentication failed",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized"}
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid or missing authentication token"}
+                        },
+                        "user_not_found": {
+                            "value": {"message": "User not found"}
+                        }
+                    }
                 }
             }
         },
         404: {
-            "description": "Patient not found",
+            "description": "Patient not found in database",
             "content": {
                 "application/json": {
                     "example": {"message": "Patient not found"}
@@ -64,10 +79,10 @@ prediction_router = APIRouter()
             }
         },
         500: {
-            "description": "Server error",
+            "description": "Server error during upload or database operation",
             "content": {
                 "application/json": {
-                    "example": {"message": "Server error: {error_message}"}
+                    "example": {"message": "Server error: {detailed error message}"}
                 }
             }
         }
@@ -126,47 +141,98 @@ async def upload_xray(
 @prediction_router.get(
     "/get-xrays/{patient_id}",
     status_code=200,
-    summary="Get X-Ray Images for a Patient",
+    summary="Get Patient X-Rays",
     description="""
-    Retrieve all X-Ray images for a specific patient.
+    Retrieve all X-Ray images and their metadata for a specific patient.
     
-    Path parameters:
-    - patient_id: ID of the patient to get X-Rays for
+    Parameters:
+    - patient_id (str): The unique identifier of the patient
+    - page (int): Page number for pagination (default: 1)
+    - per_page (int): Number of items per page (default: 10, max: 100)
     
-    Required headers:
-    - Authorization: Bearer token from user login
+    Authentication:
+    - Requires valid Bearer token in Authorization header
     
-    Returns a list of X-Ray records with their metadata and image paths.
+    Returns:
+    - List of X-Ray records containing:
+        - Image URLs (original and predicted if available)
+        - Annotation status
+        - Creation and update timestamps
+        - Associated metadata
+        - Pagination details
+    
+    The image URLs are converted to fully qualified URLs based on the server's base URL.
+    Results are ordered by creation date (newest first).
     """,
     response_model=list[XRayResponse],
     responses={
         200: {
-            "description": "X-Ray images retrieved successfully",
+            "description": "X-Ray records retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
                         "message": "X-Ray images retrieved successfully",
                         "xrays": [
                             {
-                                "id": "uuid",
-                                "patient": "patient_id",
-                                "original_image": "path/to/image.jpg",
-                                "predicted_image": "path/to/predicted.jpg",
-                                "is_annotated": False,
+                                "id": "550e8400-e29b-41d4-a716-446655440000",
+                                "patient": "123e4567-e89b-12d3-a456-426614174000", 
+                                "original_image": "http://server.com/uploads/xrays/original.jpg",
+                                "predicted_image": "http://server.com/uploads/xrays/predicted.jpg",
+                                "is_annotated": True,
                                 "created_at": "2023-01-01T00:00:00",
-                                "updated_at": "2023-01-01T00:00:00"
+                                "updated_at": "2023-01-01T12:00:00"
                             }
-                        ]
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Authentication failed",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid or missing authentication token"}
+                        },
+                        "user_not_found": {
+                            "value": {"message": "User not found"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found in database",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error during database query or response preparation",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: {detailed error message}"}
+                }
+            }
+        }
     }
 )
-async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def get_xrays(
+    request: Request, 
+    patient_id: str,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db)
+):
     try:
         # Verify authentication
         decoded_token = verify_token(request)
@@ -181,7 +247,22 @@ async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        xrays = db.query(XRay).filter(XRay.patient == patient.id).order_by(XRay.created_at.desc()).all()
+        # Get total count
+        total_count = db.query(XRay).filter(XRay.patient == patient.id).count()
+        
+        # Calculate offset for pagination
+        offset = (page - 1) * per_page
+        
+        # Get paginated xrays
+        xrays = (
+            db.query(XRay)
+            .filter(XRay.patient == patient.id)
+            .order_by(XRay.created_at.desc())
+            .offset(offset)
+            .limit(per_page)
+            .all()
+        )
+        
         xray_data = []
         for xray in xrays:
             xray_data.append({
@@ -196,7 +277,13 @@ async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get
         
         return JSONResponse(status_code=200, content={
             "message": "X-Ray images retrieved successfully",
-            "xrays": xray_data
+            "xrays": xray_data,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
         })
         
     except Exception as e:
@@ -205,11 +292,26 @@ async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get
 @prediction_router.delete(
     "/delete-xray/{xray_id}",
     status_code=200,
-    summary="Delete an X-Ray Image",
-    description="Delete an X-Ray image by its ID",
+    summary="Delete X-Ray Record",
+    description="""
+    Delete an X-Ray record and its associated files from the system.
+    
+    Parameters:
+    - xray_id (str): The unique identifier of the X-Ray to delete
+    
+    Authentication:
+    - Requires valid Bearer token in Authorization header
+    
+    The operation will:
+    1. Remove the database record
+    2. Delete associated image files from storage
+    3. Remove any linked predictions or annotations
+    
+    This operation cannot be undone.
+    """,
     responses={
         200: {
-            "description": "X-Ray image deleted successfully",
+            "description": "X-Ray successfully deleted",
             "content": {
                 "application/json": {
                     "example": {
@@ -218,9 +320,37 @@ async def get_xrays(request: Request, patient_id: str, db: Session = Depends(get
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "X-Ray image not found"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Authentication failed",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid or missing authentication token"}
+                        },
+                        "user_not_found": {
+                            "value": {"message": "User not found"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "X-Ray record not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "X-Ray image not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error during deletion operation",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: {detailed error message}"}
+                }
+            }
+        }
     }
 )
 async def delete_xray(request: Request, xray_id: str, db: Session = Depends(get_db)):
@@ -385,28 +515,84 @@ def save_prediction_results(db, xray, prediction_str, output_path, class_percent
 @prediction_router.get("/create-prediction/{xray_id}",
     response_model=dict,
     status_code=200,
-    summary="Create new prediction",
+    summary="Generate AI Prediction",
     description="""
-    Create a new prediction for an X-ray image
+    Create a new AI-powered prediction analysis for an X-ray image.
     
-    Required parameters:
-    - xray_id: UUID of the X-ray image
+    Parameters:
+    - xray_id (str): The unique identifier of the X-ray to analyze
     
-    Required headers:
-    - Authorization: Bearer token from login
+    Authentication:
+    - Requires valid Bearer token in Authorization header
+    - User must have doctor privileges
     
     Process:
-    1. Validates user authorization
-    2. Loads X-ray image
-    3. Runs prediction model
-    4. Generates annotated image
-    5. Saves prediction results
+    1. Loads the original X-ray image
+    2. Runs AI model for dental feature detection
+    3. Generates annotated image with identified features
+    4. Calculates feature percentages and statistics
+    5. Saves results with color-coded legends
+    
+    The prediction includes:
+    - Annotated image with labeled features
+    - Confidence scores for detected features
+    - Color-coded legend for easy interpretation
+    - Statistical analysis of findings
     """,
     responses={
-        200: {"description": "Prediction created successfully"},
-        400: {"description": "Invalid X-ray ID or image"},
-        401: {"description": "Unauthorized - Invalid token or not a doctor"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Prediction successfully generated",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Prediction created successfully",
+                        "prediction_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "annotated_image": "http://server.com/uploads/analyzed/prediction.jpg"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Invalid request parameters",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_xray": {
+                            "value": {"error": "X-ray not found"}
+                        },
+                        "missing_file": {
+                            "value": {"error": "X-ray image file not found"}
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication or authorization failed",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized - must be a doctor"}
+                }
+            }
+        },
+        500: {
+            "description": "Server processing error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "model_error": {
+                            "value": {"error": "Model prediction failed: {detailed error}"}
+                        },
+                        "image_error": {
+                            "value": {"error": "Image annotation failed: {detailed error}"}
+                        },
+                        "database_error": {
+                            "value": {"error": "Database operation failed: {detailed error}"}
+                        }
+                    }
+                }
+            }
+        }
     }
 )
 async def create_prediction(request: Request, xray_id: str, db: Session = Depends(get_db)):
@@ -487,26 +673,86 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
 @prediction_router.get("/get-prediction/{prediction_id}",
     response_model=dict,
     status_code=200,
-    summary="Get prediction details",
+    summary="Retrieve Prediction Details",
     description="""
-    Retrieve details of a prediction by its ID
-
-    Required parameters:
-    - prediction_id: UUID of the prediction
+    Get comprehensive details of a specific prediction analysis.
     
-    Required headers:
-    - Authorization: Bearer token from login
+    Parameters:
+    - prediction_id (str): The unique identifier of the prediction to retrieve
     
-    Process:
-    1. Validates user authorization
-    2. Loads prediction details
-    3. Returns prediction details
+    Authentication:
+    - Requires valid Bearer token in Authorization header
+    
+    Returns:
+    - Complete prediction details including:
+        - Original and annotated images
+        - Detection legends with percentages
+        - Color coding information
+        - Timestamps and metadata
+        - Associated notes and annotations
+        
+    Images are returned as fully qualified URLs based on the server's base URL.
     """,
     responses={
-        200: {"description": "Prediction details retrieved successfully"},
-        400: {"description": "Invalid prediction ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Prediction details successfully retrieved",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Prediction details retrieved successfully",
+                        "prediction": {
+                            "id": "550e8400-e29b-41d4-a716-446655440000",
+                            "xray_id": "123e4567-e89b-12d3-a456-426614174000",
+                            "notes": "Patient shows signs of...",
+                            "original_image": "http://server.com/uploads/xrays/original.jpg",
+                            "predicted_image": "http://server.com/uploads/analyzed/prediction.jpg",
+                            "legends": [
+                                {
+                                    "id": "789e4567-e89b-12d3-a456-426614174000",
+                                    "name": "cavity",
+                                    "percentage": 85.5,
+                                    "include": True,
+                                    "color_hex": "#FF0000"
+                                }
+                            ],
+                            "created_at": "2023-01-01T00:00:00",
+                            "updated_at": "2023-01-01T12:00:00"
+                        }
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Invalid request parameters",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_id": {
+                            "value": {"error": "Prediction ID is required"}
+                        },
+                        "not_found": {
+                            "value": {"error": "Prediction not found"}
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error during data retrieval",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error: {detailed error message}"}
+                }
+            }
+        }
     }
 )
 async def get_prediction(request: Request, prediction_id: str, db: Session = Depends(get_db)):
@@ -565,19 +811,28 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
     status_code=200,
     summary="Add notes to a prediction",
     description="""
-    Add notes to a prediction by its ID
+    Add notes to a prediction by its ID. The notes can contain any text describing findings or observations about the prediction.
 
     Required parameters:
-    - prediction_id: UUID of the prediction
+    - prediction_id: UUID of the prediction to add notes to
+    
+    Request body:
+    - notes: Text content to add as notes
     
     Required headers:
     - Authorization: Bearer token from login
+    
+    Returns:
+    - 200: Notes successfully added with success message
+    - 400: Invalid prediction ID or empty notes
+    - 401: Invalid or missing authentication token
+    - 500: Server error while processing request
     """,
     responses={
-        200: {"description": "Notes added successfully"},
-        400: {"description": "Invalid prediction ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {"description": "Notes added successfully", "content": {"application/json": {"example": {"message": "Notes added successfully"}}}},
+        400: {"description": "Invalid prediction ID or empty notes", "content": {"application/json": {"example": {"error": "Notes are required"}}}},
+        401: {"description": "Unauthorized - Invalid token", "content": {"application/json": {"example": {"error": "Unauthorized"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error message"}}}}
     }
 )
 async def add_notes(request: Request, prediction_id: str, notes: AddNotesRequest, db: Session = Depends(get_db)):
@@ -615,19 +870,25 @@ async def add_notes(request: Request, prediction_id: str, notes: AddNotesRequest
     status_code=200,
     summary="Delete a prediction",
     description="""
-    Delete a prediction by its ID
+    Delete a prediction and all associated data (legends, annotations) by its ID.
 
     Required parameters:
-    - prediction_id: UUID of the prediction
+    - prediction_id: UUID of the prediction to delete
     
     Required headers:
     - Authorization: Bearer token from login
+    
+    Returns:
+    - 200: Prediction and associated data successfully deleted
+    - 400: Invalid prediction ID
+    - 401: Invalid or missing authentication token
+    - 500: Server error while processing deletion
     """,
     responses={
-        200: {"description": "Prediction deleted successfully"},
-        400: {"description": "Invalid prediction ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {"description": "Prediction deleted successfully", "content": {"application/json": {"example": {"message": "Prediction deleted successfully"}}}},
+        400: {"description": "Invalid prediction ID", "content": {"application/json": {"example": {"error": "Prediction ID is required"}}}},
+        401: {"description": "Unauthorized - Invalid token", "content": {"application/json": {"example": {"error": "Unauthorized"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error message"}}}}
     }
 )
 async def delete_prediction(request: Request, prediction_id: str, db: Session = Depends(get_db)):
@@ -663,19 +924,39 @@ async def delete_prediction(request: Request, prediction_id: str, db: Session = 
     status_code=200,
     summary="Reset a prediction",
     description="""
-    Reset a prediction by its ID
-
+    Reset a prediction by running the model again on the original X-ray image. This will:
+    - Delete existing legends and annotations
+    - Run prediction model again on original image
+    - Generate new annotated image
+    - Create new legends based on new predictions
+    
     Required parameters:
-    - prediction_id: UUID of the prediction
+    - prediction_id: UUID of the prediction to reset
     
     Required headers:
     - Authorization: Bearer token from login
+    
+    Returns:
+    - 200: Prediction successfully reset with new annotated image URL
+    - 400: Invalid prediction ID or missing image file
+    - 401: Invalid or missing authentication token  
+    - 500: Error during model prediction or image processing
     """,
     responses={
-        200: {"description": "Prediction reset successfully"},
-        400: {"description": "Invalid prediction ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Prediction reset successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Prediction reset successfully",
+                        "annotated_image": "http://example.com/images/analyzed/image.jpg"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid prediction ID or missing image", "content": {"application/json": {"example": {"error": "X-ray image file not found"}}}},
+        401: {"description": "Unauthorized - Invalid token", "content": {"application/json": {"example": {"error": "Unauthorized"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Model prediction failed: error details"}}}}
     }
 )
 async def reset_prediction(request: Request, prediction_id: str, db: Session = Depends(get_db)):
@@ -786,19 +1067,25 @@ async def reset_prediction(request: Request, prediction_id: str, db: Session = D
     status_code=200,
     summary="Include a legend",
     description="""
-    Include a legend by its ID
+    Mark a legend as included in the prediction results. Included legends will be shown in the UI and used in calculations.
 
     Required parameters:
-    - legend_id: UUID of the legend
+    - legend_id: UUID of the legend to include
     
     Required headers:
     - Authorization: Bearer token from login
+    
+    Returns:
+    - 200: Legend successfully marked as included
+    - 400: Invalid legend ID
+    - 401: Invalid or missing authentication token
+    - 500: Server error while updating legend
     """,
     responses={
-        200: {"description": "Legend included successfully"},
-        400: {"description": "Invalid legend ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {"description": "Legend included successfully", "content": {"application/json": {"example": {"message": "Legend included successfully"}}}},
+        400: {"description": "Invalid legend ID", "content": {"application/json": {"example": {"error": "Legend ID is required"}}}},
+        401: {"description": "Unauthorized - Invalid token", "content": {"application/json": {"example": {"error": "Unauthorized"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error message"}}}}
     }
 )
 async def include_legend(request: Request, legend_id: str, db: Session = Depends(get_db)):
@@ -831,19 +1118,25 @@ async def include_legend(request: Request, legend_id: str, db: Session = Depends
     status_code=200,
     summary="Exclude a legend",
     description="""
-    Exclude a legend by its ID
+    Mark a legend as excluded from prediction results. Excluded legends will be hidden in the UI and omitted from calculations.
 
     Required parameters:
-    - legend_id: UUID of the legend
+    - legend_id: UUID of the legend to exclude
     
     Required headers:
     - Authorization: Bearer token from login
+    
+    Returns:
+    - 200: Legend successfully marked as excluded
+    - 400: Invalid legend ID
+    - 401: Invalid or missing authentication token
+    - 500: Server error while updating legend
     """,
     responses={
-        200: {"description": "Legend excluded successfully"},
-        400: {"description": "Invalid legend ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {"description": "Legend excluded successfully", "content": {"application/json": {"example": {"message": "Legend excluded successfully"}}}},
+        400: {"description": "Invalid legend ID", "content": {"application/json": {"example": {"error": "Legend ID is required"}}}},
+        401: {"description": "Unauthorized - Invalid token", "content": {"application/json": {"example": {"error": "Unauthorized"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error message"}}}}
     }
 )
 async def exclude_legend(request: Request, legend_id: str, db: Session = Depends(get_db)):
@@ -876,20 +1169,51 @@ async def exclude_legend(request: Request, legend_id: str, db: Session = Depends
     status_code=200,
     summary="Update a legend",
     description="""
-    Update a legend by its ID
-
+    Update a legend's name and color. This will:
+    - Update the legend name and color in the database
+    - Update the prediction JSON with the new name
+    - Regenerate the annotated image with updated legend
+    
     Required parameters:
-    - legend_id: UUID of the legend
-    - legend: LabelCreateAndUpdate
+    - legend_id: UUID of the legend to update
+    
+    Request body:
+    - name: New name for the legend
+    - color_hex: New color in hex format (e.g. "#FF0000")
     
     Required headers:
-    - Authorization: Bearer token from login
+    - Authorization: Bearer token from login (doctor only)
+    
+    Returns:
+    - 200: Legend successfully updated with updated legend details and new annotated image URL
+    - 400: Invalid legend ID or image processing error
+    - 401: Invalid token or non-doctor user
+    - 404: Legend or related data not found
+    - 500: Server error during update
     """,
     responses={
-        200: {"description": "Legend updated successfully"},
-        400: {"description": "Invalid legend ID"},
-        401: {"description": "Unauthorized - Invalid token or not a doctor"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Legend updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "name": "Updated Name",
+                        "percentage": 0.75,
+                        "prediction_id": "uuid",
+                        "include": True,
+                        "color_hex": "#FF0000",
+                        "created_at": "2023-01-01T00:00:00",
+                        "updated_at": "2023-01-01T00:00:00",
+                        "annotated_image": "http://example.com/images/analyzed/image.jpg"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid legend ID or processing error", "content": {"application/json": {"example": {"error": "Failed to load image"}}}},
+        401: {"description": "Unauthorized - must be a doctor", "content": {"application/json": {"example": {"error": "Unauthorized - must be a doctor"}}}},
+        404: {"description": "Legend not found", "content": {"application/json": {"example": {"error": "Legend not found"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error processing image: error details"}}}}
     }
 )
 async def update_legend(request: Request, legend_id: str, legend: LabelCreateAndUpdate, db: Session = Depends(get_db)):
@@ -1002,20 +1326,54 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
     status_code=201,
     summary="Add missing legends to a prediction",
     description="""
-    Add missing legends to a prediction by its ID
+    Add new legends that were missed by the model prediction. This will:
+    - Create a new legend entry in the database
+    - Update the prediction JSON with the new annotation
+    - Regenerate the annotated image with the new legend
     
     Required parameters:
     - prediction_id: UUID of the prediction
     
+    Request body:
+    - annotations: List of new annotations containing:
+        - text: Legend name
+        - color: Color in hex format
+        - x, y: Coordinates of annotation box
+        - width, height: Dimensions of annotation box
+    
     Required headers:
-    - Authorization: Bearer token from login
+    - Authorization: Bearer token from login (doctor only)
+    
+    Returns:
+    - 201: Legend successfully added with new legend details and updated annotated image URL
+    - 400: Invalid prediction ID or image processing error
+    - 401: Invalid token or non-doctor user
+    - 404: Prediction or related data not found
+    - 500: Server error during addition
     """,
     responses={
-        201: {"description": "Missing legends added successfully"},
-        400: {"description": "Invalid prediction ID"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Prediction not found"},
-        500: {"description": "Internal server error"}
+        201: {
+            "description": "Missing legends added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "name": "New Legend",
+                        "percentage": 0.0,
+                        "prediction_id": "uuid",
+                        "include": True,
+                        "color_hex": "#FF0000",
+                        "created_at": "2023-01-01T00:00:00",
+                        "updated_at": "2023-01-01T00:00:00",
+                        "annotated_image": "http://example.com/images/analyzed/image.jpg"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid prediction ID or processing error", "content": {"application/json": {"example": {"error": "Failed to load image"}}}},
+        401: {"description": "Unauthorized - must be a doctor", "content": {"application/json": {"example": {"error": "Unauthorized - must be a doctor"}}}},
+        404: {"description": "Prediction not found", "content": {"application/json": {"example": {"error": "Prediction not found"}}}},
+        500: {"description": "Internal server error", "content": {"application/json": {"example": {"error": "Error processing image: error details"}}}}
     }
 )
 async def add_missing_legends(
@@ -1196,3 +1554,4 @@ async def add_missing_legends(
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
+    

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import ExpenseCreate, ExpenseUpdate, ExpenseResponse, PaymentCreate, PaymentUpdate, PaymentResponse, InvoiceCreate, InvoiceUpdate, InvoiceResponse
@@ -23,22 +23,67 @@ def update_url(url: str, request: Request):
     status_code=201,
     summary="Create new expense",
     description="""
-    Create a new expense record.
+    Create a new expense record for tracking clinic/practice expenses.
     
-    Required parameters:
-    - date: Date of expense
-    - expense_type: Type of expense
-    - description: Description of expense
-    - amount: Amount spent
-    - vendor_name: Name of vendor/supplier
+    Required parameters in request body:
+    - date (string): Date of expense in YYYY-MM-DD format
+    - expense_type (string): Category of expense (e.g. "Supplies", "Equipment", "Utilities")
+    - description (string): Detailed description of the expense
+    - amount (float): Amount spent in local currency
+    - vendor_name (string): Name of vendor/supplier where expense was incurred
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 201: Expense created successfully with expense details
+    - 401: Unauthorized - Invalid or missing token
+    - 422: Validation error - Invalid request body
+    - 500: Internal server error with error details
     """,
     responses={
-        201: {"description": "Expense created successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        201: {
+            "description": "Expense created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Expense created successfully",
+                        "expense": {
+                            "id": "uuid",
+                            "date": "2023-01-01",
+                            "expense_type": "Supplies",
+                            "description": "Medical supplies restock",
+                            "amount": 500.00,
+                            "vendor_name": "Medical Supplies Co"
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        422: {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invalid request body"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def create_expense(request: Request, expense: ExpenseCreate, db: Session = Depends(get_db)):
@@ -68,18 +113,78 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
     status_code=200, 
     summary="Get all expenses",
     description="""
-    Get list of all expenses for the logged in doctor.
+    Retrieve a list of all expenses for the authenticated doctor.
+    
+    The expenses are returned in chronological order with the most recent first.
+    Each expense includes full details including date, type, amount, etc.
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Query parameters:
+    - page (int): Page number (default: 1)
+    - per_page (int): Number of items per page (default: 10, max: 100)
+    
+    Returns:
+    - 200: List of expenses with pagination details
+    - 401: Unauthorized - Invalid or missing token  
+    - 500: Internal server error with error details
+    
+    Response includes:
+    - List of expense objects with full details
+    - Pagination metadata (total count, current page, etc)
     """,
     responses={
-        200: {"description": "List of expenses retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "List of expenses retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "expenses": [
+                            {
+                                "id": "uuid",
+                                "date": "2023-01-01",
+                                "expense_type": "Supplies", 
+                                "description": "Medical supplies",
+                                "amount": 500.00,
+                                "vendor_name": "Medical Co",
+                                "created_at": "2023-01-01T10:00:00",
+                                "updated_at": "2023-01-01T10:00:00"
+                            }
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
-async def get_expenses(request: Request, db: Session = Depends(get_db)):
+async def get_expenses(
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -89,7 +194,22 @@ async def get_expenses(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        expenses = db.query(Expense).filter(Expense.doctor_id == user.id).all()
+        # Get total count
+        total = db.query(Expense).filter(Expense.doctor_id == user.id).count()
+        
+        # Calculate offset
+        offset = (page - 1) * per_page
+        
+        # Get paginated expenses
+        expenses = (
+            db.query(Expense)
+            .filter(Expense.doctor_id == user.id)
+            .order_by(Expense.created_at.desc())
+            .offset(offset)
+            .limit(per_page)
+            .all()
+        )
+        
         expenses_list = []
         for expense in expenses:
             expense_dict = {
@@ -103,7 +223,17 @@ async def get_expenses(request: Request, db: Session = Depends(get_db)):
                 "updated_at": expense.updated_at.isoformat() if expense.updated_at else None
             }
             expenses_list.append(expense_dict)
-        return JSONResponse(status_code=200, content=expenses_list)
+            
+        response = {
+            "expenses": expenses_list,
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page
+            }
+        }
+        
+        return JSONResponse(status_code=200, content=response)
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
@@ -112,19 +242,68 @@ async def get_expenses(request: Request, db: Session = Depends(get_db)):
     status_code=200,
     summary="Get expense by ID",
     description="""
-    Get details of a specific expense by ID.
+    Retrieve detailed information for a specific expense by its ID.
     
     Path parameters:
-    - expense_id: ID of the expense to retrieve
+    - expense_id (string, required): Unique identifier of the expense to retrieve
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 200: Full expense details
+    - 401: Unauthorized - Invalid or missing token
+    - 404: Expense not found
+    - 500: Internal server error with error details
+    
+    The response includes all expense details including:
+    - Basic info (date, type, amount)
+    - Vendor details
+    - Timestamps
+    - Associated metadata
     """,
     responses={
-        200: {"description": "Expense details retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Expense not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Expense details retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "date": "2023-01-01",
+                        "expense_type": "Supplies",
+                        "description": "Medical supplies",
+                        "amount": 500.00,
+                        "vendor_name": "Medical Co",
+                        "created_at": "2023-01-01T10:00:00",
+                        "updated_at": "2023-01-01T10:00:00"
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Expense not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Expense not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def get_expense(request: Request, expense_id: str, db: Session = Depends(get_db)):
@@ -160,26 +339,81 @@ async def get_expense(request: Request, expense_id: str, db: Session = Depends(g
     status_code=200,
     summary="Update expense",
     description="""
-    Update an existing expense record.
+    Update an existing expense record with new information.
     
     Path parameters:
-    - expense_id: ID of the expense to update
+    - expense_id (string, required): Unique identifier of the expense to update
     
-    Optional parameters:
-    - date: Date of expense
-    - expense_type: Type of expense  
-    - description: Description of expense
-    - amount: Amount spent
-    - vendor_name: Name of vendor/supplier
+    Optional parameters in request body:
+    - date (string): New date in YYYY-MM-DD format
+    - expense_type (string): New expense category
+    - description (string): New description
+    - amount (float): New amount
+    - vendor_name (string): New vendor name
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Only provided fields will be updated. Omitted fields retain their current values.
+    
+    Returns:
+    - 200: Expense updated successfully with updated details
+    - 401: Unauthorized - Invalid or missing token
+    - 404: Expense not found
+    - 422: Validation error - Invalid request body
+    - 500: Internal server error with error details
     """,
     responses={
-        200: {"description": "Expense updated successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Expense not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Expense updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Expense updated successfully",
+                        "expense": {
+                            "id": "uuid",
+                            "date": "2023-01-01",
+                            "expense_type": "Supplies",
+                            "description": "Updated description",
+                            "amount": 600.00,
+                            "vendor_name": "New Vendor"
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Expense not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Expense not found"}
+                }
+            }
+        },
+        422: {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invalid request body"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def update_expense(request: Request, expense_id: str, expense: ExpenseUpdate, db: Session = Depends(get_db)):
@@ -214,18 +448,55 @@ async def update_expense(request: Request, expense_id: str, expense: ExpenseUpda
     status_code=200,
     summary="Delete expense",
     description="""
-    Delete an existing expense record.
+    Permanently delete an existing expense record.
     
     Path parameters:
-    - expense_id: ID of the expense to delete
+    - expense_id (string, required): Unique identifier of the expense to delete
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    This operation cannot be undone. The expense record will be permanently removed.
+    
+    Returns:
+    - 200: Expense deleted successfully
+    - 401: Unauthorized - Invalid or missing token
+    - 404: Expense not found
+    - 500: Internal server error with error details
     """,
     responses={
-        200: {"description": "Expense deleted successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Expense deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Expense deleted successfully"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Expense not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Expense not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def delete_expense(request: Request, expense_id: str, db: Session = Depends(get_db)):
@@ -250,32 +521,101 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     status_code=201,
     summary="Create new payment",
     description="""
-    Create a new payment record.
+    Create a new payment record for a patient.
     
-    Required parameters:
-    - date: Date of payment
-    - patient_id: ID of the patient
-    - receipt_number: Receipt number
-    - treatment_name: Name of treatment
-    - amount_paid: Amount paid
-    - payment_methods: List of payment methods used
+    Path parameters:
+    - patient_id (string, required): Unique identifier of the patient
+    
+    Required parameters in request body:
+    - date (string): Payment date in YYYY-MM-DD format
+    - receipt_number (string): Unique receipt number
+    - treatment_name (string): Name/description of treatment
+    - amount_paid (float): Payment amount
+    - payment_methods (array): List of payment methods used, each containing:
+        - payment_mode (string): Mode of payment (Cash/Card/Cheque/NetBanking)
+        - amount (float): Amount paid through this method
+        - Additional fields based on payment mode:
+            - For Card: card_number, card_type
+            - For Cheque: cheque_number, cheque_bank
+            - For NetBanking: netbanking_bank_name
     
     Optional parameters:
-    - invoice_number: Invoice number
-    - notes: Additional notes
-    - refund: Whether this is a refund payment
-    - refund_receipt_number: Receipt number for refund
-    - refunded_amount: Amount refunded
-    - cancelled: Whether payment is cancelled
-
+    - invoice_number (string): Associated invoice number
+    - notes (string): Additional payment notes
+    - refund (boolean): Whether this is a refund
+    - refund_receipt_number (string): Original receipt number for refund
+    - refunded_amount (float): Amount being refunded
+    - cancelled (boolean): Whether payment is cancelled
+    
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 201: Payment created successfully with payment details
+    - 401: Unauthorized - Invalid or missing token
+    - 404: Patient not found
+    - 422: Validation error - Invalid request body
+    - 500: Internal server error with error details
     """,
     responses={
-        201: {"description": "Payment created successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        201: {
+            "description": "Payment created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Payment created successfully",
+                        "payment": {
+                            "id": "uuid",
+                            "date": "2023-01-01",
+                            "patient_id": "patient_uuid",
+                            "receipt_number": "REC001",
+                            "treatment_name": "Consultation",
+                            "amount_paid": 1000.00,
+                            "payment_methods": [
+                                {
+                                    "payment_mode": "Card",
+                                    "amount": 1000.00,
+                                    "card_number": "****1234",
+                                    "card_type": "Credit"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        422: {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invalid request body"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def create_payment(request: Request, patient_id: str, payment: PaymentCreate, db: Session = Depends(get_db)):
@@ -322,25 +662,88 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
     status_code=200,
     summary="Get all payments",
     description="""
-    Get list of all payments for the logged in doctor.
+    Retrieve a paginated list of all payments for the authenticated doctor.
     
     Query parameters:
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10)
+    - page (integer, optional): Page number for pagination (default: 1)
+    - per_page (integer, optional): Number of items per page (default: 10)
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 200: List of payments with pagination details
+    - 401: Unauthorized - Invalid or missing token
+    - 500: Internal server error with error details
+    
+    Response includes:
+    - List of payment objects with full details including payment methods
+    - Pagination metadata (total count, current page, total pages)
+    
+    Each payment object contains:
+    - Basic payment info (date, amount, receipt number)
+    - Patient details (id, name, number)
+    - Treatment details
+    - Payment method details
+    - Refund/cancellation status
+    - Timestamps
     """,
     responses={
-        200: {"description": "List of payments retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "List of payments retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "payments": [
+                            {
+                                "id": "uuid",
+                                "date": "2023-01-01",
+                                "patient_id": "patient_uuid",
+                                "patient_name": "John Doe",
+                                "receipt_number": "REC001",
+                                "treatment_name": "Consultation",
+                                "amount_paid": 1000.00,
+                                "payment_methods": [
+                                    {
+                                        "payment_mode": "Card",
+                                        "amount": 1000.00,
+                                        "card_number": "****1234"
+                                    }
+                                ]
+                            }
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def get_payments(
-    request: Request, 
-    page: int = 1,
-    per_page: int = 10,
+    request: Request,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -421,30 +824,100 @@ async def get_payments(
     status_code=200,
     summary="Get payment by patient ID",
     description="""
-    Get all payments for a specific patient.
+    Retrieve a paginated list of all payments for a specific patient.
     
     Path parameters:
-    - patient_id: ID of the patient
+    - patient_id (string, required): Unique identifier of the patient
     
     Query parameters:
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10)
+    - page (integer, optional): Page number for pagination (default: 1)
+    - per_page (integer, optional): Number of items per page (default: 10)
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 200: List of patient's payments with pagination details
+    - 401: Unauthorized - Invalid or missing token
+    - 404: Patient not found
+    - 500: Internal server error with error details
+    
+    Response includes:
+    - List of payment objects with full details including payment methods
+    - Pagination metadata (total count, current page, total pages)
+    
+    Each payment object contains:
+    - Basic payment info (date, amount, receipt number)
+    - Treatment details
+    - Payment method details
+    - Refund/cancellation status
+    - Timestamps
     """,
     responses={
-        200: {"description": "Payments retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "List of patient's payments retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "payments": [
+                            {
+                                "id": "uuid",
+                                "date": "2023-01-01",
+                                "patient_id": "patient_uuid",
+                                "patient_name": "John Doe",
+                                "receipt_number": "REC001",
+                                "treatment_name": "Consultation",
+                                "amount_paid": 1000.00,
+                                "payment_methods": [
+                                    {
+                                        "payment_mode": "Card",
+                                        "amount": 1000.00,
+                                        "card_number": "****1234"
+                                    }
+                                ]
+                            }
+                        ],
+                        "pagination": {
+                            "total": 10,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 1
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def get_payments_by_patient_id(
     request: Request, 
-    patient_id: str, 
-    page: int = 1,
-    per_page: int = 10,
+    patient_id: str,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -522,21 +995,53 @@ async def get_payments_by_patient_id(
 @payment_router.get("/get-payment/{payment_id}",
     response_model=PaymentResponse,
     status_code=200,
-    summary="Get payment by ID",
+    summary="Get payment details by ID",
     description="""
-    Get details of a specific payment by ID.
+    Retrieves detailed information about a specific payment record by its ID.
     
     Path parameters:
-    - payment_id: ID of the payment to retrieve
+    - payment_id: Unique identifier of the payment to retrieve
+    
+    Returns:
+    - Full payment details including:
+        - Basic payment information (date, amount, etc.)
+        - Patient details
+        - Treatment information  
+        - Payment methods used
+        - Refund details if applicable
+        - Timestamps
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Notes:
+    - Only accessible by the doctor who created the payment
+    - Returns 404 if payment ID doesn't exist
+    - Returns 401 if unauthorized or invalid token
     """,
     responses={
-        200: {"description": "Payment details retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Payment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Payment details retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "date": "2023-01-01T10:00:00",
+                        "amount_paid": 1000.00,
+                        "patient_name": "John Doe",
+                        "payment_methods": [
+                            {
+                                "payment_mode": "CARD",
+                                "amount": 1000.00
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        404: {"description": "Payment not found - Invalid payment ID"},
+        500: {"description": "Internal server error - Error while processing request"}
     }
 )
 async def get_payment(request: Request, payment_id: str, db: Session = Depends(get_db)):
@@ -595,31 +1100,62 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
 @payment_router.get("/search-payment",
     response_model=list[PaymentResponse], 
     status_code=200,
-    summary="Search payments",
+    summary="Search and filter payments",
     description="""
-    Search payments by patient details and/or date filters. Both are optional and independent.
+    Search and filter payments using various criteria with pagination support.
     
-    Search parameters (optional, only one required if searching):
-    - patient_id: Patient's ID
-    - patient_email: Patient's email
-    - patient_name: Patient's name
+    Search parameters (optional, at least one required for search):
+    - patient_id: Patient's unique identifier
+    - patient_email: Patient's registered email address
+    - patient_name: Full or partial name of the patient (case-insensitive)
     
-    Filter parameters (optional):
-    - start_date: Start date for date range filter (YYYY-MM-DD)
-    - end_date: End date for date range filter (YYYY-MM-DD)
-    - date: Specific date to filter (YYYY-MM-DD)
+    Date filter parameters (optional):
+    - start_date: Start date for date range (format: YYYY-MM-DD)
+    - end_date: End date for date range (format: YYYY-MM-DD)
+    - date: Specific date to filter (format: YYYY-MM-DD)
     
     Pagination parameters:
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10)
+    - page: Page number for results (default: 1)
+    - per_page: Number of results per page (default: 10, max: 100)
+    
+    Returns:
+    - List of matching payments with pagination details
+    - Each payment includes full details and associated payment methods
+    - Pagination metadata including total count and page information
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Notes:
+    - Results are filtered to only show payments for the authenticated doctor
+    - Date filters can be used independently or in combination
+    - Search is case-insensitive for patient name
     """,
     responses={
-        200: {"description": "Search results retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Search results retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "payments": [
+                            {
+                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "patient_name": "John Doe",
+                                "amount_paid": 1000.00
+                            }
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        500: {"description": "Internal server error - Error while processing request"}
     }
 )
 async def search_payments(
@@ -630,8 +1166,8 @@ async def search_payments(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     date: Optional[datetime] = None,
-    page: int = 1,
-    per_page: int = 10,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -728,34 +1264,51 @@ async def search_payments(
 @payment_router.patch("/update-payment/{payment_id}",
     response_model=PaymentResponse,
     status_code=200,
-    summary="Update payment",
+    summary="Update existing payment details",
     description="""
-    Update an existing payment record.
+    Update an existing payment record with new information.
     
     Path parameters:
-    - payment_id: ID of the payment to update
+    - payment_id: Unique identifier of the payment to update
     
-    Optional parameters:
-    - date: Date of payment
-    - receipt_number: Receipt number
-    - treatment_name: Name of treatment
-    - amount_paid: Amount paid
-    - invoice_number: Invoice number
-    - notes: Additional notes
-    - refund: Whether this is a refund payment
+    Updatable fields (all optional):
+    - date: Date of payment (format: YYYY-MM-DD)
+    - receipt_number: New receipt number
+    - treatment_name: Updated treatment name/description
+    - amount_paid: New payment amount
+    - invoice_number: Updated invoice reference
+    - notes: Additional or updated notes
+    - refund: Toggle refund status (true/false)
     - refund_receipt_number: Receipt number for refund
     - refunded_amount: Amount refunded
-    - cancelled: Whether payment is cancelled
-    - payment_methods: List of payment methods used
+    - cancelled: Mark payment as cancelled (true/false)
+    - payment_methods: Updated list of payment methods
+        - Each method can include: mode, card details, bank details, etc.
+    
+    Notes:
+    - Only the provided fields will be updated
+    - Existing payment methods will be replaced if new ones are provided
+    - All amount fields should be positive numbers
+    - Original payment ID and patient details cannot be modified
     
     Required headers:
     - Authorization: Bearer token from doctor login
     """,
     responses={
-        200: {"description": "Payment updated successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Payment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Payment updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Payment updated successfully",
+                        "payment_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        404: {"description": "Payment not found - Invalid payment ID"},
+        500: {"description": "Internal server error - Error while processing request"}
     }
 )
 async def update_payment(request: Request, payment_id: str, payment: PaymentUpdate, db: Session = Depends(get_db)):
@@ -799,21 +1352,37 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
 @payment_router.delete("/delete-payment/{payment_id}",
     response_model=PaymentResponse,
     status_code=200,
-    summary="Delete payment",
+    summary="Delete payment record",
     description="""
-    Delete an existing payment record.
+    Permanently delete a payment record and its associated payment methods.
     
     Path parameters:
-    - payment_id: ID of the payment to delete
+    - payment_id: Unique identifier of the payment to delete
+    
+    Important notes:
+    - This action cannot be undone
+    - All associated payment methods will also be deleted
+    - Consider using payment cancellation instead of deletion for audit purposes
+    - Only the doctor who created the payment can delete it
     
     Required headers:
     - Authorization: Bearer token from doctor login
     """,
     responses={
-        200: {"description": "Payment deleted successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Payment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Payment deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Payment deleted successfully",
+                        "payment_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        404: {"description": "Payment not found - Invalid payment ID"},
+        500: {"description": "Internal server error - Error while processing request"}
     }
 )
 async def delete_payment(request: Request, payment_id: str, db: Session = Depends(get_db)):
@@ -846,26 +1415,62 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
 @payment_router.post("/create-invoice",
     response_model=InvoiceResponse,
     status_code=201,
-    summary="Create new invoice and generate PDF",
+    summary="Create invoice and generate PDF",
     description="""
-    Create a new invoice record and generate a professional PDF invoice.
+    Create a new invoice record and generate a professional PDF invoice document.
     
     Required fields:
-    - patient_id: ID of the patient
-    - invoice_items: List of invoice items with treatment details
+    - patient_id: Unique identifier of the patient
+    - invoice_items: List of items to be included in the invoice
+        - treatment_name: Name/description of the treatment
+        - unit_cost: Cost per unit
+        - quantity: Number of units
+        - discount: Discount amount (optional)
+        - discount_type: Percentage or fixed amount (optional)
+        - tax_name: Name of applicable tax (optional)
+        - tax_percent: Tax percentage (optional)
     
     Optional fields:
     - date: Invoice date (defaults to current date)
-    - invoice_number: Custom invoice number
-    - notes: Additional notes
-    - description: Detailed description
+    - invoice_number: Custom invoice number (auto-generated if not provided)
+    - notes: Additional notes to appear on invoice
+    - description: Detailed description of services
+    - cancelled: Whether invoice is cancelled (default: false)
     
     Returns:
-    - 201: Invoice created successfully with PDF generated
-    - 401: Unauthorized - Invalid token
-    - 404: Patient not found
-    - 500: Internal server error
-    """)
+    - Invoice details including generated PDF URL
+    - Automatically calculated totals and tax amounts
+    - Professional PDF document with clinic/doctor branding
+    
+    Notes:
+    - PDF is generated automatically and stored securely
+    - Invoice numbers are unique and sequential if auto-generated
+    - Tax calculations follow local tax rules
+    - Multiple items can be added with different tax rates
+    
+    Required headers:
+    - Authorization: Bearer token from doctor login
+    """,
+    responses={
+        201: {
+            "description": "Invoice created successfully with PDF",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "invoice_number": "INV-20230101-12345678",
+                        "pdf_url": "https://example.com/invoices/INV-20230101-12345678.pdf",
+                        "total_amount": 1000.00,
+                        "created_at": "2023-01-01T10:00:00"
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        404: {"description": "Patient not found - Invalid patient ID"},
+        500: {"description": "Internal server error - Error while processing request"}
+    }
+)
 async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session = Depends(get_db)):
     try:
         # Verify authentication
@@ -962,22 +1567,58 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
 @payment_router.get("/get-invoices",
     response_model=dict,
     status_code=200,
-    summary="Get all invoices",
+    summary="Get all invoices for logged in doctor",
     description="""
-    Get list of all invoices for the logged in doctor.
+    Retrieves a list of all invoices associated with the authenticated doctor.
+    
+    The response includes full invoice details including items, amounts, taxes and discounts.
+    Invoices are sorted by date in descending order (newest first).
     
     Required headers:
     - Authorization: Bearer token from doctor login
     
     Optional query parameters:
-    - cancelled: Filter by cancelled status (true/false)
-    - start_date: Filter by date range start (YYYY-MM-DD)
-    - end_date: Filter by date range end (YYYY-MM-DD)
+    - cancelled (boolean): Filter invoices by cancelled status
+    - start_date (YYYY-MM-DD): Filter invoices created on or after this date
+    - end_date (YYYY-MM-DD): Filter invoices created on or before this date
+    - page (integer): Page number for pagination (default: 1)
+    - per_page (integer): Number of items per page (default: 10, max: 100)
+    
+    Returns a list of invoice objects containing:
+    - Basic invoice details (ID, number, dates, etc)
+    - Patient and doctor information
+    - Line items with treatment details
+    - PDF file path if available
+    - Pagination metadata
     """,
     responses={
-        200: {"description": "List of invoices retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "List of invoices retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "invoices": [{
+                            "id": "uuid",
+                            "invoice_number": "INV-001",
+                            "date": "2023-01-01",
+                            "patient_name": "John Doe",
+                            "items": [{
+                                "treatment_name": "Consultation",
+                                "amount": 100.00
+                            }]
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        500: {"description": "Internal server error - Failed to retrieve invoices"}
     }
 )
 async def get_invoices(
@@ -985,6 +1626,8 @@ async def get_invoices(
     cancelled: Optional[bool] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -1008,7 +1651,14 @@ async def get_invoices(
         if end_date:
             query = query.filter(Invoice.date <= end_date)
             
-        invoices = query.order_by(Invoice.date.desc()).all()
+        # Get total count before pagination
+        total_count = query.count()
+        
+        # Calculate offset for pagination
+        offset = (page - 1) * per_page
+        
+        # Apply pagination and ordering
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
         
         # Format response
         invoice_list = []
@@ -1049,31 +1699,84 @@ async def get_invoices(
                 
             invoice_list.append(invoice_dict)
             
-        return JSONResponse(status_code=200, content=invoice_list)
+        return JSONResponse(status_code=200, content={
+            "invoices": invoice_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.get("/get-invoices-by-patient/{patient_id}",
     response_model=dict,
     status_code=200,
-    summary="Get invoices by patient ID",
+    summary="Get all invoices for a specific patient",
     description="""
-    Get list of all invoices for a specific patient.
+    Retrieves all invoices associated with a specific patient ID.
+    
+    The response includes detailed invoice information including:
+    - Basic invoice details (ID, number, dates)
+    - Patient and doctor information  
+    - Line items with treatment details
+    - Calculated amounts including:
+        - Subtotal before discounts/taxes
+        - Discount amounts
+        - Tax amounts
+        - Final total
+    - PDF file path if available
     
     Path parameters:
-    - patient_id: ID of the patient
+    - patient_id (string, required): Unique identifier of the patient
+    
+    Query parameters:
+    - page (integer, optional): Page number for pagination (default: 1)
+    - per_page (integer, optional): Number of items per page (default: 10, max: 100)
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns a list of invoice objects with full details and calculated amounts.
     """,
     responses={
-        200: {"description": "List of invoices retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "List of patient invoices retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": [{
+                        "id": "uuid",
+                        "invoice_number": "INV-001", 
+                        "patient_name": "John Doe",
+                        "subtotal": 100.00,
+                        "total_discount": 10.00,
+                        "total_tax": 9.00,
+                        "total_amount": 99.00,
+                        "items": [{
+                            "treatment_name": "Consultation",
+                            "amount": 100.00,
+                            "discount_amount": 10.00,
+                            "tax_amount": 9.00,
+                            "total": 99.00
+                        }]
+                    }]
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Patient not found or no invoices exist for patient"},
+        500: {"description": "Internal server error - Failed to retrieve patient invoices"}
     }
 )
-async def get_invoices_by_patient(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def get_invoices_by_patient(
+    request: Request, 
+    patient_id: str,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -1083,7 +1786,21 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        invoices = db.query(Invoice).filter(Invoice.patient_id == patient_id).all()
+        # Get total count
+        total_count = db.query(Invoice).filter(Invoice.patient_id == patient_id).count()
+        
+        # Calculate offset for pagination
+        offset = (page - 1) * per_page
+        
+        # Get paginated invoices
+        invoices = (
+            db.query(Invoice)
+            .filter(Invoice.patient_id == patient_id)
+            .offset(offset)
+            .limit(per_page)
+            .all()
+        )
+        
         invoice_list = []
         for invoice in invoices:
             invoice_dict = {
@@ -1106,7 +1823,30 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
             
             # Get invoice items
             items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            subtotal = 0
+            total_discount = 0
+            total_tax = 0
+            
             for item in items:
+                # Calculate item amount
+                item_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity else 0
+                
+                # Calculate discount
+                discount_amount = 0
+                if item.discount:
+                    if item.discount_type and item.discount_type.lower() == 'percentage':
+                        discount_amount = item_amount * (item.discount / 100)
+                    else:
+                        discount_amount = item.discount
+                
+                # Calculate tax
+                tax_amount = 0
+                if item.tax_percent:
+                    taxable_amount = item_amount - discount_amount
+                    tax_amount = taxable_amount * (item.tax_percent / 100)
+                    if item.invoice_level_tax_discount:
+                        tax_amount = tax_amount * (1 - item.invoice_level_tax_discount / 100)
+                
                 item_dict = {
                     "treatment_name": item.treatment_name,
                     "unit_cost": item.unit_cost,
@@ -1116,34 +1856,94 @@ async def get_invoices_by_patient(request: Request, patient_id: str, db: Session
                     "type": item.type,
                     "invoice_level_tax_discount": item.invoice_level_tax_discount,
                     "tax_name": item.tax_name,
-                    "tax_percent": item.tax_percent
+                    "tax_percent": item.tax_percent,
+                    "amount": item_amount,
+                    "discount_amount": discount_amount,
+                    "tax_amount": tax_amount,
+                    "total": item_amount - discount_amount + tax_amount
                 }
                 invoice_dict["items"].append(item_dict)
                 
+                subtotal += item_amount
+                total_discount += discount_amount
+                total_tax += tax_amount
+            
+            invoice_dict["subtotal"] = subtotal
+            invoice_dict["total_discount"] = total_discount
+            invoice_dict["total_tax"] = total_tax
+            invoice_dict["total_amount"] = subtotal - total_discount + total_tax
             invoice_list.append(invoice_dict)
             
-        return JSONResponse(status_code=200, content=invoice_list)
+        return JSONResponse(status_code=200, content={
+            "invoices": invoice_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            }
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @payment_router.get("/get-invoice/{invoice_id}",
     response_model=dict,
     status_code=200,
-    summary="Get invoice by ID",
+    summary="Get detailed invoice information by ID",
     description="""
-    Get details of a specific invoice by ID.
+    Retrieves complete details of a specific invoice by its ID.
+    
+    Returns comprehensive invoice information including:
+    - Basic invoice details (ID, number, dates)
+    - Patient and doctor information
+    - Line items with full treatment details
+    - Calculated amounts per item:
+        - Base amount (unit cost × quantity)
+        - Discount amount (fixed or percentage)
+        - Tax amount (with any invoice level discounts)
+        - Item total
+    - Invoice totals:
+        - Subtotal before discounts/taxes
+        - Total discounts applied
+        - Total taxes
+        - Final invoice amount
+    - PDF file path if available
     
     Path parameters:
-    - invoice_id: ID of the invoice to retrieve
+    - invoice_id (string, required): Unique identifier of the invoice
     
     Required headers:
     - Authorization: Bearer token from doctor login
     """,
     responses={
-        200: {"description": "Invoice details retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Invoice not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Invoice details retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "invoice_number": "INV-001",
+                        "patient_name": "John Doe",
+                        "doctor_name": "Dr. Smith",
+                        "subtotal": 100.00,
+                        "total_discount": 10.00,
+                        "total_tax": 9.00,
+                        "total": 99.00,
+                        "items": [{
+                            "treatment_name": "Consultation",
+                            "unit_cost": 100.00,
+                            "quantity": 1,
+                            "discount": 10.00,
+                            "tax_amount": 9.00,
+                            "total": 99.00
+                        }]
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Invoice not found with provided ID"},
+        500: {"description": "Internal server error - Failed to retrieve invoice details"}
     }
 )
 async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(get_db)):
@@ -1180,7 +1980,33 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
         
         # Get invoice items
         items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).all()
+        subtotal = 0
+        total_discount = 0
+        total_tax = 0
+        
         for item in items:
+            # Calculate item amount
+            item_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity else 0
+            subtotal += item_amount
+            
+            # Calculate discount
+            discount_amount = 0
+            if item.discount:
+                if item.discount_type and item.discount_type.upper() == 'PERCENTAGE':
+                    discount_amount = item_amount * (item.discount / 100)
+                else:
+                    discount_amount = item.discount
+            total_discount += discount_amount
+            
+            # Calculate tax
+            tax_amount = 0
+            if item.tax_percent:
+                taxable_amount = item_amount - discount_amount
+                tax_amount = taxable_amount * (item.tax_percent / 100)
+                if item.invoice_level_tax_discount:
+                    tax_amount = tax_amount * (1 - item.invoice_level_tax_discount / 100)
+            total_tax += tax_amount
+            
             item_dict = {
                 "treatment_name": item.treatment_name,
                 "unit_cost": item.unit_cost,
@@ -1190,9 +2016,19 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
                 "type": item.type,
                 "invoice_level_tax_discount": item.invoice_level_tax_discount,
                 "tax_name": item.tax_name,
-                "tax_percent": item.tax_percent
+                "tax_percent": item.tax_percent,
+                "amount": item_amount,
+                "discount_amount": discount_amount,
+                "tax_amount": tax_amount,
+                "total": item_amount - discount_amount + tax_amount
             }
+            
             invoice_dict["items"].append(item_dict)
+            
+        invoice_dict["subtotal"] = subtotal
+        invoice_dict["total_discount"] = total_discount
+        invoice_dict["total_tax"] = total_tax
+        invoice_dict["total"] = subtotal - total_discount + total_tax
         
         return JSONResponse(status_code=200, content=invoice_dict)
     except Exception as e:
@@ -1201,28 +2037,61 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
 @payment_router.patch("/update-invoice/{invoice_id}",
     response_model=InvoiceResponse,
     status_code=200,
-    summary="Update invoice",
+    summary="Update an existing invoice",
     description="""
-    Update an existing invoice record.
+    Updates an existing invoice with new information.
+    
+    Allows updating:
+    - Basic invoice details (date, number, notes, description)
+    - Invoice items with full treatment details
+    - Will regenerate PDF with updated information
     
     Path parameters:
-    - invoice_id: ID of the invoice to update
+    - invoice_id (string, required): Unique identifier of invoice to update
     
-    Optional parameters:
-    - date: Invoice date
-    - invoice_number: Custom invoice number
-    - notes: Additional notes
-    - description: Detailed description
-    - invoice_items: List of invoice items with treatment details
+    Request body:
+    - date (string, optional): New invoice date (YYYY-MM-DD)
+    - invoice_number (string, optional): New custom invoice number
+    - notes (string, optional): Updated additional notes
+    - description (string, optional): Updated detailed description
+    - invoice_items (array, optional): Updated list of invoice items containing:
+        - treatment_name (string): Name of treatment/service
+        - unit_cost (number): Cost per unit
+        - quantity (integer): Number of units
+        - discount (number, optional): Discount amount or percentage
+        - discount_type (string, optional): "fixed" or "percentage"
+        - tax_name (string, optional): Name of tax applied
+        - tax_percent (number, optional): Tax percentage
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Notes:
+    - If invoice items are provided, all existing items will be replaced
+    - If no items provided, existing items remain unchanged
+    - PDF will be regenerated with updated information
+    - Old PDF file will be deleted
     """,
     responses={
-        200: {"description": "Invoice updated successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Invoice not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Invoice updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "invoice_number": "INV-001",
+                        "date": "2023-01-01",
+                        "items": [{
+                            "treatment_name": "Updated Service",
+                            "unit_cost": 150.00
+                        }]
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Invoice not found with provided ID"},
+        500: {"description": "Internal server error - Failed to update invoice"}
     }
 )
 async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpdate, db: Session = Depends(get_db)):
@@ -1350,21 +2219,41 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
 @payment_router.delete("/delete-invoice/{invoice_id}",
     response_model=InvoiceResponse,
     status_code=200,
-    summary="Delete invoice",
+    summary="Delete an invoice",
     description="""
-    Delete an existing invoice record.
+    Permanently deletes an invoice and all associated data.
+    
+    This will:
+    - Delete the invoice record
+    - Delete all associated invoice items
+    - Remove the generated PDF file
+    - Clean up all related data
     
     Path parameters:
-    - invoice_id: ID of the invoice to delete
+    - invoice_id (string, required): Unique identifier of invoice to delete
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Notes:
+    - This action cannot be undone
+    - All associated data will be permanently removed
+    - PDF files will be deleted from storage
     """,
     responses={
-        200: {"description": "Invoice deleted successfully"},
-        401: {"description": "Unauthorized - Invalid token"},
-        404: {"description": "Invoice not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Invoice successfully deleted",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Invoice deleted successfully"
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Invoice not found with provided ID"},
+        500: {"description": "Internal server error - Failed to delete invoice"}
     }
 )
 async def delete_invoice(request: Request, invoice_id: str, db: Session = Depends(get_db)):

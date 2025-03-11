@@ -27,39 +27,43 @@ logger = logging.getLogger("uvicorn")
 
 # Initialize FastAPI app with metadata
 app = FastAPI(
-    title="EpikdocAI API",
+    title="Epikdoc API",
     description="""
-    EpikdocAI is an advanced medical CRM powered by artificial intelligence.
+    Epikdoc is a comprehensive healthcare management platform that leverages artificial intelligence to enhance medical workflows and patient care.
     
     Key Features:
-    - Patient management and scheduling
-    - AI-powered medical image analysis 
-    - Automated reporting and analytics
-    - Secure data handling and storage
-    - Real-time notifications
+    - Intelligent patient record management and scheduling
+    - Advanced AI-powered medical image analysis and diagnostics
+    - Comprehensive reporting and analytics dashboard
+    - HIPAA-compliant secure data handling and storage
+    - Automated patient notifications and reminders
+    - Integrated billing and payment processing
+    - Staff management and role-based access control
+    - Real-time collaboration tools for healthcare teams
     
-    For detailed API documentation and usage examples, please visit our documentation.
+    The platform is designed to streamline healthcare operations while improving diagnostic accuracy and patient outcomes.
+    For detailed API documentation, integration guides, and usage examples, please refer to our comprehensive documentation.
     """,
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=[
-        {"name": "auth", "description": "Authentication and user management"},
-        {"name": "patients", "description": "Patient records and management"},
-        {"name": "appointments", "description": "Appointment scheduling and management"},
-        {"name": "payments", "description": "Payment processing and invoicing"},
-        {"name": "predictions", "description": "AI-powered analysis and predictions"},
-        {"name": "staff", "description": "Staff management and permissions"},
+        {"name": "auth", "description": "Authentication, authorization and user management"},
+        {"name": "patients", "description": "Patient records, history and document management"},
+        {"name": "appointments", "description": "Appointment scheduling, reminders and calendar management"},
+        {"name": "payments", "description": "Payment processing, invoicing and financial reporting"},
+        {"name": "predictions", "description": "AI-powered medical image analysis and diagnostic predictions"},
+        {"name": "staff", "description": "Staff management, roles and access control"},
     ],
-    terms_of_service="https://www.epikdoc.com/terms-and-conditions",
+    terms_of_service="https://www.epikdoc.com/terms",
     license_info={
-        "name": "EpikdocAI Enterprise License",
+        "name": "Epikdoc Professional License",
         "url": "https://epikdoc.com/license"
     },
     contact={
-        "name": "EpikdocAI Support Team",
-        "url": "https://epikdoc.com/support",
-        "email": "support@backupdoc.ai"
+        "name": "Epikdoc Technical Support",
+        "url": "https://support.epikdoc.com",
+        "email": "support@epikdoc.com"
     }
 )
 

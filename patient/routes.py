@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, File, UploadFile, status, Form
+from fastapi import APIRouter, Request, Depends, File, UploadFile, status, Form, Query
 from sqlalchemy.orm import Session
 from .schemas import *
 from .models import *
@@ -6,7 +6,7 @@ from db.db import get_db
 from auth.models import User
 from fastapi.responses import JSONResponse
 from utils.auth import verify_token
-from sqlalchemy import insert, select, update, delete
+from sqlalchemy import insert, select, update, delete, func
 import os
 from sqlalchemy.exc import SQLAlchemyError
 from PIL import Image
@@ -16,6 +16,7 @@ import json
 from datetime import datetime
 from typing import Optional, List
 from appointment.models import Appointment
+from math import ceil
 
 patient_router = APIRouter()
 
@@ -27,14 +28,65 @@ def calculate_age(date_of_birth: datetime) -> str:
     return str(age)
 
 @patient_router.post(
-    "/create", 
+    "/create",
     status_code=status.HTTP_201_CREATED,
-    response_description="Patient created successfully",
+    summary="Create a new patient record",
+    description="""
+    Create a new patient record in the system.
+    
+    Required fields:
+    - name: Patient's full name
+    - mobile_number: Primary contact number
+    - gender: Patient's gender (male/female/other)
+    - email: Valid email address
+    - date_of_birth: Date of birth in YYYY-MM-DD format
+    
+    Optional fields:
+    - secondary_mobile: Alternative contact number
+    - address: Full residential address
+    - blood_group: Blood group
+    - medical_history: Previous medical conditions
+    - remarks: Additional notes
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
     responses={
-        201: {"description": "Patient created successfully"},
-        400: {"description": "Invalid request data or database error"},
-        401: {"description": "Unauthorized access"},
-        500: {"description": "Internal server error"}
+        201: {
+            "description": "Patient created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Patient created successfully",
+                        "patient_id": "uuid"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Invalid request data or database error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error: [error details]"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
     }
 )
 async def create_patient(
@@ -90,39 +142,53 @@ async def create_patient(
 @patient_router.get(
     "/get-all",
     status_code=status.HTTP_200_OK,
-    summary="Get all patients",
+    summary="Get all patients for authenticated doctor",
     description="""
-    Get all patients associated with the authenticated doctor.
+    Retrieve all patients associated with the authenticated doctor.
+    
+    Returns a paginated list of patient records with complete details including:
+    - Personal information (name, age, gender, contact details)
+    - Medical information (blood group, history, notes)
+    - Administrative data (patient number, created date)
+    - Address details (locality, city, pincode)
+    
+    Query parameters:
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
     
     Required headers:
     - Authorization: Bearer {access_token}
-    
-    Returns array of patient records including:
-    - Basic info (name, age, gender)
-    - Contact details (phone, email, address)
-    - Medical details (blood group, history)
-    - Other metadata (created date, notes)
     """,
     responses={
         200: {
-            "description": "All patients retrieved successfully",
+            "description": "List of all patients retrieved successfully",
             "content": {
                 "application/json": {
-                    "example": [{
-                        "id": "uuid",
-                        "name": "John Doe",
-                        "mobile_number": "+1234567890",
-                        "email": "john@example.com",
-                        "gender": "male",
-                        "age": 35,
-                        "blood_group": "O+",
-                        "created_at": "2023-01-01T00:00:00"
-                    }]
+                    "example": {
+                        "patients": [{
+                            "id": "uuid",
+                            "name": "John Doe",
+                            "mobile_number": "+1234567890", 
+                            "email": "john@example.com",
+                            "gender": "male",
+                            "age": "35",
+                            "blood_group": "O+",
+                            "address": "123 Main St",
+                            "city": "New York",
+                            "created_at": "2023-01-01T00:00:00"
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        }
+                    }
                 }
             }
         },
         401: {
-            "description": "Unauthorized access",
+            "description": "Unauthorized - Invalid or missing authentication token",
             "content": {
                 "application/json": {
                     "example": {"message": "Unauthorized"}
@@ -133,7 +199,7 @@ async def create_patient(
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"message": "Database error: {error details}"}
+                    "example": {"message": "Internal server error: [error details]"}
                 }
             }
         }
@@ -141,15 +207,31 @@ async def create_patient(
 )
 async def get_all_patients(
     request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
         
-        # Get all patients for the authenticated doctor
+        # Get total count of patients
+        total = db.execute(
+            select(func.count()).select_from(Patient).where(
+                Patient.doctor_id == decoded_token.get("user_id")
+            )
+        ).scalar()
+
+        # Calculate pagination values
+        total_pages = ceil((total or 0) / per_page)
+        offset = (page - 1) * per_page
+        
+        # Get paginated patients for the authenticated doctor
         patients = db.execute(
-            select(Patient).where(Patient.doctor_id == decoded_token.get("user_id"))
+            select(Patient)
+            .where(Patient.doctor_id == decoded_token.get("user_id"))
+            .offset(offset)
+            .limit(per_page)
         ).scalars().all()
         
         # Convert patients to list of dictionaries
@@ -183,7 +265,15 @@ async def get_all_patients(
             }
             patient_list.append(patient_dict)
         
-        return patient_list
+        return {
+            "patients": patient_list,
+            "pagination": {
+                "total": total or 0,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            }
+        }
     except SQLAlchemyError as e:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -198,12 +288,68 @@ async def get_all_patients(
 @patient_router.get(
     "/get-by-id/{patient_id}",
     status_code=status.HTTP_200_OK,
-    response_description="Patient retrieved successfully",
+    summary="Get detailed patient information by ID",
+    description="""
+    Retrieve complete patient information including:
+    - Personal details
+    - Medical history
+    - Treatment history
+    - Clinical notes
+    - Treatment plans
+    - Medical records with attachments
+    - Appointment history
+    
+    Required parameters:
+    - patient_id: UUID of the patient
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
     responses={
-        200: {"description": "Patient retrieved successfully"},
-        401: {"description": "Unauthorized access"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Patient details retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "uuid",
+                        "name": "John Doe",
+                        "mobile_number": "+1234567890",
+                        "email": "john@example.com",
+                        "gender": "male",
+                        "age": "35",
+                        "treatments": [],
+                        "clinical_notes": [],
+                        "treatment_plans": [],
+                        "medical_records": [],
+                        "appointments": []
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
     }
 )
 async def get_patient_by_id(
@@ -388,17 +534,74 @@ async def get_patient_by_id(
             content={"message": f"Internal server error: {str(e)}"}
         )
 
-@patient_router.get("/search", status_code=status.HTTP_200_OK, response_description="Search patients by name, mobile, ID, email, gender and age range", responses={
-    200: {"description": "Returns list of matching patients"},
-    401: {"description": "Unauthorized - Invalid or missing authentication token"},
-    500: {"description": "Internal server error - Database or server-side error"}
-})
+@patient_router.get(
+    "/search",
+    status_code=status.HTTP_200_OK,
+    summary="Search patients by multiple criteria",
+    description="""
+    Search for patients using various filters:
+    - Text search (name, mobile, ID, email)
+    - Gender filter (male/female/other/all)
+    - Age range (min and max age)
+    
+    Query parameters:
+    - search_query: Text to search in name/mobile/ID/email
+    - gender: Filter by gender (male/female/other/all)
+    - min_age: Minimum age filter
+    - max_age: Maximum age filter
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
+    responses={
+        200: {
+            "description": "List of matching patients with pagination info",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "items": [{
+                            "id": "uuid",
+                            "name": "John Doe", 
+                            "mobile_number": "+1234567890",
+                            "gender": "male",
+                            "age": "35"
+                        }],
+                        "total": 100,
+                        "page": 1,
+                        "per_page": 10,
+                        "pages": 10
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
 async def search_patients(
     request: Request,
     search_query: Optional[str] = None,
     gender: Optional[str] = None,
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -439,10 +642,26 @@ async def search_patients(
             from sqlalchemy import cast, Integer
             query = query.filter(cast(Patient.age, Integer) <= max_age)
             
+        # Get total count for pagination
+        from sqlalchemy import func
+        total = db.execute(select(func.count()).select_from(query.subquery())).scalar()
+        
+        # Add pagination
+        query = query.offset((page - 1) * per_page).limit(per_page)
+            
         # Execute query
         patients = db.execute(query).scalars().all()
         
-        return patients
+        # Calculate total pages
+        pages = (total + per_page - 1) // per_page if total else 0
+        
+        return {
+            "items": patients,
+            "total": total or 0,
+            "page": page,
+            "per_page": per_page,
+            "pages": pages
+        }
         
     except SQLAlchemyError as e:
         return JSONResponse(
@@ -458,7 +677,27 @@ async def search_patients(
 @patient_router.patch(
     "/update/{patient_id}",
     status_code=status.HTTP_200_OK,
-    response_description="Updates an existing patient's information",
+    summary="Update patient information",
+    description="""
+    Update an existing patient's information.
+    
+    Path parameters:
+    - patient_id: UUID of patient to update
+    
+    Updatable fields:
+    - name: Patient's full name
+    - mobile_number: Contact number
+    - email: Email address
+    - gender: Gender (male/female/other)
+    - date_of_birth: Date of birth (YYYY-MM-DD)
+    - address: Full address
+    - blood_group: Blood group
+    - medical_history: Medical history notes
+    - remarks: Additional notes
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
     responses={
         200: {
             "description": "Patient updated successfully",
@@ -495,7 +734,7 @@ async def search_patients(
             }
         },
         404: {
-            "description": "Patient with specified ID not found or does not belong to authenticated doctor",
+            "description": "Patient not found",
             "content": {
                 "application/json": {
                     "example": {"message": "Patient not found"}
@@ -503,7 +742,7 @@ async def search_patients(
             }
         },
         500: {
-            "description": "Internal server error occurred while processing request",
+            "description": "Internal server error",
             "content": {
                 "application/json": {
                     "example": {"message": "Internal server error: [error details]"}
@@ -568,45 +807,56 @@ async def update_patient(
 @patient_router.delete(
     "/delete/{patient_id}",
     status_code=status.HTTP_200_OK,
-    response_description="Delete a patient record from the system",
+    summary="Delete patient record",
+    description="""
+    Permanently delete a patient record and all associated data.
+    
+    Path parameters:
+    - patient_id: UUID of patient to delete
+    
+    This will delete:
+    - Patient's personal information
+    - Medical records
+    - Treatment history
+    - Appointments
+    - Clinical notes
+    - All other associated data
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Warning: This action cannot be undone.
+    """,
     responses={
         200: {
             "description": "Patient deleted successfully",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Patient deleted successfully"
-                    }
+                    "example": {"message": "Patient deleted successfully"}
                 }
             }
         },
         401: {
-            "description": "Unauthorized access - Invalid or missing authentication token",
+            "description": "Unauthorized - Invalid or missing authentication token",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Invalid or expired token"
-                    }
+                    "example": {"message": "Unauthorized"}
                 }
             }
         },
         404: {
-            "description": "Patient not found - No patient exists with the provided ID for the authenticated doctor",
+            "description": "Patient not found",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Patient not found"
-                    }
+                    "example": {"message": "Patient not found"}
                 }
             }
         },
         500: {
-            "description": "Internal server error - Database error or unexpected server error",
+            "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {
-                        "message": "Internal server error: error details"
-                    }
+                    "example": {"message": "Internal server error: [error details]"}
                 }
             }
         }
@@ -662,56 +912,93 @@ async def delete_patient(
     description="""
     Create a new medical record for a patient with treatments, medicines and file attachments.
     
-    Required parameters:
-    - patient_id (path): ID of the patient
-    - complaint (form): Chief complaint text
-    - diagnosis (form): Doctor's diagnosis text
-    - vital_signs (form): Patient vital signs data
+    **Path Parameters:**
+    - patient_id: ID of the patient
     
-    Optional parameters:
-    - treatments (form): JSON string containing list of treatments
+    **Form Data:**
+    - complaint (required): Chief complaint text
+    - diagnosis (required): Doctor's diagnosis text  
+    - vital_signs (required): Patient vital signs data in JSON format
+        {
+            "temperature": "98.6",
+            "blood_pressure": "120/80",
+            "pulse": "72",
+            "respiratory_rate": "16"
+        }
+    - treatments (optional): JSON array of treatments
         [
             {
-                "name": "Treatment name"
+                "name": "Treatment name"  // Required
             }
         ]
-    - medicines (form): JSON string containing list of medicines with details
+    - medicines (optional): JSON array of medicines
         [
             {
-                "name": "Medicine name",
-                "quantity": 1,
-                "price": 0.0,
-                "dosage": "Dosage instructions", 
-                "instructions": "Usage instructions"
+                "name": "Medicine name",          // Required
+                "quantity": 1,                    // Optional, default: 1
+                "price": 10.50,                  // Optional, default: 0
+                "dosage": "1 tablet twice daily", // Optional
+                "instructions": "After meals"     // Optional
             }
         ]
-    - files (form): List of file attachments (images, documents etc)
+    - files (optional): List of file attachments (images, documents etc)
+        - Supported formats: jpg, jpeg, png, pdf, doc, docx
+        - Max file size: 5MB per file
+        - Files are stored in uploads/medical_records/
     
-    Required headers:
-    - Authorization: Bearer token from login
+    **Authentication:**
+    - Required: Bearer token in Authorization header
+    - Token must be for the doctor associated with the patient
+    
+    **Notes:**
+    - Creates a medical record entry with basic details
+    - Optionally adds treatments, medicines and file attachments
+    - File paths are stored in database, files saved to disk
+    - Medicine amount is auto-calculated as price * quantity
+    - All monetary values should be in the system's default currency
     """,
     responses={
         201: {
             "description": "Medical record created successfully",
             "content": {
                 "application/json": {
-                    "example": {"message": "Medical record created successfully"}
+                    "example": {
+                        "message": "Medical record created successfully",
+                        "medical_record_id": "550e8400-e29b-41d4-a716-446655440000"
+                    }
                 }
             }
         },
         400: {
-            "description": "Invalid request data",
+            "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {"message": "Invalid request data"}
+                    "examples": {
+                        "invalid_json": {
+                            "value": {"message": "Invalid JSON format for treatments or medicines"}
+                        },
+                        "db_error": {
+                            "value": {"message": "Database error: [error details]"}
+                        },
+                        "missing_fields": {
+                            "value": {"message": "Required fields missing: complaint, diagnosis, vital_signs"}
+                        }
+                    }
                 }
             }
         },
         401: {
-            "description": "Unauthorized - Invalid or missing token",
+            "description": "Unauthorized",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized"}
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid authentication token"}
+                        },
+                        "expired_token": {
+                            "value": {"message": "Authentication token has expired"}
+                        }
+                    }
                 }
             }
         },
@@ -727,7 +1014,7 @@ async def delete_patient(
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"message": "Internal server error"}
+                    "example": {"message": "Internal server error: [error details]"}
                 }
             }
         }

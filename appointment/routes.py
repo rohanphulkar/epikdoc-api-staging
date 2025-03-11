@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse
@@ -25,25 +25,60 @@ appointment_router = APIRouter()
     description="""
     Create a new appointment for a patient.
     
-    Required parameters:
-    - patient_id: ID of the patient
-    - notes: Notes for the appointment
-    - appointment_date: Date of appointment
-    - checked_in_at: Check-in time
-    - checked_out_at: Check-out time
-    - status: Status of the appointment (SCHEDULED, CONFIRMED, CANCELLED, COMPLETED)
-    - share_on_email: Whether to share appointment details via email
-    - share_on_sms: Whether to share appointment details via SMS
-    - share_on_whatsapp: Whether to share appointment details via WhatsApp
+    **Required fields:**
+    - patient_id (UUID): Patient's unique identifier
+    - notes (str): Appointment notes/description
+    - appointment_date (datetime): Scheduled date and time
+    - checked_in_at (datetime): Patient check-in time
+    - checked_out_at (datetime): Patient check-out time
+    - status (enum): One of [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
+    - share_on_email (bool): Enable email notifications
+    - share_on_sms (bool): Enable SMS notifications
+    - share_on_whatsapp (bool): Enable WhatsApp notifications
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "message": "Appointment created successfully"
+    }
+    ```
     """,
     responses={
-        201: {"description": "Appointment created successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        201: {
+            "description": "Successfully created new appointment",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment created successfully"}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Referenced patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def create_appointment(request: Request, appointment: AppointmentCreate, db: Session = Depends(get_db)):
@@ -95,20 +130,97 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 @appointment_router.get("/all",
     response_model=dict,
     status_code=200,
-    summary="Get all appointments",
+    summary="List all appointments",
     description="""
-    Get all appointments for a doctor.
+    Retrieve all appointments for the authenticated doctor with pagination.
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Query Parameters:**
+    - page (int): Page number (default: 1)
+    - limit (int): Number of items per page (default: 10, max: 100)
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "appointments": [
+            {
+                "id": "uuid",
+                "patient_id": "uuid", 
+                "patient_number": "P001",
+                "patient_name": "John Doe",
+                "doctor_id": "uuid",
+                "doctor_name": "Dr. Smith",
+                "notes": "Regular checkup",
+                "appointment_date": "2023-01-01T10:00:00",
+                "checked_in_at": "2023-01-01T10:00:00",
+                "checked_out_at": "2023-01-01T10:30:00",
+                "status": "COMPLETED",
+                "created_at": "2023-01-01T09:00:00",
+                "updated_at": "2023-01-01T10:30:00",
+                "doctor": {
+                    "id": "uuid",
+                    "name": "Dr. Smith",
+                    "email": "dr.smith@example.com",
+                    "phone": "1234567890"
+                },
+                "patient": {
+                    "id": "uuid",
+                    "name": "John Doe", 
+                    "email": "john@example.com",
+                    "mobile_number": "9876543210",
+                    "date_of_birth": "1990-01-01",
+                    "gender": "MALE"
+                }
+            }
+        ],
+        "total": 100,
+        "page": 1,
+        "limit": 10,
+        "total_pages": 10
+    }
+    ```
     """,
     responses={
-        200: {"description": "Appointments retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully retrieved appointments list",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "appointments": [],
+                        "total": 0,
+                        "page": 1,
+                        "limit": 10,
+                        "total_pages": 0
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
-async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
+async def get_all_appointments(
+    request: Request,
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page")
+):
     try:
         decoded_token = verify_token(request)
 
@@ -119,11 +231,23 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
+        # Calculate offset
+        offset = (page - 1) * limit
+
+        # Get total count
+        total_count = (
+            db.query(Appointment)
+            .filter(Appointment.doctor_id == user.id)
+            .count()
+        )
+
         appointments = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
             .join(User, Appointment.doctor_id == User.id)
             .filter(Appointment.doctor_id == user.id)
+            .offset(offset)
+            .limit(limit)
             .all()
         )
 
@@ -160,28 +284,108 @@ async def get_all_appointments(request: Request, db: Session = Depends(get_db)):
             }
             appointment_list.append(appointment_data)
         
-        return JSONResponse(status_code=200, content={"appointments": appointment_list})
+        return JSONResponse(status_code=200, content={
+            "appointments": appointment_list,
+            "total": total_count,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total_count + limit - 1) // limit
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @appointment_router.get("/patient-appointments/{patient_id}",
     response_model=dict,
     status_code=200,
-    summary="Get all appointments for a patient",
+    summary="Get patient appointments",
     description="""
-    Get all appointments for a patient.
+    Retrieve all appointments for a specific patient with pagination.
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Path Parameter:**
+    - patient_id (UUID): Patient's unique identifier
+    
+    **Query Parameters:**
+    - page (int): Page number (default: 1)
+    - limit (int): Number of items per page (default: 10, max: 100)
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "appointments": [
+            {
+                "id": "uuid",
+                "patient_id": "uuid",
+                "patient_number": "P001",
+                "patient_name": "John Doe",
+                "doctor_id": "uuid",
+                "doctor_name": "Dr. Smith",
+                "notes": "Regular checkup",
+                "appointment_date": "2023-01-01T10:00:00",
+                "checked_in_at": "2023-01-01T10:00:00",
+                "checked_out_at": "2023-01-01T10:30:00",
+                "status": "COMPLETED",
+                "created_at": "2023-01-01T09:00:00",
+                "updated_at": "2023-01-01T10:30:00"
+            }
+        ],
+        "total": 100,
+        "page": 1,
+        "limit": 10,
+        "total_pages": 10
+    }
+    ```
     """,
     responses={
-        200: {"description": "Appointments retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        404: {"description": "Patient not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully retrieved patient's appointments",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "appointments": [],
+                        "total": 0,
+                        "page": 1,
+                        "limit": 10,
+                        "total_pages": 0
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
-async def get_patient_appointments(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def get_patient_appointments(
+    request: Request,
+    patient_id: str,
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page")
+):
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
@@ -195,7 +399,23 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        appointments = db.query(Appointment).filter(Appointment.patient_id == patient.id).all()
+        # Calculate offset
+        offset = (page - 1) * limit
+
+        # Get total count
+        total_count = (
+            db.query(Appointment)
+            .filter(Appointment.patient_id == patient.id)
+            .count()
+        )
+        
+        appointments = (
+            db.query(Appointment)
+            .filter(Appointment.patient_id == patient.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
         
         appointment_list = []
         for appointment in appointments:
@@ -216,37 +436,111 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
             }
             appointment_list.append(appointment_data)
 
-        return JSONResponse(status_code=200, content={"appointments": appointment_list})
+        return JSONResponse(status_code=200, content={
+            "appointments": appointment_list,
+            "total": total_count,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total_count + limit - 1) // limit
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @appointment_router.get("/search",
     response_model=dict,
     status_code=200,
-    summary="Search and filter appointments",
+    summary="Search appointments",
     description="""
-    Search appointments with search terms and/or filters. Both are optional and independent.
+    Search and filter appointments using various criteria with pagination.
     
-    Search parameters (optional):
-    - patient_name: Patient's name
-    - patient_email: Patient's email
-    - patient_phone: Patient's phone
-    - doctor_name: Doctor's name  
-    - doctor_email: Doctor's email
-    - doctor_phone: Doctor's phone
+    **Query Parameters:**
+    - patient_name (str, optional): Search by patient name
+    - patient_email (str, optional): Search by patient email
+    - patient_phone (str, optional): Search by patient phone
+    - doctor_name (str, optional): Search by doctor name
+    - doctor_email (str, optional): Search by doctor email
+    - doctor_phone (str, optional): Search by doctor phone
+    - patient_gender (str, optional): Filter by patient gender
+    - status (str, optional): Filter by appointment status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
+    - appointment_date (datetime, optional): Filter by appointment date (ISO format)
+    - page (int): Page number (default: 1)
+    - limit (int): Number of items per page (default: 10, max: 100)
     
-    Filter parameters (optional):
-    - patient_gender: Patient's gender
-    - status: Appointment status (SCHEDULED, CONFIRMED, CANCELLED, COMPLETED)
-    - appointment_date: Appointment date (ISO format)
+    **Authentication:**
+    - Requires valid doctor Bearer token
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Response:**
+    ```json
+    {
+        "appointments": [
+            {
+                "id": "uuid",
+                "patient_id": "uuid",
+                "patient_number": "P001",
+                "patient_name": "John Doe",
+                "doctor_id": "uuid",
+                "doctor_name": "Dr. Smith",
+                "notes": "Regular checkup",
+                "appointment_date": "2023-01-01T10:00:00",
+                "checked_in_at": "2023-01-01T10:00:00",
+                "checked_out_at": "2023-01-01T10:30:00",
+                "status": "COMPLETED",
+                "created_at": "2023-01-01T09:00:00",
+                "updated_at": "2023-01-01T10:30:00",
+                "doctor": {
+                    "id": "uuid",
+                    "name": "Dr. Smith",
+                    "email": "dr.smith@example.com",
+                    "phone": "1234567890"
+                },
+                "patient": {
+                    "id": "uuid",
+                    "name": "John Doe",
+                    "email": "john@example.com",
+                    "mobile_number": "9876543210",
+                    "date_of_birth": "1990-01-01",
+                    "gender": "MALE"
+                }
+            }
+        ],
+        "total": 100,
+        "page": 1,
+        "limit": 10,
+        "total_pages": 10
+    }
+    ```
     """,
     responses={
-        200: {"description": "Search results retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully retrieved search results",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "appointments": [],
+                        "total": 0,
+                        "page": 1,
+                        "limit": 10,
+                        "total_pages": 0
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def search_appointments(
@@ -260,6 +554,8 @@ async def search_appointments(
     patient_gender: Optional[str] = None,
     status: Optional[str] = None,
     appointment_date: Optional[datetime] = None,
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -303,6 +599,13 @@ async def search_appointments(
         if filter_conditions:
             query = query.filter(and_(*filter_conditions))
 
+        # Get total count
+        total_count = query.count()
+
+        # Calculate offset and apply pagination
+        offset = (page - 1) * limit
+        query = query.offset(offset).limit(limit)
+
         appointments = query.all()
 
         appointment_list = []
@@ -338,7 +641,13 @@ async def search_appointments(
             }
             appointment_list.append(appointment_data)
 
-        return JSONResponse(status_code=200, content={"appointments": appointment_list})
+        return JSONResponse(status_code=200, content={
+            "appointments": appointment_list,
+            "total": total_count,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total_count + limit - 1) // limit
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
@@ -347,19 +656,82 @@ async def search_appointments(
     status_code=200,
     summary="Get appointment details",
     description="""
-    Get details of a specific appointment by ID.
+    Retrieve detailed information for a specific appointment.
     
-    Required parameters:
-    - appointment_id: ID of the appointment
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "appointment": {
+            "id": "uuid",
+            "patient_id": "uuid",
+            "patient_number": "P001",
+            "patient_name": "John Doe",
+            "doctor_id": "uuid",
+            "doctor_name": "Dr. Smith",
+            "notes": "Regular checkup",
+            "appointment_date": "2023-01-01T10:00:00",
+            "checked_in_at": "2023-01-01T10:00:00",
+            "checked_out_at": "2023-01-01T10:30:00",
+            "status": "COMPLETED",
+            "created_at": "2023-01-01T09:00:00",
+            "updated_at": "2023-01-01T10:30:00",
+            "doctor": {
+                "id": "uuid",
+                "name": "Dr. Smith",
+                "email": "dr.smith@example.com",
+                "phone": "1234567890"
+            },
+            "patient": {
+                "id": "uuid",
+                "name": "John Doe",
+                "email": "john@example.com",
+                "mobile_number": "9876543210",
+                "date_of_birth": "1990-01-01",
+                "gender": "MALE"
+            }
+        }
+    }
+    ```
     """,
     responses={
-        200: {"description": "Appointment details retrieved successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        404: {"description": "Appointment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully retrieved appointment details",
+            "content": {
+                "application/json": {
+                    "example": {"appointment": {}}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def get_appointment_details(request: Request, appointment_id: str, db: Session = Depends(get_db)):
@@ -423,27 +795,64 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
     status_code=200,
     summary="Update appointment details",
     description="""
-    Update details of a specific appointment by ID.
-
-    Required parameters:
-    - appointment_id: ID of the appointment
-    - notes: Notes for the appointment (optional)
-    - appointment_date: Date of appointment (optional)
-    - checked_in_at: Check-in time (optional)
-    - checked_out_at: Check-out time (optional)
-    - status: Status of the appointment (optional)
-    - share_on_email: Whether to share via email (optional)
-    - share_on_sms: Whether to share via SMS (optional)
-    - share_on_whatsapp: Whether to share via WhatsApp (optional)
+    Update details of a specific appointment.
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Request body (optional fields):**
+    - notes (str): Updated notes
+    - appointment_date (datetime): New appointment date/time
+    - checked_in_at (datetime): New check-in time
+    - checked_out_at (datetime): New check-out time
+    - status (str): New status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
+    - share_on_email (bool): Update email sharing preference
+    - share_on_sms (bool): Update SMS sharing preference
+    - share_on_whatsapp (bool): Update WhatsApp sharing preference
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "message": "Appointment updated successfully"
+    }
+    ```
     """,
     responses={
-        200: {"description": "Appointment updated successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        404: {"description": "Appointment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully updated appointment",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment updated successfully"}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def update_appointment(request: Request, appointment_id: str, appointment_update: AppointmentUpdate, db: Session = Depends(get_db)):
@@ -489,19 +898,54 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
     status_code=200,
     summary="Delete appointment",
     description="""
-    Delete a specific appointment by ID.
+    Delete a specific appointment.
     
-    Required parameters:
-    - appointment_id: ID of the appointment
-
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "message": "Appointment deleted successfully"
+    }
+    ```
     """,
     responses={
-        200: {"description": "Appointment deleted successfully"},
-        401: {"description": "Unauthorized - Invalid token or non-doctor user"},
-        404: {"description": "Appointment not found"},
-        500: {"description": "Internal server error"}
+        200: {
+            "description": "Successfully deleted appointment",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment deleted successfully"}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
     }
 )
 async def delete_appointment(request: Request, appointment_id: str, db: Session = Depends(get_db)):
