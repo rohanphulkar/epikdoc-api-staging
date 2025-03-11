@@ -195,16 +195,10 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        appointments = (
-            db.query(Appointment, Patient, User)
-            .join(Patient, Appointment.patient_id == Patient.id)
-            .join(User, Appointment.doctor_id == User.id)
-            .filter(Appointment.patient_id == patient_id)
-            .all()
-        )
+        appointments = db.query(Appointment).filter(Appointment.patient_id == patient.id).all()
         
         appointment_list = []
-        for appointment, patient, doctor in appointments:
+        for appointment in appointments:
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
@@ -219,20 +213,6 @@ async def get_patient_appointments(request: Request, patient_id: str, db: Sessio
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                "doctor": {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone
-                },
-                "patient": {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value
-                }
             }
             appointment_list.append(appointment_data)
 
