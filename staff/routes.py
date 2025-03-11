@@ -498,7 +498,7 @@ async def search_staff(
             }
         )
 @staff_router.get(
-    "/get-staff{staff_id}",
+    "/get-staff/{staff_id}",
     response_model=UserSchema,
     status_code=200,
     summary="Get staff user details",
