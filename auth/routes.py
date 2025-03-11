@@ -1371,7 +1371,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                 "processor": process_invoice_data
             },
             {
-                "patterns": ["procedurecatalog", "procedure-catalog", "procedure_catalog"],
+                "patterns": ["procedure catalog", "procedure-catalog", "procedure_catalog", "procedurecatalog"],
                 "processor": process_procedure_catalog_data
             }
         ]
@@ -1380,10 +1380,10 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         for file_type in file_types:
             print(f"\nProcessing file type: {file_type['patterns']}")
             for filename in csv_files:
-                normalized_filename = filename.lower()
+                normalized_filename = filename.lower().replace(" ", "")
                 
                 # Check if current file matches any pattern for this type
-                if any(pattern in normalized_filename for pattern in file_type["patterns"]):
+                if any(pattern.replace(" ", "").lower() in normalized_filename for pattern in file_type["patterns"]):
                     print(f"\nProcessing file: {filename}")
                     try:
                         print(f"Reading CSV file: {filename}")
