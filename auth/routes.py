@@ -448,7 +448,7 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
         reset_token = generate_reset_token()
-        reset_link = f"{request.headers.get('origin') or request.base_url}/reset-password?token={reset_token}"
+        reset_link = f"{request.headers.get('origin') or request.base_url}/user/reset-password?token={reset_token}"
         
         setattr(db_user, 'reset_token', reset_token)
         setattr(db_user, 'reset_token_expiry', datetime.now() + timedelta(hours=3))
@@ -1094,24 +1094,24 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
                 name=str(row.get("Patient Name", "")).strip("'")[:255],
                 mobile_number=str(row.get("Mobile Number", "")).strip("'")[:255],
-                contact_number=str(row.get("Contact Number", "")).strip("'")[:255],
+                contact_number=str(row.get("Contact Number", ""))[:255],
                 email=str(row.get("Email Address", "")).strip("'")[:255],
-                secondary_mobile=str(row.get("Secondary Mobile", "")).strip("'")[:255],
+                secondary_mobile=str(row.get("Secondary Mobile", ""))[:255],
                 gender=gender_map[idx],
                 address=str(row.get("Address", "")).strip("'")[:255],
-                locality=str(row.get("Locality", "")).strip("'")[:255],
-                city=str(row.get("City", "")).strip("'")[:255],
-                pincode=str(row.get("Pincode", "")).strip("'")[:255],
-                national_id=str(row.get("National Id", "")).strip("'")[:255],
+                locality=str(row.get("Locality", ""))[:255],
+                city=str(row.get("City", ""))[:255],
+                pincode=str(row.get("Pincode", ""))[:255],
+                national_id=str(row.get("National Id", ""))[:255],
                 date_of_birth=dob,
-                age=str(row.get("Age", "")).strip("'")[:5],
+                age=str(row.get("Age", ""))[:5],
                 anniversary_date=anniversary,
-                blood_group=str(row.get("Blood Group", "")).strip("'")[:50],
-                remarks=str(row.get("Remarks", "")).strip("'"),
-                medical_history=str(row.get("Medical History", "")).strip("'"),
-                referred_by=str(row.get("Referred By", "")).strip("'")[:255],
-                groups=str(row.get("Groups", "")).strip("'")[:255],
-                patient_notes=str(row.get("Patient Notes", "")).strip("'")
+                blood_group=str(row.get("Blood Group", ""))[:50],
+                remarks=str(row.get("Remarks", "")),
+                medical_history=str(row.get("Medical History", "")),
+                referred_by=str(row.get("Referred By", ""))[:255],
+                groups=str(row.get("Groups", ""))[:255],
+                patient_notes=str(row.get("Patient Notes", ""))
             ))
             
         except Exception as e:
@@ -1154,11 +1154,11 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
             if patient:
                 appointments.append(Appointment(
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
-                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
                     doctor_id=user.id,
-                    doctor_name=str(row.get("DoctorName", "")).strip("'")[:255],
-                    notes=str(row.get("Notes", "")).strip("'"),
+                    doctor_name=str(row.get("DoctorName", ""))[:255],
+                    notes=str(row.get("Notes", "")),
                     appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
                     checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
@@ -1249,9 +1249,9 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 clinical_notes.append(ClinicalNote(
                     patient_id=patient.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", "")).strip("'")[:255],
-                    note_type=str(row.get("Type", "")).strip("'")[:255],
-                    description=str(row.get("Description", "")).strip("'"),
+                    doctor=str(row.get("Doctor", ""))[:255],
+                    note_type=str(row.get("Type", ""))[:255],
+                    description=str(row.get("Description", "")),
                     is_revised=bool(row.get("Revised", False))
                 ))
         except Exception as e:
@@ -1291,8 +1291,8 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 treatment_plans.append(TreatmentPlan(
                     patient_id=patient.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", "")).strip("'")[:255],
-                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
+                    doctor=str(row.get("Doctor", ""))[:255],
+                    treatment_name=str(row.get("Treatment Name", ""))[:255],
                     unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
                     quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
                     discount=float(str(row.get("Discount", 0)).strip("'")) if row.get("Discount") else None,
@@ -1396,15 +1396,15 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     date=row["Date"] if pd.notna(row["Date"]) else None,
                     doctor_id=user.id,
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
-                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
-                    receipt_number=str(row.get("Receipt Number", "")).strip("'")[:255],
-                    treatment_name=str(row.get("Treatment name", "")).strip("'")[:255],
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    receipt_number=str(row.get("Receipt Number", ""))[:255],
+                    treatment_name=str(row.get("Treatment name", ""))[:255],
                     amount_paid=row["Amount Paid"],
-                    invoice_number=str(row.get("Invoice Number", "")).strip("'")[:255],
-                    notes=str(row.get("Notes", "")).strip("'"),
+                    invoice_number=str(row.get("Invoice Number", ""))[:255],
+                    notes=str(row.get("Notes", "")),
                     refund=bool(row.get("Refund", False)),
-                    refund_receipt_number=str(row.get("Refund Receipt Number", "")).strip("'")[:255],
+                    refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
                     refunded_amount=row["Refunded amount"],
                     cancelled=bool(row.get("Cancelled", False))
                 )
@@ -1416,13 +1416,13 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 # Create payment method with payment ID
                 payment_method = PaymentMethod(
                     payment_id=payment.id,
-                    payment_mode=str(row.get("Payment Mode", "")).strip("'")[:255],
-                    card_number=str(row.get("Card Number", "")).strip("'")[:255],
-                    card_type=str(row.get("Card Type", "")).strip("'")[:255],
-                    cheque_number=str(row.get("Cheque Number", "")).strip("'")[:255],
-                    cheque_bank=str(row.get("Cheque Bank", "")).strip("'")[:255],
-                    netbanking_bank_name=str(row.get("Netbanking Bank Name", "")).strip("'")[:255],
-                    vendor_name=str(row.get("Vendor Name", "")).strip("'")[:255],
+                    payment_mode=str(row.get("Payment Mode", ""))[:255],
+                    card_number=str(row.get("Card Number", ""))[:255],
+                    card_type=str(row.get("Card Type", ""))[:255],
+                    cheque_number=str(row.get("Cheque Number", ""))[:255],
+                    cheque_bank=str(row.get("Cheque Bank", ""))[:255],
+                    netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
+                    vendor_name=str(row.get("Vendor Name", ""))[:255],
                     vendor_fees_percent=safe_float_convert(row.get("Vendor Fees Percent"))
                 )
                 db.add(payment_method)
@@ -1457,13 +1457,13 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     doctor_id=user.id,
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
-                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
-                    doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
-                    invoice_number=str(row.get("Invoice Number", "")).strip("'")[:255],
+                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    doctor_name=str(row.get("Doctor Name", ""))[:255],
+                    invoice_number=str(row.get("Invoice Number", ""))[:255],
                     cancelled=bool(row.get("Cancelled", False)),
-                    notes=str(row.get("Notes", "")).strip("'"),
-                    description=str(row.get("Description", "")).strip("'")
+                    notes=str(row.get("Notes", "")),
+                    description=str(row.get("Description", ""))
                 )
                 
                 # Save invoice first to get ID
@@ -1485,12 +1485,12 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
 
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
-                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
+                    treatment_name=str(row.get("Treatment Name", ""))[:255],
                     unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
                     quantity=safe_parse_number(row.get("Quantity"), int, 1),
                     discount=safe_parse_number(row.get("Discount"), float),
                     discount_type=discount_type,
-                    type=str(row.get("Type", "")).strip("'")[:255],
+                    type=str(row.get("Type", ""))[:255],
                     invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
                     tax_name=str(row.get("Tax name", ""))[:255],
                     tax_percent=safe_parse_number(row.get("Tax Percent"), float)
@@ -1667,7 +1667,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         db.close()
         shutil.rmtree(f"uploads/imports/{uuid}")
         print("Database connection closed")
-
+        
 @user_router.post("/import-data",
     response_model=dict,
     status_code=200,

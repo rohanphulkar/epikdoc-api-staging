@@ -408,7 +408,27 @@ async def get_patient_by_id(
         medical_records = []
         appointments = []
 
-        for treatment in patient.treatments:
+
+        db_treatments = db.execute(
+            select(Treatment).filter(
+                Treatment.patient_id == patient_id
+            )
+        ).scalars().all()
+
+        db_clinical_notes = db.execute(
+            select(ClinicalNote).filter(
+                ClinicalNote.patient_id == patient_id
+            )
+        ).scalars().all()
+
+        db_treatment_plans = db.execute(
+            select(TreatmentPlan).filter(
+                TreatmentPlan.patient_id == patient_id
+            )
+        ).scalars().all()
+        
+        
+        for treatment in db_treatments:
             treatment_data = {
                 "id": treatment.id,
                 "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
@@ -425,7 +445,7 @@ async def get_patient_by_id(
             }
             treatments.append(treatment_data)
 
-        for clinical_note in patient.clinical_notes:
+        for clinical_note in db_clinical_notes:
             clinical_note_data = {
                 "id": clinical_note.id,
                 "date": clinical_note.date.isoformat() if clinical_note.date else None,
@@ -436,7 +456,7 @@ async def get_patient_by_id(
             }
             clinical_notes.append(clinical_note_data)
 
-        for treatment_plan in patient.treatment_plans:
+        for treatment_plan in db_treatment_plans:
             treatment_plan_data = {
                 "id": treatment_plan.id,
                 "date": treatment_plan.date.isoformat() if treatment_plan.date else None,

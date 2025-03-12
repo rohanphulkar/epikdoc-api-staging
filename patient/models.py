@@ -41,9 +41,7 @@ class Patient(Base):
     groups: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    treatments: Mapped[list["Treatment"]] = relationship("Treatment", back_populates="patient")
-    clinical_notes: Mapped[list["ClinicalNote"]] = relationship("ClinicalNote", back_populates="patient")
-    treatment_plans: Mapped[list["TreatmentPlan"]] = relationship("TreatmentPlan", back_populates="patient")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
     medical_records: Mapped[list["MedicalRecord"]] = relationship("MedicalRecord", back_populates="patient")
 
 class Treatment(Base):
@@ -62,28 +60,28 @@ class Treatment(Base):
     discount_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # Percentage or Fixed
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="treatments")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class ClinicalNote(Base):
     __tablename__ = "clinical_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     note_type: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_revised: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="clinical_notes")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class TreatmentPlan(Base):
     __tablename__ = "treatment_plans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -95,7 +93,7 @@ class TreatmentPlan(Base):
     treatment_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tooth_diagram: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="treatment_plans")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class MedicalRecord(Base):
