@@ -22,6 +22,7 @@ from prediction.models import *
 from typing import List
 import json, shutil
 from math import ceil
+from sqlalchemy import func
 
 user_router = APIRouter()
 
@@ -2123,11 +2124,257 @@ async def get_procedure_catalogs(
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+    
+@user_router.get("/get-procedure-catalog/{procedure_id}",
+    response_model=ProcedureCatalogResponse,
+    status_code=200,
+    summary="Get a procedure catalog by ID",
+    description="""
+    Get a procedure catalog by its unique ID.
+    
+    Path parameters:
+    - procedure_id: ID of the procedure catalog to get
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
 
+    Returns:
+    - procedure_catalog: Procedure catalog details
+    - message: Success message
+    """,
+    responses={
+        200: {
+            "description": "Procedure catalog retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "procedure_catalog": {
+                            "id": "uuid",
+                            "treatment_name": "Dental Cleaning",
+                            "treatment_cost": "100.00",
+                            "treatment_notes": "Basic cleaning procedure",
+                            "locale": "USD",
+                            "created_at": "2024-01-01T00:00:00",
+                            "updated_at": "2024-01-01T00:00:00"
+                        },
+                        "message": "Procedure catalog retrieved successfully"
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Procedure catalog not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Procedure catalog not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
+    }
+)
+async def get_procedure_catalog(
+    request: Request,
+    procedure_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        procedure_catalog = db.query(ProcedureCatalog).filter(
+            ProcedureCatalog.id == procedure_id,
+            ProcedureCatalog.user_id == user.id
+        ).first()
+        
+        if not procedure_catalog:
+            return JSONResponse(status_code=404, content={"error": "Procedure catalog not found"})
+        
+        return JSONResponse(status_code=200, content={
+            "procedure_catalog": {
+                "id": procedure_catalog.id,
+                "treatment_name": procedure_catalog.treatment_name,
+                "treatment_cost": procedure_catalog.treatment_cost,
+                "treatment_notes": procedure_catalog.treatment_notes,
+                "locale": procedure_catalog.locale,
+                "created_at": procedure_catalog.created_at.isoformat() if procedure_catalog.created_at else None,
+                "updated_at": procedure_catalog.updated_at.isoformat() if procedure_catalog.updated_at else None
+            },
+            "message": "Procedure catalog retrieved successfully"
+        })
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+    
+@user_router.get("/search-procedure-catalog",
+    response_model=ProcedureCatalogResponse,
+    status_code=200,
+    summary="Search for procedure catalogs",
+    description="""
+    Search for procedure catalogs by name or description.
+    
+    Query parameters:
+    - search_query: Search query to filter procedure catalogs (optional)
+    - page: Page number (default: 1)
+    - per_page: Number of items per page (default: 10)
+    - min_cost: Minimum treatment cost (optional)
+    - max_cost: Maximum treatment cost (optional)
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+
+    Returns:
+    - procedure_catalogs: List of procedure catalogs matching the search query
+    - pagination: Pagination details
+    - message: Success message
+    """,
+    responses={
+        200: {
+            "description": "Procedure catalogs retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "procedure_catalogs": [
+                            {
+                                "id": "uuid",
+                                "treatment_name": "Dental Cleaning",
+                                "treatment_cost": "100.00",
+                                "treatment_notes": "Basic cleaning procedure",
+                                "locale": "USD",
+                                "created_at": "2024-01-01T00:00:00",
+                                "updated_at": "2024-01-01T00:00:00"
+                            }
+                        ],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        },
+                        "message": "Procedure catalogs retrieved successfully"
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Procedure catalog not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Procedure catalog not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unexpected error: {error details}"}
+                }
+            }
+        }
+    }
+)
+async def search_procedure_catalog(
+    request: Request, 
+    search_query: Optional[str] = None,
+    page: int = Query(1, ge=1), 
+    per_page: int = Query(10, ge=1, le=100),
+    min_cost: Optional[float] = None,
+    max_cost: Optional[float] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        # Build base query
+        query = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id)
+        
+        # Add search filter if search_query provided
+        if search_query:
+            query = query.filter(
+                (ProcedureCatalog.treatment_name.ilike(f"%{search_query}%")) |
+                (ProcedureCatalog.treatment_notes.ilike(f"%{search_query}%"))
+            )
+        
+        # Add cost filters if provided
+        if min_cost is not None:
+            query = query.filter(func.cast(ProcedureCatalog.treatment_cost, Float) >= min_cost)
+        if max_cost is not None:
+            query = query.filter(func.cast(ProcedureCatalog.treatment_cost, Float) <= max_cost)
+            
+        # Get total count
+        total = query.count()
+        
+        # Calculate pagination
+        total_pages = ceil(total / per_page)
+        offset = (page - 1) * per_page
+        
+        # Get paginated results
+        procedure_catalogs = query.offset(offset).limit(per_page).all()
+        
+        procedure_catalogs_list = []
+        for procedure_catalog in procedure_catalogs:
+            procedure_catalogs_list.append({
+                "id": procedure_catalog.id,
+                "treatment_name": procedure_catalog.treatment_name,
+                "treatment_cost": procedure_catalog.treatment_cost,
+                "treatment_notes": procedure_catalog.treatment_notes,
+                "locale": procedure_catalog.locale,
+                "created_at": procedure_catalog.created_at.isoformat() if procedure_catalog.created_at else None,
+                "updated_at": procedure_catalog.updated_at.isoformat() if procedure_catalog.updated_at else None
+            })
+        
+        return JSONResponse(status_code=200, content={
+            "procedure_catalogs": procedure_catalogs_list,
+            "pagination": {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages
+            },
+            "message": "Procedure catalogs retrieved successfully"
+        })
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+    
 @user_router.patch("/update-procedure-catalog/{procedure_id}",
     response_model=ProcedureCatalogResponse,
     status_code=200,
-    summary="Update a procedure catalog",
+    summary="Update an existing procedure catalog entry",
     description="""
     Update an existing procedure catalog entry.
     

@@ -100,7 +100,7 @@ class PaymentCreate(BaseModel):
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
     cancelled: Optional[bool] = False
-    payment_methods: List[PaymentMethodCreate]
+    payment_methods: Optional[List[PaymentMethodCreate]] = None
 
     class Config:
         from_attributes = True

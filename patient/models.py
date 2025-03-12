@@ -41,7 +41,6 @@ class Patient(Base):
     groups: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
     medical_records: Mapped[list["MedicalRecord"]] = relationship("MedicalRecord", back_populates="patient")
 
 class Treatment(Base):
@@ -60,7 +59,6 @@ class Treatment(Base):
     discount_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # Percentage or Fixed
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class ClinicalNote(Base):
@@ -74,7 +72,6 @@ class ClinicalNote(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_revised: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class TreatmentPlan(Base):
@@ -93,7 +90,6 @@ class TreatmentPlan(Base):
     treatment_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tooth_diagram: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
 class MedicalRecord(Base):
