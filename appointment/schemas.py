@@ -25,12 +25,13 @@ class AppointmentResponse(BaseModel):
         from_attributes = True
 
 class AppointmentCreate(BaseModel):
-    patient_id: str
+    patient_id: Optional[str] = None
+    doctor_id: Optional[str] = None
     notes: Optional[str] = None
     appointment_date: datetime
-    checked_in_at: datetime = datetime.now()
-    checked_out_at: datetime = datetime.now()
-    status: AppointmentStatus = AppointmentStatus.SCHEDULED
+    checked_in_at: Optional[datetime] = None
+    checked_out_at: Optional[datetime] = None
+    status: str = "scheduled"
     share_on_email: bool = False
     share_on_sms: bool = False
     share_on_whatsapp: bool = False
@@ -43,7 +44,7 @@ class AppointmentUpdate(BaseModel):
     appointment_date: Optional[datetime] = None
     checked_in_at: Optional[datetime] = None
     checked_out_at: Optional[datetime] = None
-    status: Optional[AppointmentStatus] = None
+    status: Optional[str] = None
     share_on_email: Optional[bool] = None
     share_on_sms: Optional[bool] = None
     share_on_whatsapp: Optional[bool] = None

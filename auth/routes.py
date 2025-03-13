@@ -1,16 +1,15 @@
-from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Body, Query
+from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Query
 from db.db import get_db
 from sqlalchemy.orm import Session
-from .models import User, ProcedureCatalog, ImportLog, ImportStatus
+from .models import User, ImportLog, ImportStatus
 from .schemas import *
 from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
 from utils.auth import (
     validate_email, validate_phone, validate_password, signJWT, decodeJWT,
-    verify_password, get_password_hash, generate_reset_token, verify_token, generate_otp
+    verify_password, get_password_hash, generate_reset_token, verify_token
 )
 from utils.email import send_forgot_password_email
-from utils.send_otp import send_otp_via_phone
 from gauthuserinfo import get_user_info
 import zipfile
 import os
@@ -19,10 +18,12 @@ from appointment.models import *
 from patient.models import *
 from payment.models import *
 from prediction.models import *
+from catalog.models import *
 from typing import List
 import json, shutil
 from math import ceil
 from sqlalchemy import func
+
 
 user_router = APIRouter()
 
@@ -1090,9 +1091,9 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             dob = None if pd.isna(dob_series[idx]) else dob_series[idx].to_pydatetime()
             anniversary = None if pd.isna(anniversary_series[idx]) else anniversary_series[idx].to_pydatetime()
                 
-            new_patients.append(Patient(
+            new_patients = Patient(
                 doctor_id=user.id,
-                patient_number=str(row.get("Patient Number", "")).strip("'")[:255],
+                patient_number=str(row.get("Patient Number", "")),
                 name=str(row.get("Patient Name", "")).strip("'")[:255],
                 mobile_number=str(row.get("Mobile Number", "")).strip("'")[:255],
                 contact_number=str(row.get("Contact Number", ""))[:255],
@@ -1113,7 +1114,11 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 referred_by=str(row.get("Referred By", ""))[:255],
                 groups=str(row.get("Groups", ""))[:255],
                 patient_notes=str(row.get("Patient Notes", ""))
-            ))
+            )
+            
+            db.add(new_patients)
+            db.commit()
+            db.refresh(new_patients)
             
         except Exception as e:
             print(f"Error processing patient row {idx}: {str(e)}")
@@ -1121,18 +1126,6 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             import_log.status = ImportStatus.FAILED
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing patient row {idx}: {str(e)}"})
-    
-    try:
-        # Bulk insert all new patients
-        if new_patients:
-            db.bulk_save_objects(new_patients)
-            db.commit()
-    except Exception as e:
-        print(f"Error during bulk insert: {str(e)}")
-        db.rollback()
-        import_log.status = ImportStatus.FAILED
-        db.commit()
-        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
 async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing appointment data")
@@ -1156,9 +1149,9 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
                 appointments.append(Appointment(
                     patient_id=patient.id,
                     patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
                     doctor_id=user.id,
-                    doctor_name=str(row.get("DoctorName", ""))[:255],
+                    doctor_name=str(row.get("DoctorName", "")).strip("'")[:255],
                     notes=str(row.get("Notes", "")),
                     appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
@@ -1184,7 +1177,7 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
-async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
+async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing treatment data")
     
     # Pre-process all patient numbers and get patients in bulk
@@ -1211,7 +1204,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                     amount=float(str(row.get("Amount", 0.0)).strip("'")),
                     discount=float(str(row.get("Discount", 0)).strip("'")),
                     discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
-                    doctor=str(row.get("Doctor", "")).strip("'")[:255]
+                    doctor=user.id
                 ))
         except Exception as e:
             print(f"Error processing treatment row: {str(e)}")
@@ -1231,7 +1224,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
-async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
+async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing clinical note data")
     
     # Pre-process all patient numbers and get patients in bulk
@@ -1250,10 +1243,11 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 clinical_notes.append(ClinicalNote(
                     patient_id=patient.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", ""))[:255],
+                    doctor=user.id,
                     note_type=str(row.get("Type", ""))[:255],
                     description=str(row.get("Description", "")),
-                    is_revised=bool(row.get("Revised", False))
+                    is_revised=bool(row.get("Revised", False)),
+                    created_at=datetime.now()
                 ))
         except Exception as e:
             print(f"Error processing clinical note row: {str(e)}")
@@ -1273,7 +1267,7 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
-async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, db: Session):
+async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing treatment plan data")
     
     # Pre-process all patient numbers and get patients in bulk
@@ -1291,9 +1285,9 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             if patient:
                 treatment_plans.append(TreatmentPlan(
                     patient_id=patient.id,
+                    doctor=user.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=str(row.get("Doctor", ""))[:255],
-                    treatment_name=str(row.get("Treatment Name", ""))[:255],
+                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
                     unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
                     quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
                     discount=float(str(row.get("Discount", 0)).strip("'")) if row.get("Discount") else None,
@@ -1302,7 +1296,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                     treatment_description=str(row.get("Treatment Description", "")),
                     tooth_diagram=str(row.get("Tooth Diagram", ""))
                 ))
-
         except Exception as e:
             print(f"Error processing treatment plan row: {str(e)}")
             db.rollback()
@@ -1320,6 +1313,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         import_log.status = ImportStatus.FAILED
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 
 async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing expense data")
@@ -1398,9 +1392,9 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     doctor_id=user.id,
                     patient_id=patient.id,
                     patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
                     receipt_number=str(row.get("Receipt Number", ""))[:255],
-                    treatment_name=str(row.get("Treatment name", ""))[:255],
+                    treatment_name=str(row.get("Treatment name", "")).strip("'")[:255],
                     amount_paid=row["Amount Paid"],
                     invoice_number=str(row.get("Invoice Number", ""))[:255],
                     notes=str(row.get("Notes", "")),
@@ -1459,8 +1453,8 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     doctor_id=user.id,
                     patient_id=patient.id,
                     patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", ""))[:255],
-                    doctor_name=str(row.get("Doctor Name", ""))[:255],
+                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
+                    doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
                     invoice_number=str(row.get("Invoice Number", ""))[:255],
                     cancelled=bool(row.get("Cancelled", False)),
                     notes=str(row.get("Notes", "")),
@@ -1643,7 +1637,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         # Call appropriate processor function
                         processor = file_type["processor"]
                         if processor in [process_patient_data, process_appointment_data, process_expense_data, 
-                                      process_payment_data, process_invoice_data, process_procedure_catalog_data]:
+                                      process_payment_data, process_invoice_data, process_procedure_catalog_data, process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
                             await processor(import_log, df, db, user)
                         else:
                             await processor(import_log, df, db)
@@ -2001,40 +1995,66 @@ async def add_procedure_catalog(request: Request, procedure: ProcedureCatalogSch
 @user_router.get("/get-procedure-catalogs",
     response_model=dict,
     status_code=200,
-    summary="Get all procedure catalogs",
+    summary="Get all procedure catalogs with statistics",
     description="""
-    Get all procedure catalogs for the authenticated user.
+    Get all procedure catalogs for the authenticated user with detailed statistics.
     
     Returns a paginated list of procedure catalogs with details including:
     - Procedure ID
-    - Treatment name
+    - Treatment name 
     - Treatment cost
     - Treatment notes
     - Locale
     - Creation and update timestamps
     
+    Also includes statistics for:
+    - Today's procedures count and total cost
+    - This month's procedures count and total cost  
+    - This year's procedures count and total cost
+    - Overall procedures count and total cost
+    
     Query parameters:
     - page: Page number (default: 1)
     - per_page: Number of items per page (default: 10, max: 100)
+    - sort_by: Sort field (default: created_at)
+    - sort_order: Sort direction - asc or desc (default: desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
     """,
     responses={
         200: {
-            "description": "List of procedure catalogs",
+            "description": "List of procedure catalogs with statistics",
             "content": {
                 "application/json": {
                     "example": {
                         "procedure_catalogs": [{
                             "id": "uuid",
                             "treatment_name": "Dental Cleaning",
-                            "treatment_cost": "100.00",
+                            "treatment_cost": "100.00", 
                             "treatment_notes": "Basic cleaning procedure",
                             "locale": "USD",
                             "created_at": "2024-01-01T00:00:00",
                             "updated_at": "2024-01-01T00:00:00"
                         }],
+                        "statistics": {
+                            "today": {
+                                "count": 5,
+                                "total_cost": "500.00"
+                            },
+                            "month": {
+                                "count": 45,
+                                "total_cost": "4500.00"
+                            },
+                            "year": {
+                                "count": 250,
+                                "total_cost": "25000.00"
+                            },
+                            "overall": {
+                                "count": 1000,
+                                "total_cost": "100000.00"
+                            }
+                        },
                         "pagination": {
                             "total": 50,
                             "page": 1,
@@ -2073,8 +2093,10 @@ async def add_procedure_catalog(request: Request, procedure: ProcedureCatalogSch
 )
 async def get_procedure_catalogs(
     request: Request,
-    page: int = Query(default=1, ge=1),
-    per_page: int = Query(default=10, ge=1, le=100),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -2092,13 +2114,54 @@ async def get_procedure_catalogs(
         # Calculate pagination
         total_pages = ceil(total / per_page)
         offset = (page - 1) * per_page
+
+        # Get statistics
+        today = datetime.now().date()
+        first_day_of_month = today.replace(day=1)
+        first_day_of_year = today.replace(month=1, day=1)
+
+        today_stats = db.query(
+            func.count(ProcedureCatalog.id).label('count'),
+            func.sum(ProcedureCatalog.treatment_cost).label('total_cost')
+        ).filter(
+            ProcedureCatalog.user_id == user.id,
+            func.date(ProcedureCatalog.created_at) == today
+        ).first()
+
+        month_stats = db.query(
+            func.count(ProcedureCatalog.id).label('count'),
+            func.sum(ProcedureCatalog.treatment_cost).label('total_cost')
+        ).filter(
+            ProcedureCatalog.user_id == user.id,
+            ProcedureCatalog.created_at >= first_day_of_month
+        ).first()
+
+        year_stats = db.query(
+            func.count(ProcedureCatalog.id).label('count'),
+            func.sum(ProcedureCatalog.treatment_cost).label('total_cost')
+        ).filter(
+            ProcedureCatalog.user_id == user.id,
+            ProcedureCatalog.created_at >= first_day_of_year
+        ).first()
+
+        overall_stats = db.query(
+            func.count(ProcedureCatalog.id).label('count'),
+            func.sum(ProcedureCatalog.treatment_cost).label('total_cost')
+        ).filter(
+            ProcedureCatalog.user_id == user.id
+        ).first()
         
-        # Get paginated results
-        procedure_catalogs = db.query(ProcedureCatalog)\
-            .filter(ProcedureCatalog.user_id == user.id)\
-            .offset(offset)\
-            .limit(per_page)\
-            .all()
+        # Get paginated results with sorting
+        query = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id)
+        
+        if hasattr(ProcedureCatalog, sort_by):
+            sort_column = getattr(ProcedureCatalog, sort_by)
+            if sort_order.lower() == 'desc':
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
+                
+        procedure_catalogs = query.offset(offset).limit(per_page).all()
 
         procedure_catalogs_list = []
         for procedure_catalog in procedure_catalogs:
@@ -2114,6 +2177,24 @@ async def get_procedure_catalogs(
 
         return JSONResponse(status_code=200, content={
             "procedure_catalogs": procedure_catalogs_list,
+            "statistics": {
+                "today": {
+                    "count": today_stats[0] if today_stats else 0,
+                    "total_cost": str(today_stats[1] if today_stats else 0)
+                },
+                "month": {
+                    "count": month_stats[0] if month_stats else 0,
+                    "total_cost": str(month_stats[1] if month_stats else 0)
+                },
+                "year": {
+                    "count": year_stats[0] if year_stats else 0,
+                    "total_cost": str(year_stats[1] if year_stats else 0)
+                },
+                "overall": {
+                    "count": overall_stats[0] if overall_stats else 0,
+                    "total_cost": str(overall_stats[1] if overall_stats else 0)
+                }
+            },
             "pagination": {
                 "total": total,
                 "page": page,
@@ -2226,30 +2307,34 @@ async def get_procedure_catalog(
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
     
 @user_router.get("/search-procedure-catalog",
-    response_model=ProcedureCatalogResponse,
+    response_model=dict,
     status_code=200,
-    summary="Search for procedure catalogs",
+    summary="Search and analyze procedure catalogs",
     description="""
-    Search for procedure catalogs by name or description.
+    Search for procedure catalogs by name or description with detailed statistics.
     
     Query parameters:
-    - search_query: Search query to filter procedure catalogs (optional)
+    - search_query: Search query to filter procedure catalogs by name or notes (optional)
     - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10)
-    - min_cost: Minimum treatment cost (optional)
-    - max_cost: Maximum treatment cost (optional)
+    - per_page: Number of items per page (default: 10, max: 100)
+    - min_cost: Minimum treatment cost filter (optional)
+    - max_cost: Maximum treatment cost filter (optional)
+    
+    Returns:
+    - procedure_catalogs: List of matching procedure catalogs with details
+    - statistics: Usage and cost statistics broken down by:
+        - Today's procedures and total cost
+        - This month's procedures and total cost
+        - This year's procedures and total cost
+        - Overall procedures and total cost
+    - pagination: Pagination details including total items and pages
     
     Required headers:
     - Authorization: Bearer {access_token}
-
-    Returns:
-    - procedure_catalogs: List of procedure catalogs matching the search query
-    - pagination: Pagination details
-    - message: Success message
     """,
     responses={
         200: {
-            "description": "Procedure catalogs retrieved successfully",
+            "description": "Procedure catalogs and statistics retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
@@ -2264,6 +2349,24 @@ async def get_procedure_catalog(
                                 "updated_at": "2024-01-01T00:00:00"
                             }
                         ],
+                        "statistics": {
+                            "today": {
+                                "count": 5,
+                                "total_cost": "500.00"
+                            },
+                            "month": {
+                                "count": 45,
+                                "total_cost": "4500.00"  
+                            },
+                            "year": {
+                                "count": 250,
+                                "total_cost": "25000.00"
+                            },
+                            "overall": {
+                                "count": 1000,
+                                "total_cost": "100000.00"
+                            }
+                        },
                         "pagination": {
                             "total": 50,
                             "page": 1,
@@ -2284,10 +2387,10 @@ async def get_procedure_catalog(
             }
         },
         404: {
-            "description": "Procedure catalog not found",
+            "description": "Not found",
             "content": {
                 "application/json": {
-                    "example": {"error": "Procedure catalog not found"}
+                    "example": {"error": "User not found"}
                 }
             }
         },
@@ -2304,10 +2407,10 @@ async def get_procedure_catalog(
 async def search_procedure_catalog(
     request: Request, 
     search_query: Optional[str] = None,
-    page: int = Query(1, ge=1), 
-    per_page: int = Query(10, ge=1, le=100),
-    min_cost: Optional[float] = None,
-    max_cost: Optional[float] = None,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    min_cost: Optional[float] = Query(default=None, description="Minimum treatment cost filter"),
+    max_cost: Optional[float] = Query(default=None, description="Maximum treatment cost filter"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -2345,6 +2448,21 @@ async def search_procedure_catalog(
         # Get paginated results
         procedure_catalogs = query.offset(offset).limit(per_page).all()
         
+        # Get statistics
+        today = datetime.now().date()
+        first_day_of_month = today.replace(day=1)
+        first_day_of_year = today.replace(month=1, day=1)
+        
+        stats_query = db.query(
+            func.count().label('count'),
+            func.sum(func.cast(ProcedureCatalog.treatment_cost, Float)).label('total_cost')
+        ).filter(ProcedureCatalog.user_id == user.id)
+        
+        today_stats = stats_query.filter(func.date(ProcedureCatalog.created_at) == today).first()
+        month_stats = stats_query.filter(func.date(ProcedureCatalog.created_at) >= first_day_of_month).first()
+        year_stats = stats_query.filter(func.date(ProcedureCatalog.created_at) >= first_day_of_year).first()
+        overall_stats = stats_query.first()
+        
         procedure_catalogs_list = []
         for procedure_catalog in procedure_catalogs:
             procedure_catalogs_list.append({
@@ -2359,6 +2477,24 @@ async def search_procedure_catalog(
         
         return JSONResponse(status_code=200, content={
             "procedure_catalogs": procedure_catalogs_list,
+            "statistics": {
+                "today": {
+                    "count": today_stats.count if today_stats else 0,
+                    "total_cost": str(round(today_stats.total_cost if today_stats and today_stats.total_cost else 0, 2))
+                },
+                "month": {
+                    "count": month_stats.count if month_stats else 0,
+                    "total_cost": str(round(month_stats.total_cost if month_stats and month_stats.total_cost else 0, 2))
+                },
+                "year": {
+                    "count": year_stats.count if year_stats else 0,
+                    "total_cost": str(round(year_stats.total_cost if year_stats and year_stats.total_cost else 0, 2))
+                },
+                "overall": {
+                    "count": overall_stats.count if overall_stats else 0,
+                    "total_cost": str(round(overall_stats.total_cost if overall_stats and overall_stats.total_cost else 0, 2))
+                }
+            },
             "pagination": {
                 "total": total,
                 "page": page,
@@ -2567,9 +2703,9 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
 @user_router.get("/get-all-users",
     response_model=dict,
     status_code=200,
-    summary="Get all users",
+    summary="Get all users with statistics",
     description="""
-    Get all users in the system.
+    Get all users in the system with detailed statistics.
     
     Returns a paginated list of users with details including:
     - User ID
@@ -2581,9 +2717,17 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
     - Profile picture URL
     - Creation and update timestamps
     
+    Also includes statistics for:
+    - Today's registered users count
+    - This month's registered users count
+    - This year's registered users count
+    - Overall users count
+    
     Query parameters:
     - page: Page number (default: 1)
     - per_page: Number of items per page (default: 10, max: 100)
+    - sort_by: Sort field (default: created_at)
+    - sort_order: Sort direction - asc or desc (default: desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -2594,7 +2738,7 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
     """,
     responses={
         200: {
-            "description": "List of all users",
+            "description": "List of all users with statistics",
             "content": {
                 "application/json": {
                     "example": {
@@ -2609,6 +2753,20 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
                             "created_at": "2024-01-01T00:00:00",
                             "updated_at": "2024-01-01T00:00:00"
                         }],
+                        "statistics": {
+                            "today": {
+                                "count": 5
+                            },
+                            "month": {
+                                "count": 45
+                            },
+                            "year": {
+                                "count": 250
+                            },
+                            "overall": {
+                                "count": 1000
+                            }
+                        },
                         "pagination": {
                             "total": 50,
                             "page": 1,
@@ -2654,8 +2812,10 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
 )
 async def get_all_users(
     request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(10, ge=1, le=100),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -2675,9 +2835,32 @@ async def get_all_users(
         # Calculate pagination
         total_pages = ceil(total / per_page)
         offset = (page - 1) * per_page
+
+        # Get statistics
+        today = datetime.now().date()
+        first_day_of_month = today.replace(day=1)
+        first_day_of_year = today.replace(month=1, day=1)
+
+        stats_query = db.query(func.count(User.id).label('count'))
+
+        today_stats = stats_query.filter(func.date(User.created_at) == today).first()
+        month_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_month).first()
+        year_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_year).first()
+        overall_stats = stats_query.first()
+        
+        # Build base query
+        query = db.query(User)
+        
+        # Add sorting
+        if hasattr(User, sort_by):
+            sort_column = getattr(User, sort_by)
+            if sort_order.lower() == 'desc':
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
         
         # Get paginated users
-        users = db.query(User).offset(offset).limit(per_page).all()
+        users = query.offset(offset).limit(per_page).all()
         
         users_list = []
         for user in users:
@@ -2696,6 +2879,20 @@ async def get_all_users(
 
         return JSONResponse(status_code=200, content={
             "users": users_list,
+            "statistics": {
+                "today": {
+                    "count": today_stats.count if today_stats else 0
+                },
+                "month": {
+                    "count": month_stats.count if month_stats else 0
+                },
+                "year": {
+                    "count": year_stats.count if year_stats else 0
+                },
+                "overall": {
+                    "count": overall_stats.count if overall_stats else 0
+                }
+            },
             "pagination": {
                 "total": total,
                 "page": page,
@@ -2710,9 +2907,9 @@ async def get_all_users(
 @user_router.get("/doctor-list",
     response_model=dict,
     status_code=200,
-    summary="Get all doctors",
+    summary="Get all doctors with statistics",
     description="""
-    Get all doctors in the system.
+    Get all doctors in the system with detailed statistics.
     
     Returns a paginated list of users with user_type='doctor' including:
     - Doctor ID
@@ -2723,9 +2920,17 @@ async def get_all_users(
     - Profile picture URL
     - Creation and update timestamps
     
+    Also includes statistics for:
+    - Today's registered doctors count
+    - This month's registered doctors count
+    - This year's registered doctors count
+    - Overall doctors count
+    
     Query parameters:
     - page: Page number (default: 1)
     - per_page: Number of items per page (default: 10, max: 100)
+    - sort_by: Sort field (default: created_at)
+    - sort_order: Sort direction - asc or desc (default: desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -2737,7 +2942,7 @@ async def get_all_users(
     """,
     responses={
         200: {
-            "description": "List of all doctors",
+            "description": "List of all doctors with statistics",
             "content": {
                 "application/json": {
                     "example": {
@@ -2752,6 +2957,20 @@ async def get_all_users(
                             "created_at": "2024-01-01T00:00:00",
                             "updated_at": "2024-01-01T00:00:00"
                         }],
+                        "statistics": {
+                            "today": {
+                                "count": 2
+                            },
+                            "month": {
+                                "count": 15
+                            },
+                            "year": {
+                                "count": 75
+                            },
+                            "overall": {
+                                "count": 250
+                            }
+                        },
                         "pagination": {
                             "total": 50,
                             "page": 1,
@@ -2797,8 +3016,10 @@ async def get_all_users(
 )
 async def get_doctor_list(
     request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(10, ge=1, le=100),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -2818,9 +3039,32 @@ async def get_doctor_list(
         # Calculate pagination
         total_pages = ceil(total / per_page)
         offset = (page - 1) * per_page
+
+        # Get statistics
+        today = datetime.now().date()
+        first_day_of_month = today.replace(day=1)
+        first_day_of_year = today.replace(month=1, day=1)
+
+        stats_query = db.query(func.count(User.id).label('count')).filter(User.user_type == "doctor")
+
+        today_stats = stats_query.filter(func.date(User.created_at) == today).first()
+        month_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_month).first()
+        year_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_year).first()
+        overall_stats = stats_query.first()
+        
+        # Build base query
+        query = db.query(User).filter(User.user_type == "doctor")
+        
+        # Add sorting
+        if hasattr(User, sort_by):
+            sort_column = getattr(User, sort_by)
+            if sort_order.lower() == 'desc':
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
         
         # Get paginated doctors
-        doctors = db.query(User).filter(User.user_type == "doctor").offset(offset).limit(per_page).all()
+        doctors = query.offset(offset).limit(per_page).all()
         
         doctors_list = []
         for doctor in doctors:
@@ -2839,6 +3083,20 @@ async def get_doctor_list(
 
         return JSONResponse(status_code=200, content={
             "doctors": doctors_list,
+            "statistics": {
+                "today": {
+                    "count": today_stats.count if today_stats else 0
+                },
+                "month": {
+                    "count": month_stats.count if month_stats else 0
+                },
+                "year": {
+                    "count": year_stats.count if year_stats else 0
+                },
+                "overall": {
+                    "count": overall_stats.count if overall_stats else 0
+                }
+            },
             "pagination": {
                 "total": total,
                 "page": page,

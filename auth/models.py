@@ -68,8 +68,6 @@ class User(Base):
         backref="users"
     )
 
-    # Relationship with ProcedureCatalog
-    procedures: Mapped[List["ProcedureCatalog"]] = relationship("ProcedureCatalog", back_populates="user")
 
     # Relationship with ImportLog
     import_logs: Mapped[List["ImportLog"]] = relationship("ImportLog", back_populates="user")
@@ -77,20 +75,6 @@ class User(Base):
     def __repr__(self):
         return f"<User {self.email}>"
 
-class ProcedureCatalog(Base):
-    __tablename__ = "procedure_catalog"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    treatment_cost: Mapped[str] = mapped_column(String(255), nullable=False, default="0")
-    treatment_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    locale: Mapped[str] = mapped_column(String(50), nullable=True, default="en")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-
-    # Relationship with User
-    user: Mapped["User"] = relationship("User", back_populates="procedures")
 
 
 class ImportStatus(enum.Enum):

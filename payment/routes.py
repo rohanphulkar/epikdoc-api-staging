@@ -12,6 +12,8 @@ from utils.generate_invoice import create_professional_invoice
 import uuid
 import os
 from datetime import datetime
+from sqlalchemy import func
+
 payment_router = APIRouter()
 
 def update_url(url: str, request: Request):
@@ -111,12 +113,18 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
 @payment_router.get("/get-expenses",
     response_model=list[ExpenseResponse],
     status_code=200, 
-    summary="Get all expenses",
+    summary="Get all expenses with statistics",
     description="""
-    Retrieve a list of all expenses for the authenticated doctor.
+    Retrieve a list of all expenses for the authenticated doctor along with expense statistics.
     
     The expenses are returned in chronological order with the most recent first.
     Each expense includes full details including date, type, amount, etc.
+    
+    Statistics provided:
+    - Today's total expenses
+    - Current month's total expenses 
+    - Current year's total expenses
+    - Overall total expenses
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -124,15 +132,14 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
     Query parameters:
     - page (int): Page number (default: 1)
     - per_page (int): Number of items per page (default: 10, max: 100)
+    - start_date (str, optional): Filter expenses from this date (YYYY-MM-DD)
+    - end_date (str, optional): Filter expenses until this date (YYYY-MM-DD)
     
     Returns:
-    - 200: List of expenses with pagination details
+    - 200: List of expenses with pagination details and statistics
     - 401: Unauthorized - Invalid or missing token  
+    - 422: Validation Error - Invalid date format
     - 500: Internal server error with error details
-    
-    Response includes:
-    - List of expense objects with full details
-    - Pagination metadata (total count, current page, etc)
     """,
     responses={
         200: {
@@ -155,7 +162,14 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
                         "pagination": {
                             "total": 50,
                             "page": 1,
-                            "per_page": 10
+                            "per_page": 10,
+                            "total_pages": 5
+                        },
+                        "statistics": {
+                            "today_total": 1500.00,
+                            "month_total": 12500.00,
+                            "year_total": 150000.00,
+                            "overall_total": 450000.00
                         }
                     }
                 }
@@ -166,6 +180,14 @@ async def create_expense(request: Request, expense: ExpenseCreate, db: Session =
             "content": {
                 "application/json": {
                     "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        422: {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invalid date format. Use YYYY-MM-DD"}
                 }
             }
         },
@@ -183,6 +205,8 @@ async def get_expenses(
     request: Request,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -193,22 +217,57 @@ async def get_expenses(
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
+        # Base query
+        query = db.query(Expense).filter(Expense.doctor_id == user.id)
+
+        # Date filters if provided
+        if start_date:
+            query = query.filter(Expense.date >= start_date)
+        if end_date:
+            query = query.filter(Expense.date <= end_date)
+
         # Get total count
-        total = db.query(Expense).filter(Expense.doctor_id == user.id).count()
+        total = query.count()
+        total_pages = (total + per_page - 1) // per_page
         
         # Calculate offset
         offset = (page - 1) * per_page
         
         # Get paginated expenses
         expenses = (
-            db.query(Expense)
-            .filter(Expense.doctor_id == user.id)
+            query
             .order_by(Expense.created_at.desc())
             .offset(offset)
             .limit(per_page)
             .all()
         )
+
+        # Calculate statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today_total": db.query(func.sum(Expense.amount)).filter(
+                Expense.doctor_id == user.id,
+                func.date(Expense.date) == today
+            ).scalar() or 0,
+            
+            "month_total": db.query(func.sum(Expense.amount)).filter(
+                Expense.doctor_id == user.id,
+                Expense.date >= month_start
+            ).scalar() or 0,
+            
+            "year_total": db.query(func.sum(Expense.amount)).filter(
+                Expense.doctor_id == user.id,
+                Expense.date >= year_start
+            ).scalar() or 0,
+            
+            "overall_total": db.query(func.sum(Expense.amount)).filter(
+                Expense.doctor_id == user.id
+            ).scalar() or 0
+        }
         
         expenses_list = []
         for expense in expenses:
@@ -229,8 +288,10 @@ async def get_expenses(
             "pagination": {
                 "total": total,
                 "page": page,
-                "per_page": per_page
-            }
+                "per_page": per_page,
+                "total_pages": total_pages
+            },
+            "statistics": stats
         }
         
         return JSONResponse(status_code=200, content=response)
@@ -531,6 +592,8 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     - receipt_number (string): Unique receipt number
     - treatment_name (string): Name/description of treatment
     - amount_paid (float): Payment amount
+    
+    Optional parameters:
     - payment_methods (array): List of payment methods used, each containing:
         - payment_mode (string): Mode of payment (Cash/Card/Cheque/NetBanking)
         - amount (float): Amount paid through this method
@@ -538,8 +601,6 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
             - For Card: card_number, card_type
             - For Cheque: cheque_number, cheque_bank
             - For NetBanking: netbanking_bank_name
-    
-    Optional parameters:
     - invoice_number (string): Associated invoice number
     - notes (string): Additional payment notes
     - refund (boolean): Whether this is a refund
@@ -633,7 +694,7 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
             
         payment_data = payment.model_dump()
-        payment_methods = payment_data.pop("payment_methods")
+        payment_methods = payment_data.pop("payment_methods", [])
         
         payment_data["doctor_id"] = user.id
         payment_data["patient_id"] = patient_id
@@ -644,10 +705,11 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
         db.add(new_payment)
         db.flush()
         
-        for method in payment_methods:
-            method["payment_id"] = new_payment.id
-            payment_method = PaymentMethod(**method)
-            db.add(payment_method)
+        if payment_methods:
+            for method in payment_methods:
+                method["payment_id"] = new_payment.id
+                payment_method = PaymentMethod(**method)
+                db.add(payment_method)
             
         db.commit()
         db.refresh(new_payment)
@@ -660,25 +722,30 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
 @payment_router.get("/get-payments",
     response_model=dict,
     status_code=200,
-    summary="Get all payments",
+    summary="Get all payments with statistics",
     description="""
-    Retrieve a paginated list of all payments for the authenticated doctor.
+    Retrieve a paginated list of all payments for the authenticated doctor with payment statistics.
     
     Query parameters:
     - page (integer, optional): Page number for pagination (default: 1)
-    - per_page (integer, optional): Number of items per page (default: 10)
+    - per_page (integer, optional): Number of items per page (default: 10, max: 100)
     
     Required headers:
     - Authorization: Bearer token from doctor login
     
     Returns:
-    - 200: List of payments with pagination details
+    - 200: List of payments with pagination details and statistics
     - 401: Unauthorized - Invalid or missing token
     - 500: Internal server error with error details
     
     Response includes:
-    - List of payment objects with full details including payment methods
+    - List of payment objects with full details
     - Pagination metadata (total count, current page, total pages)
+    - Payment statistics:
+        - Today's total payments
+        - Current month's total payments
+        - Current year's total payments
+        - Overall total payments
     
     Each payment object contains:
     - Basic payment info (date, amount, receipt number)
@@ -697,7 +764,7 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                         "payments": [
                             {
                                 "id": "uuid",
-                                "date": "2023-01-01",
+                                "date": "2023-01-01", 
                                 "patient_id": "patient_uuid",
                                 "patient_name": "John Doe",
                                 "receipt_number": "REC001",
@@ -717,6 +784,12 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                             "page": 1,
                             "per_page": 10,
                             "total_pages": 5
+                        },
+                        "statistics": {
+                            "today_total": 1000.00,
+                            "month_total": 5000.00,
+                            "year_total": 50000.00,
+                            "overall_total": 100000.00
                         }
                     }
                 }
@@ -754,19 +827,45 @@ async def get_payments(
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
         # Calculate pagination
         offset = (page - 1) * per_page
         
         # Get total count
         total_count = db.query(Payment).filter(Payment.doctor_id == user.id).count()
-        
+
         # Get paginated payments
         payments = db.query(Payment)\
             .filter(Payment.doctor_id == user.id)\
             .offset(offset)\
             .limit(per_page)\
             .all()
+
+        # Calculate statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                func.date(Payment.date) == today
+            ).scalar() or 0,
+            
+            "month_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                Payment.date >= month_start
+            ).scalar() or 0,
+            
+            "year_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                Payment.date >= year_start
+            ).scalar() or 0,
+            
+            "overall_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id
+            ).scalar() or 0
+        }
         
         # Convert payments to dict for JSON serialization
         payments_list = []
@@ -813,75 +912,90 @@ async def get_payments(
                 "page": page,
                 "per_page": per_page,
                 "total_pages": (total_count + per_page - 1) // per_page
-            }
+            },
+            "statistics": stats
         })
     except Exception as e:
         print(str(e))
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.get("/get-payment-by-patient-id/{patient_id}",
-    response_model=list[PaymentResponse],
+    response_model=dict,
     status_code=200,
-    summary="Get payment by patient ID",
+    summary="Get payments by patient ID with statistics",
     description="""
-    Retrieve a paginated list of all payments for a specific patient.
+    Retrieve a paginated list of all payments for a specific patient along with payment statistics.
     
-    Path parameters:
-    - patient_id (string, required): Unique identifier of the patient
+    **Path Parameters:**
+    - patient_id (UUID): Patient's unique identifier
     
-    Query parameters:
-    - page (integer, optional): Page number for pagination (default: 1)
-    - per_page (integer, optional): Number of items per page (default: 10)
+    **Query Parameters:**
+    - page (int): Page number for pagination (default: 1)
+    - per_page (int): Number of items per page (default: 10, max: 100)
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Statistics Returned:**
+    - Today: Total payment amount for today
+    - This Month: Total payment amount for current month
+    - This Year: Total payment amount for current year
+    - Overall: Total payment amount across all time
     
-    Returns:
-    - 200: List of patient's payments with pagination details
-    - 401: Unauthorized - Invalid or missing token
-    - 404: Patient not found
-    - 500: Internal server error with error details
+    **Authentication:**
+    - Requires valid doctor Bearer token
     
-    Response includes:
-    - List of payment objects with full details including payment methods
-    - Pagination metadata (total count, current page, total pages)
-    
-    Each payment object contains:
-    - Basic payment info (date, amount, receipt number)
-    - Treatment details
-    - Payment method details
-    - Refund/cancellation status
-    - Timestamps
+    **Response:**
+    ```json
+    {
+        "payments": [
+            {
+                "id": "uuid",
+                "date": "2023-01-01",
+                "patient_id": "uuid",
+                "patient_name": "John Doe",
+                "receipt_number": "REC001",
+                "treatment_name": "Consultation",
+                "amount_paid": 1000.00,
+                "payment_methods": [
+                    {
+                        "payment_mode": "Card",
+                        "amount": 1000.00,
+                        "card_number": "****1234"
+                    }
+                ]
+            }
+        ],
+        "pagination": {
+            "total": 100,
+            "page": 1,
+            "per_page": 10,
+            "pages": 10
+        },
+        "stats": {
+            "today_total": 5000.00,
+            "month_total": 45000.00,
+            "year_total": 450000.00,
+            "overall_total": 1000000.00
+        }
+    }
+    ```
     """,
     responses={
         200: {
-            "description": "List of patient's payments retrieved successfully",
+            "description": "Successfully retrieved patient's payments with statistics",
             "content": {
                 "application/json": {
                     "example": {
-                        "payments": [
-                            {
-                                "id": "uuid",
-                                "date": "2023-01-01",
-                                "patient_id": "patient_uuid",
-                                "patient_name": "John Doe",
-                                "receipt_number": "REC001",
-                                "treatment_name": "Consultation",
-                                "amount_paid": 1000.00,
-                                "payment_methods": [
-                                    {
-                                        "payment_mode": "Card",
-                                        "amount": 1000.00,
-                                        "card_number": "****1234"
-                                    }
-                                ]
-                            }
-                        ],
+                        "payments": [],
                         "pagination": {
-                            "total": 10,
+                            "total": 0,
                             "page": 1,
                             "per_page": 10,
-                            "total_pages": 1
+                            "pages": 0
+                        },
+                        "stats": {
+                            "today_total": 0,
+                            "month_total": 0,
+                            "year_total": 0,
+                            "overall_total": 0
                         }
                     }
                 }
@@ -902,22 +1016,14 @@ async def get_payments(
                     "example": {"message": "Patient not found"}
                 }
             }
-        },
-        500: {
-            "description": "Internal server error",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Error details"}
-                }
-            }
         }
     }
 )
 async def get_payments_by_patient_id(
     request: Request, 
     patient_id: str,
-    page: int = Query(default=1, ge=1, description="Page number"),
-    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    page: int = Query(1, ge=1, description="Page number"),
+    per_page: int = Query(10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -928,7 +1034,12 @@ async def get_payments_by_patient_id(
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
+        # Check if patient exists
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=404, content={"message": "Patient not found"})
+            
         # Calculate pagination
         offset = (page - 1) * per_page
         
@@ -938,9 +1049,36 @@ async def get_payments_by_patient_id(
         # Get paginated payments
         payments = db.query(Payment)\
             .filter(Payment.patient_id == patient_id)\
+            .order_by(Payment.created_at.desc())\
             .offset(offset)\
             .limit(per_page)\
             .all()
+
+        # Calculate statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.patient_id == patient_id,
+                func.date(Payment.date) == today
+            ).scalar() or 0,
+            
+            "month_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.patient_id == patient_id,
+                Payment.date >= month_start
+            ).scalar() or 0,
+            
+            "year_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.patient_id == patient_id,
+                Payment.date >= year_start
+            ).scalar() or 0,
+            
+            "overall_total": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.patient_id == patient_id
+            ).scalar() or 0
+        }
         
         # Convert payments to dict for JSON serialization
         payments_list = []
@@ -987,7 +1125,8 @@ async def get_payments_by_patient_id(
                 "page": page,
                 "per_page": per_page,
                 "total_pages": (total_count + per_page - 1) // per_page
-            }
+            },
+            "stats": stats
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -1098,50 +1237,62 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
         return JSONResponse(status_code=500, content={"message": str(e)})
     
 @payment_router.get("/search-payment",
-    response_model=list[PaymentResponse], 
+    response_model=dict,
     status_code=200,
-    summary="Search and filter payments",
+    summary="Search and filter payments with statistics",
     description="""
-    Search and filter payments using various criteria with pagination support.
+    Search and filter payments using various criteria with pagination support and payment statistics.
     
-    Search parameters (optional, at least one required for search):
-    - patient_id: Patient's unique identifier
-    - patient_email: Patient's registered email address
-    - patient_name: Full or partial name of the patient (case-insensitive)
+    **Search Parameters (optional):**
+    - payment_id (UUID): Specific payment ID to search
+    - patient_id (UUID): Patient's unique identifier
+    - patient_email (str): Patient's registered email address
+    - patient_name (str): Full or partial name of the patient (case-insensitive)
     
-    Date filter parameters (optional):
-    - start_date: Start date for date range (format: YYYY-MM-DD)
-    - end_date: End date for date range (format: YYYY-MM-DD)
-    - date: Specific date to filter (format: YYYY-MM-DD)
+    **Date Filter Parameters (optional):**
+    - start_date (YYYY-MM-DD): Start date for date range
+    - end_date (YYYY-MM-DD): End date for date range
+    - date (YYYY-MM-DD): Specific date to filter
     
-    Pagination parameters:
-    - page: Page number for results (default: 1)
-    - per_page: Number of results per page (default: 10, max: 100)
+    **Pagination Parameters:**
+    - page (int, default=1): Page number for results
+    - per_page (int, default=10, max=100): Number of results per page
     
-    Returns:
-    - List of matching payments with pagination details
-    - Each payment includes full details and associated payment methods
-    - Pagination metadata including total count and page information
+    **Response Includes:**
+    - List of matching payments with full details
+    - Pagination metadata (total count, current page, total pages)
+    - Payment statistics:
+        - Today's total payments
+        - Current month's total payments
+        - Current year's total payments
+        - Overall total payments
     
-    Required headers:
-    - Authorization: Bearer token from doctor login
+    **Authentication:**
+    - Requires valid doctor Bearer token
     
-    Notes:
-    - Results are filtered to only show payments for the authenticated doctor
-    - Date filters can be used independently or in combination
-    - Search is case-insensitive for patient name
+    **Notes:**
+    - Results filtered to authenticated doctor's payments only
+    - Case-insensitive search for patient name
+    - Date filters can be combined or used individually
     """,
     responses={
         200: {
-            "description": "Search results retrieved successfully",
+            "description": "Search results with statistics retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
                         "payments": [
                             {
-                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "id": "uuid",
+                                "date": "2023-01-01",
                                 "patient_name": "John Doe",
-                                "amount_paid": 1000.00
+                                "amount_paid": 1000.00,
+                                "payment_methods": [
+                                    {
+                                        "payment_mode": "Card",
+                                        "amount": 1000.00
+                                    }
+                                ]
                             }
                         ],
                         "pagination": {
@@ -1149,17 +1300,24 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
                             "page": 1,
                             "per_page": 10,
                             "total_pages": 5
+                        },
+                        "statistics": {
+                            "today": 5000.00,
+                            "month": 25000.00,
+                            "year": 150000.00,
+                            "overall": 500000.00
                         }
                     }
                 }
             }
         },
         401: {"description": "Unauthorized - Invalid or missing token"},
-        500: {"description": "Internal server error - Error while processing request"}
+        500: {"description": "Internal server error"}
     }
 )
 async def search_payments(
     request: Request,
+    payment_id: Optional[str] = None,
     patient_id: Optional[str] = None,
     patient_email: Optional[str] = None, 
     patient_name: Optional[str] = None,
@@ -1179,10 +1337,12 @@ async def search_payments(
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Start with base query
+        # Base query
         query = db.query(Payment).filter(Payment.doctor_id == user.id)
 
-        # Apply search filters if provided
+        # Apply filters
+        if payment_id:
+            query = query.filter(Payment.id == payment_id)
         if patient_id:
             query = query.filter(Payment.patient_id == patient_id)
         if patient_email:
@@ -1192,7 +1352,7 @@ async def search_payments(
         if patient_name:
             query = query.filter(Payment.patient_name.ilike(f"%{patient_name}%"))
 
-        # Apply date filters if provided
+        # Date filters
         if date:
             query = query.filter(Payment.date == date)
         elif start_date and end_date:
@@ -1202,16 +1362,35 @@ async def search_payments(
         elif end_date:
             query = query.filter(Payment.date <= end_date)
 
-        # Get total count before pagination
+        # Get statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                Payment.date == today
+            ).scalar() or 0,
+            "month": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                Payment.date >= month_start
+            ).scalar() or 0,
+            "year": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id,
+                Payment.date >= year_start
+            ).scalar() or 0,
+            "overall": db.query(func.sum(Payment.amount_paid)).filter(
+                Payment.doctor_id == user.id
+            ).scalar() or 0
+        }
+
+        # Pagination
         total_count = query.count()
-        
-        # Calculate pagination
         offset = (page - 1) * per_page
-        
-        # Apply pagination
         payments = query.offset(offset).limit(per_page).all()
         
-        # Convert payments to dict for JSON serialization
+        # Format response
         payments_list = []
         for payment in payments:
             payment_dict = {
@@ -1256,7 +1435,8 @@ async def search_payments(
                 "page": page,
                 "per_page": per_page,
                 "total_pages": (total_count + per_page - 1) // per_page
-            }
+            },
+            "statistics": stats
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -1567,29 +1747,40 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
 @payment_router.get("/get-invoices",
     response_model=dict,
     status_code=200,
-    summary="Get all invoices for logged in doctor",
+    summary="Get all invoices with statistics",
     description="""
-    Retrieves a list of all invoices associated with the authenticated doctor.
+    Retrieve a paginated list of all invoices for the authenticated doctor with invoice statistics.
     
-    The response includes full invoice details including items, amounts, taxes and discounts.
-    Invoices are sorted by date in descending order (newest first).
+    Query parameters:
+    - page (integer, optional): Page number for pagination (default: 1)
+    - per_page (integer, optional): Number of items per page (default: 10, max: 100)
+    - cancelled (boolean, optional): Filter by cancelled status
+    - start_date (YYYY-MM-DD): Filter invoices from this date
+    - end_date (YYYY-MM-DD): Filter invoices until this date
     
     Required headers:
     - Authorization: Bearer token from doctor login
     
-    Optional query parameters:
-    - cancelled (boolean): Filter invoices by cancelled status
-    - start_date (YYYY-MM-DD): Filter invoices created on or after this date
-    - end_date (YYYY-MM-DD): Filter invoices created on or before this date
-    - page (integer): Page number for pagination (default: 1)
-    - per_page (integer): Number of items per page (default: 10, max: 100)
+    Returns:
+    - 200: List of invoices with pagination details and statistics
+    - 401: Unauthorized - Invalid or missing token
+    - 500: Internal server error with error details
     
-    Returns a list of invoice objects containing:
-    - Basic invoice details (ID, number, dates, etc)
-    - Patient and doctor information
+    Response includes:
+    - List of invoice objects with full details
+    - Pagination metadata (total count, current page, total pages)
+    - Invoice statistics:
+        - Today's total invoice amount
+        - Current month's total invoice amount
+        - Current year's total invoice amount
+        - Overall total invoice amount
+    
+    Each invoice object contains:
+    - Basic invoice info (date, number, amounts)
+    - Patient details (id, name, number)
     - Line items with treatment details
     - PDF file path if available
-    - Pagination metadata
+    - Timestamps
     """,
     responses={
         200: {
@@ -1612,17 +1803,23 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                             "page": 1,
                             "per_page": 10,
                             "total_pages": 5
+                        },
+                        "statistics": {
+                            "today": 5000.00,
+                            "month": 25000.00,
+                            "year": 150000.00,
+                            "overall": 500000.00
                         }
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing authentication token"},
-        500: {"description": "Internal server error - Failed to retrieve invoices"}
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        500: {"description": "Internal server error"}
     }
 )
 async def get_invoices(
-    request: Request, 
+    request: Request,
     cancelled: Optional[bool] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
@@ -1639,25 +1836,43 @@ async def get_invoices(
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        # Build query with filters
+        # Base query
         query = db.query(Invoice).filter(Invoice.doctor_id == user.id)
         
+        # Apply filters
         if cancelled is not None:
             query = query.filter(Invoice.cancelled == cancelled)
-            
         if start_date:
             query = query.filter(Invoice.date >= start_date)
-            
         if end_date:
             query = query.filter(Invoice.date <= end_date)
+
+        # Get statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date == today
+            ).scalar() or 0,
+            "month": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date >= month_start
+            ).scalar() or 0,
+            "year": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date >= year_start
+            ).scalar() or 0,
+            "overall": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.doctor_id == user.id
+            ).scalar() or 0
+        }
             
-        # Get total count before pagination
+        # Pagination
         total_count = query.count()
-        
-        # Calculate offset for pagination
         offset = (page - 1) * per_page
-        
-        # Apply pagination and ordering
         invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
         
         # Format response
@@ -1681,7 +1896,6 @@ async def get_invoices(
                 "items": []
             }
             
-            # Get invoice items
             items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
             for item in items:
                 item_dict = {
@@ -1706,7 +1920,8 @@ async def get_invoices(
                 "page": page,
                 "per_page": per_page,
                 "total_pages": (total_count + per_page - 1) // per_page
-            }
+            },
+            "statistics": stats
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -1714,54 +1929,75 @@ async def get_invoices(
 @payment_router.get("/get-invoices-by-patient/{patient_id}",
     response_model=dict,
     status_code=200,
-    summary="Get all invoices for a specific patient",
+    summary="Get all invoices for a specific patient with statistics",
     description="""
-    Retrieves all invoices associated with a specific patient ID.
+    Retrieves all invoices associated with a specific patient ID with pagination and statistics.
     
-    The response includes detailed invoice information including:
+    **Response includes:**
+    - List of invoices with full details
+    - Pagination metadata (total count, current page, total pages)
+    - Invoice statistics:
+        - Today's total invoice amount
+        - Current month's total invoice amount 
+        - Current year's total invoice amount
+        - Overall total invoice amount
+    
+    **Each invoice contains:**
     - Basic invoice details (ID, number, dates)
-    - Patient and doctor information  
+    - Patient and doctor information
     - Line items with treatment details
-    - Calculated amounts including:
+    - Calculated amounts:
         - Subtotal before discounts/taxes
-        - Discount amounts
-        - Tax amounts
+        - Discount amounts (fixed or percentage)
+        - Tax amounts (with invoice level discounts)
         - Final total
     - PDF file path if available
     
-    Path parameters:
+    **Path Parameters:**
     - patient_id (string, required): Unique identifier of the patient
     
-    Query parameters:
+    **Query Parameters:**
     - page (integer, optional): Page number for pagination (default: 1)
     - per_page (integer, optional): Number of items per page (default: 10, max: 100)
     
-    Required headers:
+    **Required Headers:**
     - Authorization: Bearer token from doctor login
-    
-    Returns a list of invoice objects with full details and calculated amounts.
     """,
     responses={
         200: {
-            "description": "List of patient invoices retrieved successfully",
+            "description": "List of patient invoices with statistics retrieved successfully",
             "content": {
                 "application/json": {
-                    "example": [{
-                        "id": "uuid",
-                        "invoice_number": "INV-001", 
-                        "patient_name": "John Doe",
-                        "subtotal": 100.00,
-                        "total_discount": 10.00,
-                        "total_tax": 9.00,
-                        "total_amount": 99.00,
-                        "items": [{
-                            "treatment_name": "Consultation",
-                            "amount": 100.00,
-                            "discount_amount": 10.00,
-                            "tax_amount": 9.00,
-                            "total": 99.00
-                        }]
-                    }]
+                    "example": {
+                        "invoices": [{
+                            "id": "uuid",
+                            "invoice_number": "INV-001",
+                            "patient_name": "John Doe",
+                            "subtotal": 100.00,
+                            "total_discount": 10.00,
+                            "total_tax": 9.00,
+                            "total_amount": 99.00,
+                            "items": [{
+                                "treatment_name": "Consultation",
+                                "amount": 100.00,
+                                "discount_amount": 10.00,
+                                "tax_amount": 9.00,
+                                "total": 99.00
+                            }]
+                        }],
+                        "pagination": {
+                            "total": 50,
+                            "page": 1,
+                            "per_page": 10,
+                            "total_pages": 5
+                        },
+                        "statistics": {
+                            "today": 5000.00,
+                            "month": 25000.00,
+                            "year": 150000.00,
+                            "overall": 500000.00
+                        }
+                    }
                 }
             }
         },
@@ -1785,6 +2021,29 @@ async def get_invoices_by_patient(
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+
+        # Get statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        stats = {
+            "today": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.patient_id == patient_id,
+                Invoice.date == today
+            ).scalar() or 0,
+            "month": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.patient_id == patient_id,
+                Invoice.date >= month_start
+            ).scalar() or 0,
+            "year": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.patient_id == patient_id,
+                Invoice.date >= year_start
+            ).scalar() or 0,
+            "overall": db.query(func.sum(Invoice.total_amount)).filter(
+                Invoice.patient_id == patient_id
+            ).scalar() or 0
+        }
         
         # Get total count
         total_count = db.query(Invoice).filter(Invoice.patient_id == patient_id).count()
@@ -1881,10 +2140,219 @@ async def get_invoices_by_patient(
                 "page": page,
                 "per_page": per_page,
                 "total_pages": (total_count + per_page - 1) // per_page
-            }
+            },
+            "statistics": stats
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+    
+@payment_router.get("/search-invoices",
+    response_model=dict,
+    status_code=200,
+    summary="Search invoices by multiple criteria with statistics",
+    description="""
+    Search and filter invoices using various criteria with pagination and statistics.
+    
+    **Query Parameters:**
+    - patient_name_search (str, optional): Search by patient name
+    - patient_number_search (str, optional): Search by patient number
+    - invoice_number_search (str, optional): Search by invoice number
+    - doctor_name_search (str, optional): Search by doctor name
+    - patient_gender (str, optional): Filter by patient gender (MALE/FEMALE/OTHER)
+    - status (str, optional): Filter by invoice status [PAID, UNPAID, CANCELLED]
+    - start_date (datetime, optional): Filter invoices from this date onwards (ISO format)
+    - end_date (datetime, optional): Filter invoices to this date (ISO format)
+    - page (int): Page number for pagination (default: 1, min: 1)
+    - per_page (int): Number of items per page (default: 10, min: 1, max: 100)
+
+    **Statistics Returned:**
+    - Today: Number of invoices today
+    - This Month: Number of invoices in current month
+    - This Year: Number of invoices in current year
+    - Overall: Total number of invoices 
+
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "invoices": [
+            {
+                "id": "uuid",
+                "invoice_number": "INV-001",
+                "patient_name": "John Doe",
+                "doctor_name": "Dr. Smith",
+                "subtotal": 100.00,
+                "total_discount": 10.00,
+                "total_tax": 9.00,
+                "total": 99.00,
+                "items": [{
+                    "treatment_name": "Consultation",
+                    "unit_cost": 100.00,
+                    "quantity": 1,
+                    "discount": 10.00,
+                    "tax_amount": 9.00,
+                    "total": 99.00
+                }]
+            }
+        ],  
+        "pagination": {
+            "total": 100,
+            "page": 1,
+            "per_page": 10,
+            "total_pages": 10
+        },
+        "statistics": {
+            "today": 5,
+            "this_month": 45,
+            "this_year": 450,
+            "overall": 1000
+        }
+    }
+    ```
+    """,
+    responses={
+        200: {
+            "description": "Successfully retrieved search results with statistics",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "invoices": [],
+                        "pagination": {},
+                        "statistics": {}
+                    }
+                }
+            }
+        },
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        500: {"description": "Internal server error - Failed to retrieve search results"}
+    }
+)
+async def search_invoices(
+    request: Request,
+    patient_name_search: Optional[str] = None,
+    patient_number_search: Optional[str] = None,
+    invoice_number_search: Optional[str] = None,
+    doctor_name_search: Optional[str] = None,
+    patient_gender: Optional[str] = None,   
+    status: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        # Base query
+        query = db.query(Invoice).filter(Invoice.doctor_id == user.id)
+        
+        # Apply independent searches
+        if patient_name_search:
+            query = query.filter(Invoice.patient_name.ilike(f"%{patient_name_search}%"))
+        if patient_number_search:
+            query = query.filter(Invoice.patient_number.ilike(f"%{patient_number_search}%"))
+        if invoice_number_search:
+            query = query.filter(Invoice.invoice_number.ilike(f"%{invoice_number_search}%"))
+        if doctor_name_search:
+            query = query.filter(Invoice.doctor_name.ilike(f"%{doctor_name_search}%"))
+
+        # Apply independent filters
+        if patient_gender:
+            query = query.filter(Invoice.patient_gender == patient_gender)
+        if status:
+            query = query.filter(Invoice.status == status)
+        if start_date:
+            query = query.filter(Invoice.date >= start_date)
+        if end_date:
+            query = query.filter(Invoice.date <= end_date)
+
+        # Get statistics
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+        
+        stats = {
+            "today": db.query(func.count(Invoice.id)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date == today
+            ).scalar() or 0,
+            "month": db.query(func.count(Invoice.id)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date >= month_start
+            ).scalar() or 0,
+            "year": db.query(func.count(Invoice.id)).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.date >= year_start
+            ).scalar() or 0,
+            "overall": db.query(func.count(Invoice.id)).filter(
+                Invoice.doctor_id == user.id
+            ).scalar() or 0
+        }
+        
+        # Pagination
+        total_count = query.count()
+        offset = (page - 1) * per_page
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
+
+        # Format response
+        invoice_list = []
+        for invoice in invoices:
+            invoice_dict = {
+                "id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "patient_name": invoice.patient_name,
+                "doctor_name": invoice.doctor_name,
+                "subtotal": invoice.subtotal,
+                "total_discount": invoice.total_discount,
+                "total_tax": invoice.total_tax,
+                "total": invoice.total,
+                "items": []
+            }
+            
+            # Get invoice items
+            items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            for item in items:
+                item_dict = {
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent,
+                    "amount": item.amount,
+                    "discount_amount": item.discount_amount,
+                    "tax_amount": item.tax_amount,
+                    "total": item.amount - item.discount_amount + item.tax_amount
+                }
+                invoice_dict["items"].append(item_dict)
+                
+            invoice_list.append(invoice_dict)
+            
+        return JSONResponse(status_code=200, content={
+            "invoices": invoice_list,
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total_count + per_page - 1) // per_page
+            },
+            "statistics": stats
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    
 
 @payment_router.get("/get-invoice/{invoice_id}",
     response_model=dict,

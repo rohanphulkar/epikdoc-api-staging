@@ -13,10 +13,12 @@ from PIL import Image
 import io
 import numpy as np
 import json
-from datetime import datetime
+from datetime import datetime, time
 from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
+from catalog.models import Treatment, ClinicalNote, TreatmentPlan
+from sqlalchemy import case
 
 patient_router = APIRouter()
 
@@ -142,9 +144,9 @@ async def create_patient(
 @patient_router.get(
     "/get-all",
     status_code=status.HTTP_200_OK,
-    summary="Get all patients for authenticated doctor",
+    summary="Get all patients with statistics",
     description="""
-    Retrieve all patients associated with the authenticated doctor.
+    Retrieve all patients associated with the authenticated doctor with detailed statistics.
     
     Returns a paginated list of patient records with complete details including:
     - Personal information (name, age, gender, contact details)
@@ -152,16 +154,24 @@ async def create_patient(
     - Administrative data (patient number, created date)
     - Address details (locality, city, pincode)
     
+    Also includes statistics for:
+    - Today's registered patients count
+    - This month's registered patients count 
+    - This year's registered patients count
+    - Overall patients count
+    
     Query parameters:
     - page: Page number (default: 1)
     - per_page: Number of items per page (default: 10, max: 100)
+    - sort_by: Sort field (default: created_at)
+    - sort_order: Sort direction - asc or desc (default: desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
     """,
     responses={
         200: {
-            "description": "List of all patients retrieved successfully",
+            "description": "List of all patients with statistics retrieved successfully",
             "content": {
                 "application/json": {
                     "example": {
@@ -177,6 +187,20 @@ async def create_patient(
                             "city": "New York",
                             "created_at": "2023-01-01T00:00:00"
                         }],
+                        "statistics": {
+                            "today": {
+                                "count": 5
+                            },
+                            "month": {
+                                "count": 45
+                            },
+                            "year": {
+                                "count": 250
+                            },
+                            "overall": {
+                                "count": 1000
+                            }
+                        },
                         "pagination": {
                             "total": 50,
                             "page": 1,
@@ -207,8 +231,10 @@ async def create_patient(
 )
 async def get_all_patients(
     request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(10, ge=1, le=100),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -225,13 +251,44 @@ async def get_all_patients(
         # Calculate pagination values
         total_pages = ceil((total or 0) / per_page)
         offset = (page - 1) * per_page
+
+        # Get statistics
+        today = datetime.now().date()
+        first_day_of_month = today.replace(day=1)
+        first_day_of_year = today.replace(month=1, day=1)
+
+        today_stats = db.query(func.count(Patient.id)).filter(
+            Patient.doctor_id == decoded_token.get("user_id"),
+            func.date(Patient.created_at) == today
+        ).scalar()
+
+        month_stats = db.query(func.count(Patient.id)).filter(
+            Patient.doctor_id == decoded_token.get("user_id"),
+            Patient.created_at >= first_day_of_month
+        ).scalar()
+
+        year_stats = db.query(func.count(Patient.id)).filter(
+            Patient.doctor_id == decoded_token.get("user_id"),
+            Patient.created_at >= first_day_of_year
+        ).scalar()
+
+        overall_stats = db.query(func.count(Patient.id)).filter(
+            Patient.doctor_id == decoded_token.get("user_id")
+        ).scalar()
         
-        # Get paginated patients for the authenticated doctor
+        # Build query with sorting
+        query = select(Patient).where(Patient.doctor_id == decoded_token.get("user_id"))
+        
+        if hasattr(Patient, sort_by):
+            sort_column = getattr(Patient, sort_by)
+            if sort_order.lower() == 'desc':
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
+                
+        # Get paginated patients
         patients = db.execute(
-            select(Patient)
-            .where(Patient.doctor_id == decoded_token.get("user_id"))
-            .offset(offset)
-            .limit(per_page)
+            query.offset(offset).limit(per_page)
         ).scalars().all()
         
         # Convert patients to list of dictionaries
@@ -267,6 +324,20 @@ async def get_all_patients(
         
         return {
             "patients": patient_list,
+            "statistics": {
+                "today": {
+                    "count": today_stats or 0
+                },
+                "month": {
+                    "count": month_stats or 0
+                },
+                "year": {
+                    "count": year_stats or 0
+                },
+                "overall": {
+                    "count": overall_stats or 0
+                }
+            },
             "pagination": {
                 "total": total or 0,
                 "page": page,
@@ -557,27 +628,37 @@ async def get_patient_by_id(
 @patient_router.get(
     "/search",
     status_code=status.HTTP_200_OK,
-    summary="Search patients by multiple criteria",
+    summary="Search patients by multiple criteria with statistics",
     description="""
-    Search for patients using various filters:
-    - Text search (name, mobile, ID, email)
-    - Gender filter (male/female/other/all)
-    - Age range (min and max age)
+    Search for patients using various filters and get statistics:
+    
+    Filters:
+    - Text search: Search in patient name, mobile number, ID, or email
+    - Gender: Filter by male/female/other/all
+    - Age range: Filter by minimum and maximum age
+    
+    Statistics returned:
+    - Today: Number of patients added today
+    - This Month: Number of patients added in current month
+    - This Year: Number of patients added in current year
+    - Overall: Total number of patients
     
     Query parameters:
     - search_query: Text to search in name/mobile/ID/email
     - gender: Filter by gender (male/female/other/all)
     - min_age: Minimum age filter
     - max_age: Maximum age filter
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10)
+    - page: Page number for pagination
+    - per_page: Number of items per page
+    - sort_by: Sort field (name, created_at, etc)
+    - sort_order: Sort direction (asc/desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
     """,
     responses={
         200: {
-            "description": "List of matching patients with pagination info",
+            "description": "List of matching patients with pagination and statistics",
             "content": {
                 "application/json": {
                     "example": {
@@ -586,12 +667,21 @@ async def get_patient_by_id(
                             "name": "John Doe", 
                             "mobile_number": "+1234567890",
                             "gender": "male",
-                            "age": "35"
+                            "age": "35",
+                            "created_at": "2023-01-01T10:00:00"
                         }],
-                        "total": 100,
-                        "page": 1,
-                        "per_page": 10,
-                        "pages": 10
+                        "pagination": {
+                            "total": 100,
+                            "page": 1,
+                            "per_page": 10,
+                            "pages": 10
+                        },
+                        "stats": {
+                            "today": 5,
+                            "this_month": 45,
+                            "this_year": 250,
+                            "overall": 1000
+                        }
                     }
                 }
             }
@@ -622,14 +712,17 @@ async def search_patients(
     max_age: Optional[int] = None,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
+        doctor_id = decoded_token.get("user_id")
         
         # Base query
-        query = select(Patient).filter(Patient.doctor_id == decoded_token.get("user_id"))
+        query = select(Patient).filter(Patient.doctor_id == doctor_id)
         
         # Add search filters if search_query provided
         if search_query:
@@ -661,6 +754,13 @@ async def search_patients(
         if max_age:
             from sqlalchemy import cast, Integer
             query = query.filter(cast(Patient.age, Integer) <= max_age)
+
+        # Add sorting
+        sort_column = getattr(Patient, sort_by)
+        if sort_order == "desc":
+            query = query.order_by(sort_column.desc())
+        else:
+            query = query.order_by(sort_column.asc())
             
         # Get total count for pagination
         from sqlalchemy import func
@@ -674,13 +774,50 @@ async def search_patients(
         
         # Calculate total pages
         pages = (total + per_page - 1) // per_page if total else 0
+
+        # Get statistics
+        today = datetime.now().date()
+        today_start = datetime.combine(today, time.min)
+        today_end = datetime.combine(today, time.max)
+
+        # Simplified statistics queries
+        total_count = db.execute(
+            select(func.count(Patient.id))
+            .where(Patient.doctor_id == doctor_id)
+        ).scalar() or 0
+
+        today_count = db.execute(
+            select(func.count(Patient.id))
+            .where(Patient.doctor_id == doctor_id)
+            .where(Patient.created_at.between(today_start, today_end))
+        ).scalar() or 0
+
+        month_count = db.execute(
+            select(func.count(Patient.id))
+            .where(Patient.doctor_id == doctor_id)
+            .where(Patient.created_at >= today.replace(day=1))
+        ).scalar() or 0
+
+        year_count = db.execute(
+            select(func.count(Patient.id))
+            .where(Patient.doctor_id == doctor_id)
+            .where(Patient.created_at >= today.replace(month=1, day=1))
+        ).scalar() or 0
         
         return {
             "items": patients,
-            "total": total or 0,
-            "page": page,
-            "per_page": per_page,
-            "pages": pages
+            "pagination": {
+                "total": total or 0,
+                "page": page,
+                "per_page": per_page,
+                "pages": pages
+            },
+            "stats": {
+                "today": today_count,
+                "this_month": month_count,
+                "this_year": year_count,
+                "overall": total_count
+            }
         }
         
     except SQLAlchemyError as e:

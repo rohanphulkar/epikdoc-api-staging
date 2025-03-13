@@ -9,8 +9,8 @@ from patient.models import Patient
 from utils.auth import verify_token
 from utils.appointment_msg import send_appointment_email
 from sqlalchemy.orm import joinedload
-from datetime import datetime, timedelta
-from sqlalchemy import or_, and_
+from datetime import datetime, timedelta, time
+from sqlalchemy import or_, and_, func, select
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 scheduler = BackgroundScheduler()
@@ -27,11 +27,12 @@ appointment_router = APIRouter()
     
     **Required fields:**
     - patient_id (UUID): Patient's unique identifier
+    - doctor_id (str): Doctor's unique identifier
     - notes (str): Appointment notes/description
     - appointment_date (datetime): Scheduled date and time
     - checked_in_at (datetime): Patient check-in time
     - checked_out_at (datetime): Patient check-out time
-    - status (enum): One of [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
+    - status (str): One of [scheduled, cancelled, completed]
     - share_on_email (bool): Enable email notifications
     - share_on_sms (bool): Enable SMS notifications
     - share_on_whatsapp (bool): Enable WhatsApp notifications
@@ -97,17 +98,21 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
+        if appointment.status.lower() not in ["scheduled", "cancelled", "completed"]:
+            return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'scheduled' or 'cancelled' or 'completed'"})
+        
+        
         new_appointment = Appointment(
-            patient_id=appointment.patient_id,
-            doctor_id=user.id,
-            patient_number=patient.patient_number if patient.patient_number else "",
+            patient_id=patient.id,
+            patient_number=patient.patient_number if patient.patient_number else None,
             patient_name=patient.name,
+            doctor_id=user.id,
             doctor_name=user.name,
             notes=appointment.notes,
             appointment_date=appointment.appointment_date,
             checked_in_at=appointment.checked_in_at,
             checked_out_at=appointment.checked_out_at,
-            status=appointment.status,
+            status=AppointmentStatus(appointment.status.lower()),
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
             share_on_whatsapp=appointment.share_on_whatsapp
@@ -130,13 +135,21 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 @appointment_router.get("/all",
     response_model=dict,
     status_code=200,
-    summary="List all appointments",
+    summary="List all appointments with statistics",
     description="""
-    Retrieve all appointments for the authenticated doctor with pagination.
+    Retrieve all appointments for the authenticated doctor with pagination and statistics.
     
     **Query Parameters:**
-    - page (int): Page number (default: 1)
-    - limit (int): Number of items per page (default: 10, max: 100)
+    - page (int): Page number for pagination (default: 1)
+    - per_page (int): Number of items per page (default: 10, max: 100)
+    - sort_by (str): Field to sort by (default: appointment_date)
+    - sort_order (str): Sort direction - asc or desc (default: desc)
+    
+    **Statistics Returned:**
+    - Today: Number of appointments today
+    - This Month: Number of appointments in current month  
+    - This Year: Number of appointments in current year
+    - Overall: Total number of appointments
     
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -147,8 +160,8 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         "appointments": [
             {
                 "id": "uuid",
-                "patient_id": "uuid", 
-                "patient_number": "P001",
+                "patient_id": "uuid",
+                "patient_number": "P001", 
                 "patient_name": "John Doe",
                 "doctor_id": "uuid",
                 "doctor_name": "Dr. Smith",
@@ -166,8 +179,8 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
                     "phone": "1234567890"
                 },
                 "patient": {
-                    "id": "uuid",
-                    "name": "John Doe", 
+                    "id": "uuid", 
+                    "name": "John Doe",
                     "email": "john@example.com",
                     "mobile_number": "9876543210",
                     "date_of_birth": "1990-01-01",
@@ -175,24 +188,40 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
                 }
             }
         ],
-        "total": 100,
-        "page": 1,
-        "limit": 10,
-        "total_pages": 10
+        "pagination": {
+            "total": 100,
+            "page": 1,
+            "per_page": 10,
+            "pages": 10
+        },
+        "stats": {
+            "today": 5,
+            "this_month": 45,
+            "this_year": 450,
+            "overall": 1000
+        }
     }
     ```
     """,
     responses={
         200: {
-            "description": "Successfully retrieved appointments list",
+            "description": "Successfully retrieved appointments list with statistics",
             "content": {
                 "application/json": {
                     "example": {
                         "appointments": [],
-                        "total": 0,
-                        "page": 1,
-                        "limit": 10,
-                        "total_pages": 0
+                        "pagination": {
+                            "total": 0,
+                            "page": 1,
+                            "per_page": 10,
+                            "pages": 0
+                        },
+                        "stats": {
+                            "today": 0,
+                            "this_month": 0,
+                            "this_year": 0,
+                            "overall": 0
+                        }
                     }
                 }
             }
@@ -218,39 +247,72 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 async def get_all_appointments(
     request: Request,
     db: Session = Depends(get_db),
-    page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Items per page")
+    page: int = Query(default=1, ge=1, description="Page number"),
+    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="appointment_date", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)")
 ):
     try:
         decoded_token = verify_token(request)
-
         user_id = decoded_token.get("user_id") if decoded_token else None
         
         user = db.query(User).filter(User.id == user_id).first()
-        
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Calculate offset
-        offset = (page - 1) * limit
-
-        # Get total count
-        total_count = (
-            db.query(Appointment)
-            .filter(Appointment.doctor_id == user.id)
-            .count()
-        )
-
-        appointments = (
+        # Base query
+        query = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
             .join(User, Appointment.doctor_id == User.id)
             .filter(Appointment.doctor_id == user.id)
-            .offset(offset)
-            .limit(limit)
-            .all()
         )
 
+        # Add sorting
+        sort_column = getattr(Appointment, sort_by)
+        if sort_order == "desc":
+            query = query.order_by(sort_column.desc())
+        else:
+            query = query.order_by(sort_column.asc())
+
+        # Get total count
+        total = db.execute(select(func.count()).select_from(query.subquery())).scalar()
+
+        # Add pagination
+        query = query.offset((page - 1) * per_page).limit(per_page)
+        
+        # Execute query
+        appointments = query.all()
+
+        # Get statistics
+        today = datetime.now().date()
+        today_start = datetime.combine(today, time.min)
+        today_end = datetime.combine(today, time.max)
+
+        today_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at.between(today_start, today_end))
+        ).scalar() or 0
+
+        month_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at >= today.replace(day=1))
+        ).scalar() or 0
+
+        year_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at >= today.replace(month=1, day=1))
+        ).scalar() or 0
+
+        total_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+        ).scalar() or 0
+
+        # Format response
         appointment_list = []
         for appointment, patient, doctor in appointments:
             appointment_data = {
@@ -286,10 +348,18 @@ async def get_all_appointments(
         
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
-            "total": total_count,
-            "page": page,
-            "limit": limit,
-            "total_pages": (total_count + limit - 1) // limit
+            "pagination": {
+                "total": total or 0,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total + per_page - 1) // per_page if total else 0
+            },
+            "stats": {
+                "today": today_count,
+                "this_month": month_count,
+                "this_year": year_count,
+                "overall": total_count
+            }
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -297,16 +367,24 @@ async def get_all_appointments(
 @appointment_router.get("/patient-appointments/{patient_id}",
     response_model=dict,
     status_code=200,
-    summary="Get patient appointments",
+    summary="Get patient appointments with statistics",
     description="""
-    Retrieve all appointments for a specific patient with pagination.
+    Retrieve all appointments for a specific patient with pagination and statistics.
     
     **Path Parameter:**
     - patient_id (UUID): Patient's unique identifier
     
     **Query Parameters:**
-    - page (int): Page number (default: 1)
-    - limit (int): Number of items per page (default: 10, max: 100)
+    - page (int): Page number for pagination (default: 1)
+    - per_page (int): Number of items per page (default: 10, max: 100)
+    - sort_by (str): Field to sort by (default: appointment_date)
+    - sort_order (str): Sort direction - asc or desc (default: desc)
+    
+    **Statistics Returned:**
+    - Today: Number of appointments today
+    - This Month: Number of appointments in current month
+    - This Year: Number of appointments in current year
+    - Overall: Total number of appointments
     
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -317,7 +395,7 @@ async def get_all_appointments(
         "appointments": [
             {
                 "id": "uuid",
-                "patient_id": "uuid",
+                "patient_id": "uuid", 
                 "patient_number": "P001",
                 "patient_name": "John Doe",
                 "doctor_id": "uuid",
@@ -331,24 +409,40 @@ async def get_all_appointments(
                 "updated_at": "2023-01-01T10:30:00"
             }
         ],
-        "total": 100,
-        "page": 1,
-        "limit": 10,
-        "total_pages": 10
+        "pagination": {
+            "total": 100,
+            "page": 1,
+            "per_page": 10,
+            "pages": 10
+        },
+        "stats": {
+            "today": 5,
+            "this_month": 45,
+            "this_year": 450,
+            "overall": 1000
+        }
     }
     ```
     """,
     responses={
         200: {
-            "description": "Successfully retrieved patient's appointments",
+            "description": "Successfully retrieved patient's appointments with statistics",
             "content": {
                 "application/json": {
                     "example": {
                         "appointments": [],
-                        "total": 0,
-                        "page": 1,
-                        "limit": 10,
-                        "total_pages": 0
+                        "pagination": {
+                            "total": 0,
+                            "page": 1,
+                            "per_page": 10,
+                            "pages": 0
+                        },
+                        "stats": {
+                            "today": 0,
+                            "this_month": 0,
+                            "this_year": 0,
+                            "overall": 0
+                        }
                     }
                 }
             }
@@ -368,14 +462,6 @@ async def get_all_appointments(
                     "example": {"message": "Patient not found"}
                 }
             }
-        },
-        500: {
-            "description": "Server error occurred",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Internal server error message"}
-                }
-            }
         }
     }
 )
@@ -384,38 +470,60 @@ async def get_patient_appointments(
     patient_id: str,
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Items per page")
+    per_page: int = Query(10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query("appointment_date", description="Field to sort by"),
+    sort_order: str = Query("desc", description="Sort direction (asc/desc)")
 ):
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
         
         user = db.query(User).filter(User.id == user_id).first()
-
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
-        
-        # Calculate offset
-        offset = (page - 1) * limit
 
-        # Get total count
-        total_count = (
-            db.query(Appointment)
-            .filter(Appointment.patient_id == patient.id)
-            .count()
-        )
+        # Calculate offset
+        offset = (page - 1) * per_page
+
+        # Get current date info
+        today = datetime.now().date()
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+
+        # Get statistics
+        today_count = db.query(Appointment).filter(
+            Appointment.patient_id == patient_id,
+            func.date(Appointment.appointment_date) == today
+        ).count()
+
+        month_count = db.query(Appointment).filter(
+            Appointment.patient_id == patient_id,
+            func.date(Appointment.appointment_date) >= month_start
+        ).count()
+
+        year_count = db.query(Appointment).filter(
+            Appointment.patient_id == patient_id,
+            func.date(Appointment.appointment_date) >= year_start
+        ).count()
+
+        total_count = db.query(Appointment).filter(
+            Appointment.patient_id == patient_id
+        ).count()
+
+        # Get paginated appointments
+        query = db.query(Appointment).filter(Appointment.patient_id == patient_id)
         
-        appointments = (
-            db.query(Appointment)
-            .filter(Appointment.patient_id == patient.id)
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        # Apply sorting
+        if sort_order == "asc":
+            query = query.order_by(getattr(Appointment, sort_by).asc())
+        else:
+            query = query.order_by(getattr(Appointment, sort_by).desc())
+
+        appointments = query.offset(offset).limit(per_page).all()
         
         appointment_list = []
         for appointment in appointments:
@@ -432,16 +540,24 @@ async def get_patient_appointments(
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None
             }
             appointment_list.append(appointment_data)
 
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
-            "total": total_count,
-            "page": page,
-            "limit": limit,
-            "total_pages": (total_count + limit - 1) // limit
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total_count + per_page - 1) // per_page
+            },
+            "stats": {
+                "today": today_count,
+                "this_month": month_count,
+                "this_year": year_count,
+                "overall": total_count
+            }
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -449,22 +565,28 @@ async def get_patient_appointments(
 @appointment_router.get("/search",
     response_model=dict,
     status_code=200,
-    summary="Search appointments",
+    summary="Search appointments with statistics",
     description="""
-    Search and filter appointments using various criteria with pagination.
+    Search and filter appointments using various criteria with pagination and statistics.
     
     **Query Parameters:**
-    - patient_name (str, optional): Search by patient name
-    - patient_email (str, optional): Search by patient email
-    - patient_phone (str, optional): Search by patient phone
-    - doctor_name (str, optional): Search by doctor name
-    - doctor_email (str, optional): Search by doctor email
-    - doctor_phone (str, optional): Search by doctor phone
-    - patient_gender (str, optional): Filter by patient gender
+    - patient_name (str, optional): Search by patient name (case-insensitive partial match)
+    - patient_email (str, optional): Search by patient email (case-insensitive partial match) 
+    - patient_phone (str, optional): Search by patient phone number
+    - doctor_name (str, optional): Search by doctor name (case-insensitive partial match)
+    - doctor_email (str, optional): Search by doctor email (case-insensitive partial match)
+    - doctor_phone (str, optional): Search by doctor phone number
+    - patient_gender (str, optional): Filter by patient gender (MALE/FEMALE/OTHER)
     - status (str, optional): Filter by appointment status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
-    - appointment_date (datetime, optional): Filter by appointment date (ISO format)
-    - page (int): Page number (default: 1)
-    - limit (int): Number of items per page (default: 10, max: 100)
+    - appointment_date (datetime, optional): Filter appointments from this date onwards (ISO format)
+    - page (int): Page number for pagination (default: 1, min: 1)
+    - per_page (int): Number of items per page (default: 10, min: 1, max: 100)
+    
+    **Statistics Returned:**
+    - Today: Number of appointments today
+    - This Month: Number of appointments in current month
+    - This Year: Number of appointments in current year
+    - Overall: Total number of appointments
     
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -503,24 +625,40 @@ async def get_patient_appointments(
                 }
             }
         ],
-        "total": 100,
-        "page": 1,
-        "limit": 10,
-        "total_pages": 10
+        "pagination": {
+            "total": 100,
+            "page": 1,
+            "per_page": 10,
+            "pages": 10
+        },
+        "stats": {
+            "today": 5,
+            "this_month": 45,
+            "this_year": 450,
+            "overall": 1000
+        }
     }
     ```
     """,
     responses={
         200: {
-            "description": "Successfully retrieved search results",
+            "description": "Successfully retrieved search results with statistics",
             "content": {
                 "application/json": {
                     "example": {
                         "appointments": [],
-                        "total": 0,
-                        "page": 1,
-                        "limit": 10,
-                        "total_pages": 0
+                        "pagination": {
+                            "total": 0,
+                            "page": 1,
+                            "per_page": 10,
+                            "pages": 0
+                        },
+                        "stats": {
+                            "today": 0,
+                            "this_month": 0,
+                            "this_year": 0,
+                            "overall": 0
+                        }
                     }
                 }
             }
@@ -555,7 +693,7 @@ async def search_appointments(
     status: Optional[str] = None,
     appointment_date: Optional[datetime] = None,
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Items per page"),
+    per_page: int = Query(10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -570,15 +708,14 @@ async def search_appointments(
             .join(Patient, Appointment.patient_id == Patient.id)\
             .join(User, Appointment.doctor_id == User.id)
 
+        # Search filters
         search_filters = []
         if patient_name:
-            search_filters.append(or_(
-                Patient.name.ilike(f"%{patient_name}%"),
-            ))
+            search_filters.append(Patient.name.ilike(f"%{patient_name}%"))
         if patient_email:
             search_filters.append(Patient.email.ilike(f"%{patient_email}%"))
         if patient_phone:
-            search_filters.append(Patient.phone.ilike(f"%{patient_phone}%"))
+            search_filters.append(Patient.mobile_number.ilike(f"%{patient_phone}%"))
         if doctor_name:
             search_filters.append(User.name.ilike(f"%{doctor_name}%"))
         if doctor_email:
@@ -586,6 +723,7 @@ async def search_appointments(
         if doctor_phone:
             search_filters.append(User.phone.ilike(f"%{doctor_phone}%"))
 
+        # Filter conditions
         filter_conditions = []
         if patient_gender:
             filter_conditions.append(Patient.gender == patient_gender)
@@ -599,15 +737,39 @@ async def search_appointments(
         if filter_conditions:
             query = query.filter(and_(*filter_conditions))
 
-        # Get total count
+        # Get statistics
+        today = datetime.now().date()
+        today_start = datetime.combine(today, time.min)
+        today_end = datetime.combine(today, time.max)
+
+        today_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at.between(today_start, today_end))
+        ).scalar() or 0
+
+        month_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at >= today.replace(day=1))
+        ).scalar() or 0
+
+        year_count = db.execute(
+            select(func.count(Appointment.id))
+            .where(Appointment.doctor_id == user.id)
+            .where(Appointment.created_at >= today.replace(month=1, day=1))
+        ).scalar() or 0
+
+        # Get total count for pagination
         total_count = query.count()
 
-        # Calculate offset and apply pagination
-        offset = (page - 1) * limit
-        query = query.offset(offset).limit(limit)
+        # Apply pagination
+        offset = (page - 1) * per_page
+        query = query.offset(offset).limit(per_page)
 
         appointments = query.all()
 
+        # Format response
         appointment_list = []
         for appointment, patient, doctor in appointments:
             appointment_data = {
@@ -643,10 +805,18 @@ async def search_appointments(
 
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
-            "total": total_count,
-            "page": page,
-            "limit": limit,
-            "total_pages": (total_count + limit - 1) // limit
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total_count + per_page - 1) // per_page
+            },
+            "stats": {
+                "today": today_count,
+                "this_month": month_count,
+                "this_year": year_count,
+                "overall": total_count
+            }
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
