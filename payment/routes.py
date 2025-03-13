@@ -1770,16 +1770,19 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
     - List of invoice objects with full details
     - Pagination metadata (total count, current page, total pages)
     - Invoice statistics:
-        - Today's total invoice amount
-        - Current month's total invoice amount
-        - Current year's total invoice amount
-        - Overall total invoice amount
+        - Today's total invoice amount (excluding cancelled invoices)
+        - Current month's total invoice amount (excluding cancelled invoices)
+        - Current year's total invoice amount (excluding cancelled invoices)
+        - Overall total invoice amount (excluding cancelled invoices)
     
     Each invoice object contains:
     - Basic invoice info (date, number, amounts)
-    - Patient details (id, name, number)
-    - Line items with treatment details
+    - Patient details (id, name, number, email, phone)
+    - Doctor details (name, email, phone)
+    - Line items with treatment details (name, unit cost, quantity, discounts, taxes)
     - PDF file path if available
+    - Cancellation status
+    - Notes and description
     - Timestamps
     """,
     responses={
@@ -1790,13 +1793,30 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                     "example": {
                         "invoices": [{
                             "id": "uuid",
-                            "invoice_number": "INV-001",
+                            "invoice_number": "INV-001", 
                             "date": "2023-01-01",
                             "patient_name": "John Doe",
+                            "patient_number": "P001",
+                            "patient_email": "john@example.com",
+                            "patient_phone": "+1234567890",
+                            "doctor_name": "Dr. Smith",
+                            "doctor_email": "dr.smith@example.com",
+                            "doctor_phone": "+0987654321",
+                            "cancelled": False,
+                            "notes": "Regular checkup invoice",
+                            "description": "Detailed treatment description",
+                            "file_path": "/path/to/invoice.pdf",
                             "items": [{
                                 "treatment_name": "Consultation",
-                                "amount": 100.00
-                            }]
+                                "unit_cost": 100.00,
+                                "quantity": 1,
+                                "discount": 10.00,
+                                "discount_type": "percentage",
+                                "tax_name": "VAT",
+                                "tax_percent": 5.00
+                            }],
+                            "created_at": "2023-01-01T10:00:00",
+                            "updated_at": "2023-01-01T10:00:00"
                         }],
                         "pagination": {
                             "total": 50,
@@ -1814,8 +1834,22 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing token"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized - Invalid or missing token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def get_invoices(
@@ -1841,33 +1875,35 @@ async def get_invoices(
         
         # Apply filters
         if cancelled is not None:
-            query = query.filter(Invoice.cancelled == cancelled)
+            query = query.filter(Invoice.cancelled.is_(cancelled))
         if start_date:
             query = query.filter(Invoice.date >= start_date)
         if end_date:
             query = query.filter(Invoice.date <= end_date)
 
-        # Get statistics
+        # Get statistics using subquery to calculate total from invoice items
         today = datetime.now().date()
         month_start = today.replace(day=1)
         year_start = today.replace(month=1, day=1)
 
+        def get_total_amount(date_filter=None):
+            total_query = db.query(
+                func.sum(InvoiceItem.unit_cost * InvoiceItem.quantity)
+            ).join(Invoice).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.cancelled.is_(False)  # Only include non-cancelled invoices
+            )
+            
+            if date_filter is not None:
+                total_query = total_query.filter(date_filter)
+            
+            return total_query.scalar() or 0
+
         stats = {
-            "today": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date == today
-            ).scalar() or 0,
-            "month": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date >= month_start
-            ).scalar() or 0,
-            "year": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date >= year_start
-            ).scalar() or 0,
-            "overall": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.doctor_id == user.id
-            ).scalar() or 0
+            "today": get_total_amount(Invoice.date == today),
+            "month": get_total_amount(Invoice.date >= month_start),
+            "year": get_total_amount(Invoice.date >= year_start),
+            "overall": get_total_amount()
         }
             
         # Pagination
@@ -1971,18 +2007,29 @@ async def get_invoices(
                     "example": {
                         "invoices": [{
                             "id": "uuid",
-                            "invoice_number": "INV-001",
+                            "date": "2023-01-01T00:00:00",
+                            "patient_id": "uuid",
+                            "doctor_id": "uuid", 
+                            "patient_number": "P001",
                             "patient_name": "John Doe",
-                            "subtotal": 100.00,
-                            "total_discount": 10.00,
-                            "total_tax": 9.00,
-                            "total_amount": 99.00,
+                            "doctor_name": "Dr. Smith",
+                            "invoice_number": "INV-001",
+                            "cancelled": False,
+                            "notes": "Regular checkup",
+                            "description": "Monthly visit",
+                            "file_path": "http://example.com/invoice/uuid",
+                            "created_at": "2023-01-01T00:00:00",
+                            "updated_at": "2023-01-01T00:00:00",
                             "items": [{
                                 "treatment_name": "Consultation",
-                                "amount": 100.00,
-                                "discount_amount": 10.00,
-                                "tax_amount": 9.00,
-                                "total": 99.00
+                                "unit_cost": 100.00,
+                                "quantity": 1,
+                                "discount": 10.00,
+                                "discount_type": "percentage",
+                                "type": "service",
+                                "invoice_level_tax_discount": 0,
+                                "tax_name": "VAT",
+                                "tax_percent": 10
                             }]
                         }],
                         "pagination": {
@@ -2001,9 +2048,30 @@ async def get_invoices(
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing authentication token"},
-        404: {"description": "Patient not found or no invoices exist for patient"},
-        500: {"description": "Internal server error - Failed to retrieve patient invoices"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Not Found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "No invoices found for this patient"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def get_invoices_by_patient(
@@ -2022,31 +2090,36 @@ async def get_invoices_by_patient(
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Get statistics
+        # Get statistics using subquery to calculate total from invoice items
         today = datetime.now().date()
         month_start = today.replace(day=1)
         year_start = today.replace(month=1, day=1)
 
+        def get_total_amount(date_filter=None):
+            total_query = db.query(
+                func.sum(InvoiceItem.unit_cost * InvoiceItem.quantity)
+            ).join(Invoice).filter(
+                Invoice.patient_id == patient_id,
+                Invoice.cancelled.is_(False)  # Only include non-cancelled invoices
+            )
+            
+            if date_filter is not None:
+                total_query = total_query.filter(date_filter)
+            
+            return total_query.scalar() or 0
+
         stats = {
-            "today": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.patient_id == patient_id,
-                Invoice.date == today
-            ).scalar() or 0,
-            "month": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.patient_id == patient_id,
-                Invoice.date >= month_start
-            ).scalar() or 0,
-            "year": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.patient_id == patient_id,
-                Invoice.date >= year_start
-            ).scalar() or 0,
-            "overall": db.query(func.sum(Invoice.total_amount)).filter(
-                Invoice.patient_id == patient_id
-            ).scalar() or 0
+            "today": get_total_amount(Invoice.date == today),
+            "month": get_total_amount(Invoice.date >= month_start),
+            "year": get_total_amount(Invoice.date >= year_start),
+            "overall": get_total_amount()
         }
         
         # Get total count
         total_count = db.query(Invoice).filter(Invoice.patient_id == patient_id).count()
+        
+        if total_count == 0:
+            return JSONResponse(status_code=404, content={"message": "No invoices found for this patient"})
         
         # Calculate offset for pagination
         offset = (page - 1) * per_page
@@ -2055,6 +2128,7 @@ async def get_invoices_by_patient(
         invoices = (
             db.query(Invoice)
             .filter(Invoice.patient_id == patient_id)
+            .order_by(Invoice.date.desc())
             .offset(offset)
             .limit(per_page)
             .all()
@@ -2154,49 +2228,61 @@ async def get_invoices_by_patient(
     Search and filter invoices using various criteria with pagination and statistics.
     
     **Query Parameters:**
-    - patient_name_search (str, optional): Search by patient name
-    - patient_number_search (str, optional): Search by patient number
-    - invoice_number_search (str, optional): Search by invoice number
-    - doctor_name_search (str, optional): Search by doctor name
+    - patient_name_search (str, optional): Search by patient name (case-insensitive partial match)
+    - patient_number_search (str, optional): Search by patient number (case-insensitive partial match) 
+    - invoice_number_search (str, optional): Search by invoice number (case-insensitive partial match)
+    - doctor_name_search (str, optional): Search by doctor name (case-insensitive partial match)
     - patient_gender (str, optional): Filter by patient gender (MALE/FEMALE/OTHER)
-    - status (str, optional): Filter by invoice status [PAID, UNPAID, CANCELLED]
+    - status (str, optional): Filter by invoice status (PAID/UNPAID/CANCELLED)
     - start_date (datetime, optional): Filter invoices from this date onwards (ISO format)
-    - end_date (datetime, optional): Filter invoices to this date (ISO format)
+    - end_date (datetime, optional): Filter invoices up to this date (ISO format)
     - page (int): Page number for pagination (default: 1, min: 1)
     - per_page (int): Number of items per page (default: 10, min: 1, max: 100)
 
-    **Statistics Returned:**
-    - Today: Number of invoices today
-    - This Month: Number of invoices in current month
-    - This Year: Number of invoices in current year
-    - Overall: Total number of invoices 
+    **Required Headers:**
+    - Authorization: Bearer token from doctor login
 
-    **Authentication:**
-    - Requires valid doctor Bearer token
-    
-    **Response:**
+    **Response Format:**
     ```json
     {
         "invoices": [
             {
                 "id": "uuid",
-                "invoice_number": "INV-001",
+                "date": "2023-01-01T00:00:00",
+                "invoice_number": "INV-001", 
+                "patient_id": "uuid",
                 "patient_name": "John Doe",
+                "patient_number": "PT001",
                 "doctor_name": "Dr. Smith",
+                "cancelled": False,
+                "notes": "Invoice notes",
+                "description": "Invoice description",
+                "file_path": "http://api.example.com/invoices/uuid",
+                "created_at": "2023-01-01T00:00:00",
+                "updated_at": "2023-01-01T00:00:00",
+                "items": [
+                    {
+                        "treatment_name": "Consultation",
+                        "unit_cost": 100.00,
+                        "quantity": 1,
+                        "discount": 10.00,
+                        "discount_type": "FIXED",
+                        "type": "SERVICE",
+                        "invoice_level_tax_discount": 0,
+                        "tax_name": "GST",
+                        "tax_percent": 10.00,
+                        "amount": 100.00,
+                        "discount_amount": 10.00,
+                        "tax_amount": 9.00,
+                        "total": 99.00
+                    }
+                ],
                 "subtotal": 100.00,
                 "total_discount": 10.00,
                 "total_tax": 9.00,
-                "total": 99.00,
-                "items": [{
-                    "treatment_name": "Consultation",
-                    "unit_cost": 100.00,
-                    "quantity": 1,
-                    "discount": 10.00,
-                    "tax_amount": 9.00,
-                    "total": 99.00
-                }]
+                "total_amount": 99.00
             }
-        ],  
+        ],
         "pagination": {
             "total": 100,
             "page": 1,
@@ -2225,8 +2311,22 @@ async def get_invoices_by_patient(
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing authentication token"},
-        500: {"description": "Internal server error - Failed to retrieve search results"}
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Error details"}
+                }
+            }
+        }
     }
 )
 async def search_invoices(
@@ -2280,22 +2380,24 @@ async def search_invoices(
         month_start = today.replace(day=1)
         year_start = today.replace(month=1, day=1)
         
+        def get_total_amount(date_filter=None):
+            total_query = db.query(
+                func.sum(InvoiceItem.unit_cost * InvoiceItem.quantity)
+            ).join(Invoice).filter(
+                Invoice.doctor_id == user.id,
+                Invoice.cancelled.is_(False)
+            )
+            
+            if date_filter is not None:
+                total_query = total_query.filter(date_filter)
+            
+            return total_query.scalar() or 0
+
         stats = {
-            "today": db.query(func.count(Invoice.id)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date == today
-            ).scalar() or 0,
-            "month": db.query(func.count(Invoice.id)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date >= month_start
-            ).scalar() or 0,
-            "year": db.query(func.count(Invoice.id)).filter(
-                Invoice.doctor_id == user.id,
-                Invoice.date >= year_start
-            ).scalar() or 0,
-            "overall": db.query(func.count(Invoice.id)).filter(
-                Invoice.doctor_id == user.id
-            ).scalar() or 0
+            "today": get_total_amount(Invoice.date == today),
+            "month": get_total_amount(Invoice.date >= month_start),
+            "year": get_total_amount(Invoice.date >= year_start),
+            "overall": get_total_amount()
         }
         
         # Pagination
@@ -2308,19 +2410,48 @@ async def search_invoices(
         for invoice in invoices:
             invoice_dict = {
                 "id": invoice.id,
-                "invoice_number": invoice.invoice_number,
+                "date": invoice.date.isoformat() if invoice.date else None,
+                "patient_id": invoice.patient_id,
+                "doctor_id": invoice.doctor_id,
+                "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
-                "subtotal": invoice.subtotal,
-                "total_discount": invoice.total_discount,
-                "total_tax": invoice.total_tax,
-                "total": invoice.total,
+                "invoice_number": invoice.invoice_number,
+                "cancelled": invoice.cancelled,
+                "notes": invoice.notes,
+                "description": invoice.description,
+                "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
                 "items": []
             }
             
             # Get invoice items
             items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            subtotal = 0
+            total_discount = 0
+            total_tax = 0
+            
             for item in items:
+                # Calculate base amount
+                item_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity else 0
+                
+                # Calculate discount
+                discount_amount = 0
+                if item.discount:
+                    if item.discount_type == "percentage":
+                        discount_amount = item_amount * (item.discount / 100)
+                    else:
+                        discount_amount = item.discount
+                
+                # Calculate tax
+                tax_amount = 0
+                if item.tax_percent:
+                    taxable_amount = item_amount - discount_amount
+                    tax_amount = taxable_amount * (item.tax_percent / 100)
+                    if item.invoice_level_tax_discount:
+                        tax_amount = tax_amount * (1 - item.invoice_level_tax_discount / 100)
+                
                 item_dict = {
                     "treatment_name": item.treatment_name,
                     "unit_cost": item.unit_cost,
@@ -2331,13 +2462,22 @@ async def search_invoices(
                     "invoice_level_tax_discount": item.invoice_level_tax_discount,
                     "tax_name": item.tax_name,
                     "tax_percent": item.tax_percent,
-                    "amount": item.amount,
-                    "discount_amount": item.discount_amount,
-                    "tax_amount": item.tax_amount,
-                    "total": item.amount - item.discount_amount + item.tax_amount
+                    "amount": item_amount,
+                    "discount_amount": discount_amount,
+                    "tax_amount": tax_amount,
+                    "total": item_amount - discount_amount + tax_amount
                 }
                 invoice_dict["items"].append(item_dict)
                 
+                subtotal += item_amount
+                total_discount += discount_amount
+                total_tax += tax_amount
+            
+            invoice_dict["subtotal"] = subtotal
+            invoice_dict["total_discount"] = total_discount
+            invoice_dict["total_tax"] = total_tax
+            invoice_dict["total"] = subtotal - total_discount + total_tax
+            
             invoice_list.append(invoice_dict)
             
         return JSONResponse(status_code=200, content={
@@ -2352,7 +2492,6 @@ async def search_invoices(
         })
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
 
 @payment_router.get("/get-invoice/{invoice_id}",
     response_model=dict,
