@@ -96,17 +96,27 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
 
-        treatment_data = treatment.model_dump()
-        new_treatment = Treatment(**treatment_data)
+        new_treatment = Treatment(
+            treatment_date=treatment.treatment_date,
+            treatment_name = treatment.treatment_name,
+            tooth_number = treatment.tooth_number,
+            treatment_notes = treatment.treatment_notes,
+            quantity = treatment.quantity,
+            treatment_cost = treatment.treatment_cost,
+            amount = treatment.amount,
+            discount = treatment.discount,
+            discount_type = treatment.discount_type
+        )
         db.add(new_treatment)
         db.commit()
         db.refresh(new_treatment)
+
         
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, 
             content={
                 "message": "Treatment created successfully",
-                "treatment_id": new_treatment.id
+                "treatment_id":new_treatment.id
             }
         )
     except SQLAlchemyError as e:
@@ -473,7 +483,7 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment = db.query(Treatment).filter(Treatment.id == treatment_id, Treatment.doctor == user.id).first()
+        treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
         if not treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
         
@@ -541,7 +551,7 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        existing_treatment = db.query(Treatment).filter(Treatment.id == treatment_id, Treatment.doctor == user.id).first()
+        existing_treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
         if not existing_treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
             
@@ -600,7 +610,7 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment = db.query(Treatment).filter(Treatment.id == treatment_id, Treatment.doctor == user.id).first()
+        treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
         if not treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
 
@@ -1014,7 +1024,8 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         db.refresh(new_treatment_plan)
         
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
-            "message": "Treatment plan created successfully"
+            "message": "Treatment plan created successfully",
+            "treatment_plan_id":new_treatment_plan.id
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -1251,7 +1262,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id, TreatmentPlan.doctor == user.id).first()
+        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
@@ -1301,7 +1312,7 @@ async def update_treatment_plan(treatment_plan_id: str, request: Request, treatm
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        existing_treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id, TreatmentPlan.doctor == user.id).first()
+        existing_treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
         if not existing_treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
@@ -1346,7 +1357,7 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id, TreatmentPlan.doctor == user.id).first()
+        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
 

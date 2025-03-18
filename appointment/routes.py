@@ -13,8 +13,17 @@ from datetime import datetime, timedelta, time
 from sqlalchemy import or_, and_, func, select
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
+import asyncio
+
 scheduler = BackgroundScheduler()
 scheduler.start()
+
+def send_email_sync(db, appointment_id):
+    """Helper function to run async function inside sync context"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(send_appointment_email(db, appointment_id))
+    loop.close()
 
 appointment_router = APIRouter()
 
@@ -24,7 +33,7 @@ appointment_router = APIRouter()
     summary="Create new appointment",
     description="""
     Create a new appointment for a patient.
-    
+
     **Required fields:**
     - patient_id (UUID): Patient's unique identifier
     - doctor_id (str): Doctor's unique identifier
@@ -36,10 +45,12 @@ appointment_router = APIRouter()
     - share_on_email (bool): Enable email notifications
     - share_on_sms (bool): Enable SMS notifications
     - share_on_whatsapp (bool): Enable WhatsApp notifications
-    
+    - send_reminder (bool): Enable appointment reminder
+    - remind_time_before (int): Minutes before appointment to send reminder
+
     **Authentication:**
     - Requires valid doctor Bearer token
-    
+
     **Response:**
     ```json
     {
@@ -53,6 +64,14 @@ appointment_router = APIRouter()
             "content": {
                 "application/json": {
                     "example": {"message": "Appointment created successfully"}
+                }
+            }
+        },
+        400: {
+            "description": "Invalid input",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Invalid status. Must be either 'scheduled' or 'cancelled' or 'completed'"}
                 }
             }
         },
@@ -87,21 +106,20 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         decoded_token = verify_token(request)
 
         user_id = decoded_token.get("user_id") if decoded_token else None
-        
+
         user = db.query(User).filter(User.id == user_id).first()
 
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
         patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
 
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
-        
+
         if appointment.status.lower() not in ["scheduled", "cancelled", "completed"]:
             return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'scheduled' or 'cancelled' or 'completed'"})
-        
-        
+
         new_appointment = Appointment(
             patient_id=patient.id,
             patient_number=patient.patient_number if patient.patient_number else None,
@@ -115,15 +133,20 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
             status=AppointmentStatus(appointment.status.lower()),
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
-            share_on_whatsapp=appointment.share_on_whatsapp
+            share_on_whatsapp=appointment.share_on_whatsapp,
+            send_reminder=appointment.send_reminder,
+            remind_time_before=appointment.remind_time_before
         )
 
         db.add(new_appointment)
         db.commit()
         db.refresh(new_appointment)
 
-        reminder_time = new_appointment.appointment_date - timedelta(hours=1, minutes=15)
-        scheduler.add_job(send_appointment_email, 'date', run_date=reminder_time, args=[db, new_appointment.id])
+        if appointment.send_reminder:
+            if appointment.remind_time_before:
+                reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
+                scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, new_appointment.id])
+                print(f"Reminder scheduled for {reminder_time}")
 
         if new_appointment.share_on_email:
             await send_appointment_email(db, new_appointment.id)
@@ -849,6 +872,8 @@ async def search_appointments(
             "checked_in_at": "2023-01-01T10:00:00",
             "checked_out_at": "2023-01-01T10:30:00",
             "status": "COMPLETED",
+            "send_reminder": true,
+            "remind_time_before": 30,
             "created_at": "2023-01-01T09:00:00",
             "updated_at": "2023-01-01T10:30:00",
             "doctor": {
@@ -938,6 +963,8 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
+                "send_reminder": appointment.send_reminder,
+                "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
@@ -966,10 +993,10 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
     summary="Update appointment details",
     description="""
     Update details of a specific appointment.
-    
+
     **Path parameter:**
     - appointment_id (UUID): Appointment's unique identifier
-    
+
     **Request body (optional fields):**
     - notes (str): Updated notes
     - appointment_date (datetime): New appointment date/time
@@ -979,10 +1006,12 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
     - share_on_email (bool): Update email sharing preference
     - share_on_sms (bool): Update SMS sharing preference
     - share_on_whatsapp (bool): Update WhatsApp sharing preference
-    
+    - send_reminder (bool): Send appointment reminder
+    - remind_time_before (int): Reminder time in minutes before appointment
+
     **Authentication:**
     - Requires valid doctor Bearer token
-    
+
     **Response:**
     ```json
     {
@@ -1029,16 +1058,16 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
-        
+
         user = db.query(User).filter(User.id == user_id).first()
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
         appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-        
+
         if not appointment:
             return JSONResponse(status_code=404, content={"message": "Appointment not found"})
-        
+
         if appointment_update.notes is not None:
             appointment.notes = appointment_update.notes
         if appointment_update.appointment_date is not None:
@@ -1055,10 +1084,18 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
             appointment.share_on_sms = appointment_update.share_on_sms
         if appointment_update.share_on_whatsapp is not None:
             appointment.share_on_whatsapp = appointment_update.share_on_whatsapp
+        if appointment_update.send_reminder is not None:
+            appointment.send_reminder = appointment_update.send_reminder
+            if appointment_update.remind_time_before is not None:
+                appointment.reminder_time = appointment_update.remind_time_before
         
         db.commit()
         db.refresh(appointment)
-        
+        if appointment_update.send_reminder:
+            reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
+            scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, appointment.id])
+            print(f"Reminder scheduled for {reminder_time}")
+
         return JSONResponse(status_code=200, content={"message": "Appointment updated successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})

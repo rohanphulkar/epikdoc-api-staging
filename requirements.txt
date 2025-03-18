@@ -44,7 +44,6 @@ tokenizers==0.21.0
 torch==2.5.1
 tqdm==4.67.1
 transformers==4.48.0
-triton==3.1.0
 twilio==9.4.2
 typing_extensions==4.12.2
 tzdata==2025.1

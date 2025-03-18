@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import String, DateTime, ForeignKey, Boolean, Enum as SQLAlchemyEnum
+from sqlalchemy import String, DateTime, ForeignKey, Boolean, Enum as SQLAlchemyEnum, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from db.db import Base
@@ -30,5 +30,7 @@ class Appointment(Base):
     share_on_email: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     share_on_sms: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     share_on_whatsapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    send_reminder: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    remind_time_before:Mapped[int] = mapped_column(Integer, nullable=True, comment="Time in minutes before appointment to send a reminder")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
