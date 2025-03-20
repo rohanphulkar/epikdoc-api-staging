@@ -13,12 +13,16 @@ import uuid
 import os
 from datetime import datetime
 from sqlalchemy import func
+import random
 
 payment_router = APIRouter()
 
 def update_url(url: str, request: Request):
     base_url = str(request.base_url).rstrip('/')
     return f"{base_url}/{url}"
+
+def generate_invoice_number():
+    return f"EPK{random.randint(1000, 9999)}"
 
 @payment_router.post("/create-expense", 
     response_model=ExpenseResponse,
@@ -1563,6 +1567,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         
         # Prepare invoice data with required fields
         current_time = datetime.now()
+        invoice_number = generate_invoice_number()
         invoice_data = {
             "id": str(uuid.uuid4()),
             "date": invoice.date or current_time,
@@ -1571,7 +1576,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
             "patient_name": patient.name,
             "patient_number": patient.patient_number,
             "doctor_name": user.name,
-            "invoice_number": invoice.invoice_number or f"INV-{current_time.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}",
+            "invoice_number": invoice.invoice_number or str(invoice_number),
             "notes": invoice.notes,
             "description": invoice.description,
             "cancelled": invoice.cancelled,
@@ -1588,6 +1593,22 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         # Create invoice items and store them for PDF generation
         invoice_items_for_pdf = []
         for item in invoice.invoice_items:
+            item_total = item.unit_cost * item.quantity  # Base cost
+            
+            # Apply discount
+            if item.discount:
+                if item.discount_type == "percentage":
+                    item_total -= (item_total * item.discount / 100)
+                elif item.discount_type == "fixed":
+                    item_total -= item.discount
+            
+            # Apply tax
+            if item.tax_percent:
+                tax_amount = (item_total * item.tax_percent / 100)
+                item_total += tax_amount
+            
+            # Add to total invoice amount
+            total_amount += item_total
             invoice_item_data = {
                 "id": str(uuid.uuid4()),
                 "invoice_id": new_invoice.id,
@@ -1603,6 +1624,8 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                 "created_at": current_time,
                 "updated_at": current_time
             }
+
+            new_invoice.total_amount = total_amount
             
             invoice_item = InvoiceItem(**invoice_item_data)
             db.add(invoice_item)
@@ -1700,6 +1723,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                             "notes": "Regular checkup invoice",
                             "description": "Detailed treatment description",
                             "file_path": "/path/to/invoice.pdf",
+                            "total_amount": 400,
                             "items": [{
                                 "treatment_name": "Consultation",
                                 "unit_cost": 100.00,
@@ -1821,6 +1845,7 @@ async def get_invoices(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
                 "items": []
@@ -1912,6 +1937,7 @@ async def get_invoices(
                             "notes": "Regular checkup",
                             "description": "Monthly visit",
                             "file_path": "http://example.com/invoice/uuid",
+                            "total_amount": 500.00,
                             "created_at": "2023-01-01T00:00:00",
                             "updated_at": "2023-01-01T00:00:00",
                             "items": [{
@@ -2043,6 +2069,7 @@ async def get_invoices_by_patient(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
                 "items": []
@@ -2098,7 +2125,6 @@ async def get_invoices_by_patient(
             invoice_dict["subtotal"] = subtotal
             invoice_dict["total_discount"] = total_discount
             invoice_dict["total_tax"] = total_tax
-            invoice_dict["total_amount"] = subtotal - total_discount + total_tax
             invoice_list.append(invoice_dict)
             
         return JSONResponse(status_code=200, content={
@@ -2152,6 +2178,7 @@ async def get_invoices_by_patient(
                 "notes": "Invoice notes",
                 "description": "Invoice description",
                 "file_path": "http://api.example.com/invoices/uuid",
+                "total_amount": 100.00,
                 "created_at": "2023-01-01T00:00:00",
                 "updated_at": "2023-01-01T00:00:00",
                 "items": [
@@ -2315,6 +2342,7 @@ async def search_invoices(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
                 "items": []
@@ -2370,7 +2398,6 @@ async def search_invoices(
             invoice_dict["subtotal"] = subtotal
             invoice_dict["total_discount"] = total_discount
             invoice_dict["total_tax"] = total_tax
-            invoice_dict["total"] = subtotal - total_discount + total_tax
             
             invoice_list.append(invoice_dict)
             
@@ -2429,7 +2456,7 @@ async def search_invoices(
                         "subtotal": 100.00,
                         "total_discount": 10.00,
                         "total_tax": 9.00,
-                        "total": 99.00,
+                        "total_amount": 99.00,
                         "items": [{
                             "treatment_name": "Consultation",
                             "unit_cost": 100.00,
@@ -2474,6 +2501,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "notes": invoice.notes,
             "description": invoice.description,
             "file_path": f"{invoice.file_path}" if invoice.file_path else None,
+            "total_amount": invoice.total_amount,
             "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
             "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
             "items": []
@@ -2618,6 +2646,8 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
         if invoice.invoice_items:
             # Delete existing items
             db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete()
+
+            total_amount = 0.0
             
             # Create new items
             for item in invoice.invoice_items:
@@ -2636,8 +2666,24 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                     created_at=datetime.now(),
                     updated_at=datetime.now()
                 )
+                item_total = item.unit_cost * item.quantity  # Base cost
+            
+                # Apply discount
+                if item.discount:
+                    if item.discount_type == "percentage":
+                        item_total -= (item_total * item.discount / 100)
+                    elif item.discount_type == "fixed":
+                        item_total -= item.discount
+                
+                # Apply tax
+                if item.tax_percent:
+                    tax_amount = (item_total * item.tax_percent / 100)
+                    item_total += tax_amount
+                
+                # Add to total invoice amount
+                total_amount += item_total
                 db.add(invoice_item)
-
+            existing_invoice.total_amount = total_amount
         db.commit()
         db.refresh(existing_invoice)
 
@@ -2678,7 +2724,8 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                 "notes": existing_invoice.notes,
                 "description": existing_invoice.description,
                 "doctor_phone": user.phone,
-                "doctor_email": user.email
+                "doctor_email": user.email,
+
             }
 
             invoice_items = [{
@@ -2706,6 +2753,8 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                     pass
             existing_invoice.file_path = update_url(pdf_path, request)
             db.commit()
+
+            return JSONResponse(status_code=200, content={"message": "Invoice updated successfully"})
 
         except Exception as e:
             # Log PDF generation error but don't fail the request

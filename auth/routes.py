@@ -1370,17 +1370,23 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
 
-    treatment_plans = []
     for _, row in df.iterrows():
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
             treatment_name = str(row.get("Treatment Name", "")).strip("'")
             if patient:
-                treatment_plans.append(TreatmentPlan(
+                treatment_plan = TreatmentPlan(
                     patient_id=patient.id,
                     doctor=user.id,
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
+                )
+                db.add(treatment_plan)
+                db.commit()
+                db.refresh(treatment_plan)
+
+                treatment_plan_item = TreatmentPlanItem(
+                    treatment_plan_id=treatment_plan.id,
                     treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
                     unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
                     quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
@@ -1389,7 +1395,11 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                     amount=float(str(row.get("Amount", 0.0)).strip("'")),
                     treatment_description=str(row.get("Treatment Description", "")),
                     tooth_diagram=str(row.get("Tooth Diagram", ""))
-                ))
+                )
+
+                db.add(treatment_plan_item)
+                db.commit()
+
                 existing_treatment_name_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == treatment_name).first()
                 if not existing_treatment_name_suggestion:
                     db.add(TreatmentNameSuggestion(
@@ -1402,17 +1412,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             import_log.status = ImportStatus.FAILED
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing treatment plan row: {str(e)}"})
-
-    try:
-        if treatment_plans:
-            db.bulk_save_objects(treatment_plans)
-            db.commit()
-    except Exception as e:
-        print(f"Error during bulk insert: {str(e)}")
-        db.rollback()
-        import_log.status = ImportStatus.FAILED
-        db.commit()
-        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
 async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing expense data")
@@ -1563,6 +1562,12 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                         return convert_func(val_str)
                     except (ValueError, TypeError):
                         return default
+                
+                unit_cost = safe_parse_number(row.get("Unit Cost"), float, 0.0)
+                discount = safe_parse_number(row.get("Discount"), float)
+                quantity = safe_parse_number(row.get("Quantity"), int, 1)
+                tax_percent = safe_parse_number(row.get("Tax Percent"), float)
+                total_amount = 0.0
 
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
@@ -1577,6 +1582,27 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     tax_percent=safe_parse_number(row.get("Tax Percent"), float)
                 )
                 db.add(invoice_item)
+
+                item_total = unit_cost * quantity  # Base cost
+            
+                # Apply discount
+                if discount:
+                    if discount_type == "percentage":
+                        item_total -= (item_total * discount / 100)
+                    elif discount_type == "fixed":
+                        item_total -= discount
+                
+                # Apply tax
+                if tax_percent:
+                    tax_amount = (item_total * tax_percent / 100)
+                    item_total += tax_amount
+                
+                # Add to total invoice amount
+                total_amount += item_total
+
+                # Update invoice total
+                invoice.total_amount = total_amount
+
 
         db.commit()
     except Exception as e:

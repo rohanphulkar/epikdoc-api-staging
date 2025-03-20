@@ -64,6 +64,7 @@ class Invoice(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     file_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    total_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
     invoice_items = relationship("InvoiceItem", back_populates="invoice")

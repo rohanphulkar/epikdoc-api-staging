@@ -17,7 +17,7 @@ from datetime import datetime, time
 from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
-from catalog.models import Treatment, TreatmentPlan
+from catalog.models import Treatment, TreatmentPlan, TreatmentPlanItem
 from sqlalchemy import case
 
 patient_router = APIRouter()
@@ -391,7 +391,6 @@ async def get_all_patients(
                         "treatments": [],
                         "clinical_notes": [],
                         "treatment_plans": [],
-                        "medical_records": [],
                         "appointments": []
                     }
                 }
@@ -476,7 +475,6 @@ async def get_patient_by_id(
         treatments = []
         clinical_notes = []
         treatment_plans = []
-        medical_records = []
         appointments = []
 
 
@@ -516,53 +514,52 @@ async def get_patient_by_id(
             }
             treatments.append(treatment_data)
 
-        for clinical_note in db_clinical_notes:
-            clinical_note_data = {
-                "id": clinical_note.id,
-                "date": clinical_note.date.isoformat() if clinical_note.date else None,
-                "note_type": clinical_note.note_type,
-                "description": clinical_note.description,
-                "is_revised": clinical_note.is_revised,
-                "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None
-            }
-            clinical_notes.append(clinical_note_data)
-
         for treatment_plan in db_treatment_plans:
             treatment_plan_data = {
                 "id": treatment_plan.id,
                 "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
-                "treatment_name": treatment_plan.treatment_name,
-                "unit_cost": treatment_plan.unit_cost,
-                "quantity": treatment_plan.quantity,
-                "discount": treatment_plan.discount,
-                "discount_type": treatment_plan.discount_type,
-                "amount": treatment_plan.amount,
-                "treatment_description": treatment_plan.treatment_description,
-                "tooth_diagram": treatment_plan.tooth_diagram,
                 "created_at": treatment_plan.created_at.isoformat() if treatment_plan.created_at else None
             }
+
+            treatment_plan_items = [
+                {
+                    "id": item.id,
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "amount": item.amount,
+                    "treatment_description": item.treatment_description,
+                    "tooth_diagram": item.tooth_diagram,
+                } for item in db.query(TreatmentPlanItem)
+                .filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
+            ]
+
+            treatment_plan_data["items"] = treatment_plan_items
+
             treatment_plans.append(treatment_plan_data)
 
-        for medical_record in patient.medical_records:
-            medical_record_data = {
-                "id": medical_record.id,
-                "complaint": medical_record.complaint,
-                "diagnosis": medical_record.diagnosis,
-                "vital_signs": medical_record.vital_signs,
-                "created_at": medical_record.created_at.isoformat() if medical_record.created_at else None,
+        for clinical_note in patient.clinical_notes:
+            clinical_note_data = {
+                "id": clinical_note.id,
+                "complaint": clinical_note.complaint,
+                "diagnosis": clinical_note.diagnosis,
+                "vital_signs": clinical_note.vital_signs,
+                "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None,
                 "attachments": [
                     {
                         "id": attachment.id,
                         "attachment": attachment.attachment,
                         "created_at": attachment.created_at.isoformat() if attachment.created_at else None
-                    } for attachment in medical_record.attachments
+                    } for attachment in clinical_note.attachments
                 ],
                 "treatments": [
                     {
                         "id": treatment.id,
                         "name": treatment.name,
                         "created_at": treatment.created_at.isoformat() if treatment.created_at else None
-                    } for treatment in medical_record.treatments
+                    } for treatment in clinical_note.treatments
                 ],
                 "medicines": [
                     {
@@ -574,10 +571,10 @@ async def get_patient_by_id(
                         "instructions": medicine.instructions,
                         "amount": medicine.amount,
                         "created_at": medicine.created_at.isoformat() if medicine.created_at else None
-                    } for medicine in medical_record.medicines
+                    } for medicine in clinical_note.medicines
                 ]
             }
-            medical_records.append(medical_record_data)
+            clinical_notes.append(clinical_note_data)
 
         db_appointments = db.execute(
             select(Appointment).filter(
@@ -610,7 +607,6 @@ async def get_patient_by_id(
         patient_data["treatments"] = treatments
         patient_data["clinical_notes"] = clinical_notes
         patient_data["treatment_plans"] = treatment_plans
-        patient_data["medical_records"] = medical_records
         patient_data["appointments"] = appointments
         return JSONResponse(status_code=200, content=patient_data)
         

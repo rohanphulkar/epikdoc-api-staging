@@ -693,11 +693,31 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
             if not appointment:
                 return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Invalid appointment"})
         
-        treatment_plan_data = treatment_plan.model_dump()
-        new_treatment_plan = TreatmentPlan(**treatment_plan_data)
+        new_treatment_plan = TreatmentPlan(
+            doctor=user.id,
+            patient_id=treatment_plan.patient_id,
+            appointment_id=treatment_plan.appointment_id,
+            date=treatment_plan.date,
+        )
         db.add(new_treatment_plan)
         db.commit()
         db.refresh(new_treatment_plan)
+        
+        for item in treatment_plan.treatment_plan_items:
+            new_treatment_plan_item = TreatmentPlanItem(
+                treatment_plan_id=new_treatment_plan.id,
+                treatment_name=item.treatment_name,
+                unit_cost=item.unit_cost,
+                quantity=item.quantity,
+                amount=item.amount,
+                discount=item.discount,
+                discount_type=item.discount_type,
+                treatment_description=item.treatment_description,
+                tooth_diagram=item.tooth_diagram,
+            )
+            db.add(new_treatment_plan_item)
+            db.commit()
+            db.refresh(new_treatment_plan_item)
         
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Treatment plan created successfully",
@@ -786,20 +806,28 @@ async def get_treatment_plans(
         treatment_plan_list = []
         
         for plan in treatment_plans:
+            treatment_plan_items = [
+            {
+                "id": item.id,
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "amount": item.amount,
+                "discount": item.discount,
+                "discount_type": item.discount_type,
+                "treatment_description": item.treatment_description,
+                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+            }
+                for item in db.query(TreatmentPlanItem)
+                .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
+            ]
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
                 "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
-                "treatment_name": plan.treatment_name,
-                "unit_cost": plan.unit_cost,
-                "quantity": plan.quantity,
-                "discount": plan.discount,
-                "discount_type": plan.discount_type,
-                "amount": plan.amount,
-                "treatment_description": plan.treatment_description,
-                "tooth_diagram": plan.tooth_diagram,
-                "created_at": plan.created_at.isoformat() if plan.created_at else None
+                "treatment_plan_items": treatment_plan_items,  # Fixed: Assigning the items to the plan
+                "created_at": plan.created_at.isoformat() if plan.created_at else None,
             })
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
@@ -889,20 +917,28 @@ async def search_treatment_plans(
         treatment_plan_list = []
         
         for plan in treatment_plans:
+            treatment_plan_items = [
+            {
+                "id": item.id,
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "amount": item.amount,
+                "discount": item.discount,
+                "discount_type": item.discount_type,
+                "treatment_description": item.treatment_description,
+                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+            }
+                for item in db.query(TreatmentPlanItem)
+                .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
+            ]
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
                 "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
-                "treatment_name": plan.treatment_name,
-                "unit_cost": plan.unit_cost,
-                "quantity": plan.quantity,
-                "discount": plan.discount,
-                "discount_type": plan.discount_type,
-                "amount": plan.amount,
-                "treatment_description": plan.treatment_description,
-                "tooth_diagram": plan.tooth_diagram,
-                "created_at": plan.created_at.isoformat() if plan.created_at else None
+                "treatment_plan_items": treatment_plan_items,  # Fixed: Assigning the items to the plan
+                "created_at": plan.created_at.isoformat() if plan.created_at else None,
             })
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
@@ -948,6 +984,22 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
+        treatment_plan_items = [
+            {
+                "id": item.id,
+                "treatment_name": item.treatment_name,
+                "unit_cost": item.unit_cost,
+                "quantity": item.quantity,
+                "amount": item.amount,
+                "discount": item.discount,
+                "discount_type": item.discount_type,
+                "treatment_description": item.treatment_description,
+                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+            }
+                for item in db.query(TreatmentPlanItem)
+                .filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
+        ]
+        
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatment plan retrieved successfully",
             "treatment_plan": {
@@ -955,14 +1007,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
                 "patient_id": treatment_plan.patient_id,
                 "appointment_id": treatment_plan.appointment_id,
                 "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
-                "treatment_name": treatment_plan.treatment_name,
-                "unit_cost": treatment_plan.unit_cost,
-                "quantity": treatment_plan.quantity,
-                "discount": treatment_plan.discount,
-                "discount_type": treatment_plan.discount_type,
-                "amount": treatment_plan.amount,
-                "treatment_description": treatment_plan.treatment_description,
-                "tooth_diagram": treatment_plan.tooth_diagram,
+                "treatment_plan_items": treatment_plan_items,
                 "created_at": treatment_plan.created_at.isoformat() if treatment_plan.created_at else None
             }
         })
@@ -970,6 +1015,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
 
 @catalog_router.patch("/update-treatment-plan/{treatment_plan_id}",
     status_code=status.HTTP_200_OK,
@@ -1000,21 +1046,42 @@ async def update_treatment_plan(treatment_plan_id: str, request: Request, treatm
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
         treatment_plan_data = treatment_plan.model_dump(exclude_unset=True)
-        
+        treatment_plan_items = treatment_plan_data.pop('treatment_plan_items', [])
+
+        # Update TreatmentPlan fields
         for field, value in treatment_plan_data.items():
             setattr(existing_treatment_plan, field, value)
+
+        # Update or add TreatmentPlanItems
+        for item in treatment_plan_items:
+            existing_item = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.id == item.get('id')).first()
             
+            if existing_item:
+                # Update existing item
+                item_data = {k: v for k, v in item.items() if v is not None}
+                for field, value in item_data.items():
+                    setattr(existing_item, field, value)
+            else:
+                # Create new item if not found
+                treatment_plan_item = TreatmentPlanItem(
+                    treatment_plan_id=existing_treatment_plan.id,
+                    **item  # Unpacking dictionary to create a new object
+                )
+                db.add(treatment_plan_item)
+
         db.commit()
         
-        return JSONResponse(status_code=status.HTTP_200_OK, content={
-            "message": "Treatment plan updated successfully"
-        })
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment plan updated successfully"})
+    
     except SQLAlchemyError as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+
 
 @catalog_router.delete("/delete-treatment-plan/{treatment_plan_id}",
     status_code=status.HTTP_200_OK,
@@ -1043,6 +1110,11 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
         treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
+        
+        treatment_plan_items = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
+        for item in treatment_plan_items:
+            db.delete(item)
+            db.commit()
 
         db.delete(treatment_plan)
         db.commit()

@@ -48,6 +48,13 @@ class TreatmentPlan(Base):
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+class TreatmentPlanItem(Base):
+    __tablename__ = "treatment_plan_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    treatment_plan_id: Mapped[str] = mapped_column(String(36), ForeignKey("treatment_plans.id"), nullable=False)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -56,4 +63,3 @@ class TreatmentPlan(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     treatment_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tooth_diagram: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

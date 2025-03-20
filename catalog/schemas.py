@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 class ProcedureCatalogCreate(BaseModel):
     treatment_name: str
@@ -51,30 +51,7 @@ class TreatmentUpdate(BaseModel):
         from_attributes = True
 
 
-# class ClinicalNoteCreate(BaseModel):
-#     patient_id: Optional[str] = None
-
-#     date: datetime
-#     note_type: str
-#     description: str
-#     is_revised: bool = False
-
-#     class Config:
-#         from_attributes = True
-
-# class ClinicalNoteUpdate(BaseModel):
-#     date: Optional[datetime] = None
-#     note_type: Optional[str] = None
-#     description: Optional[str] = None
-#     is_revised: Optional[bool] = None
-
-#     class Config:
-#         from_attributes = True
-
-class TreatmentPlanCreate(BaseModel):
-    patient_id: Optional[str] = None
-    appointment_id: Optional[str] = None
-    date: datetime
+class TreatmentPlanItemBase(BaseModel):
     treatment_name: str
     unit_cost: float
     quantity: int = 1
@@ -84,19 +61,18 @@ class TreatmentPlanCreate(BaseModel):
     treatment_description: Optional[str] = None
     tooth_diagram: Optional[str] = None
 
+class TreatmentPlanCreate(BaseModel):
+    patient_id: Optional[str] = None
+    appointment_id: Optional[str] = None
+    date: datetime
+    treatment_plan_items: List[TreatmentPlanItemBase]
+
     class Config:
         from_attributes = True
 
 class TreatmentPlanUpdate(BaseModel):
     date: Optional[datetime] = None
-    treatment_name: Optional[str] = None
-    unit_cost: Optional[float] = None
-    quantity: Optional[int] = None
-    discount: Optional[float] = None
-    discount_type: Optional[str] = None
-    amount: Optional[float] = None
-    treatment_description: Optional[str] = None
-    tooth_diagram: Optional[str] = None
+    treatment_plan_items: Optional[List[TreatmentPlanItemBase]] = None
 
     class Config:
         from_attributes = True
