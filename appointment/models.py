@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from db.db import Base
 import uuid
+from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -13,7 +14,7 @@ class AppointmentStatus(enum.Enum):
     CANCELLED = "cancelled"
     COMPLETED = "completed"
 
-class Appointment(Base):
+class Appointment(Base, TimestampMixin):
     __tablename__ = "appointments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -34,5 +35,3 @@ class Appointment(Base):
     remind_time_before:Mapped[int] = mapped_column(Integer, nullable=True, comment="Time in minutes before appointment to send a reminder")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-
-    __mapper_args__ = {"order_by": created_at.desc()}

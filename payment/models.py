@@ -6,13 +6,14 @@ from datetime import datetime
 import uuid
 import enum
 from typing import Optional
+from db.mixins import TimestampMixin
 
 
 def generate_uuid():
     return str(uuid.uuid4())
 
 
-class Expense(Base):
+class Expense(Base, TimestampMixin):
     __tablename__ = "expenses"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -25,10 +26,9 @@ class Expense(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
-class Payment(Base):
+class Payment(Base, TimestampMixin):
     __tablename__ = "payments"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -50,10 +50,9 @@ class Payment(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
-class Invoice(Base):
+class Invoice(Base, TimestampMixin):
     __tablename__ = "invoices"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -73,10 +72,9 @@ class Invoice(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
     invoice_items = relationship("InvoiceItem", back_populates="invoice")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
-class InvoiceItem(Base):
+class InvoiceItem(Base, TimestampMixin):
     __tablename__ = "invoice_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

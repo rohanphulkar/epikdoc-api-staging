@@ -1,14 +1,15 @@
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, DateTime, Text, ForeignKey, Integer, Float, Boolean
+from sqlalchemy import String, DateTime, Text, ForeignKey, Integer, Float, Boolean, Enum as SQLAlchemyEnum
 from db.db import Base
 from typing import Optional
 from datetime import datetime
-import uuid
+import uuid, enum
+from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
 
-class ProcedureCatalog(Base):
+class ProcedureCatalog(Base, TimestampMixin):
     __tablename__ = "procedure_catalog"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -20,9 +21,8 @@ class ProcedureCatalog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class Treatment(Base):
+class Treatment(Base, TimestampMixin):
     __tablename__ = "treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -40,11 +40,10 @@ class Treatment(Base):
     doctor: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
 
-class TreatmentPlan(Base):
+class TreatmentPlan(Base, TimestampMixin):
     __tablename__ = "treatment_plans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -54,9 +53,8 @@ class TreatmentPlan(Base):
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class TreatmentPlanItem(Base):
+class TreatmentPlanItem(Base, TimestampMixin):
     __tablename__ = "treatment_plan_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -69,3 +67,4 @@ class TreatmentPlanItem(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     treatment_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tooth_diagram: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    completed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)

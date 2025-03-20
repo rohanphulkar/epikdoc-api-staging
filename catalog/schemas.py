@@ -60,6 +60,7 @@ class TreatmentPlanItemBase(BaseModel):
     amount: float
     treatment_description: Optional[str] = None
     tooth_diagram: Optional[str] = None
+    completed: Optional[bool] = None
 
 class TreatmentPlanCreate(BaseModel):
     patient_id: Optional[str] = None

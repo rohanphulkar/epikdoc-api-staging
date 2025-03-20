@@ -14,6 +14,8 @@ import os
 from datetime import datetime
 from sqlalchemy import func
 import random
+from catalog.models import TreatmentPlan, TreatmentPlanItem
+from appointment.models import Appointment
 
 payment_router = APIRouter()
 
@@ -1654,7 +1656,8 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
             print(f"Failed to generate PDF invoice: {str(e)}")
         
         # Return full invoice response with items
-        db.refresh(new_invoice)
+        db.refresh(new_invoice)                
+
         return new_invoice
         
     except Exception as e:

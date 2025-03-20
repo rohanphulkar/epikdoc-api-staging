@@ -5,6 +5,7 @@ from datetime import datetime
 import uuid
 import enum
 from typing import Optional
+from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -14,7 +15,7 @@ class Gender(enum.Enum):
     FEMALE = "female" 
     OTHER = "other"
 
-class Patient(Base):
+class Patient(Base, TimestampMixin):
     __tablename__ = "patients"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -43,10 +44,9 @@ class Patient(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped[list["ClinicalNote"]] = relationship("ClinicalNote", back_populates="patient")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
-class ClinicalNote(Base):
+class ClinicalNote(Base, TimestampMixin):
     __tablename__ = "clinical_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -62,9 +62,8 @@ class ClinicalNote(Base):
     vital_signs: Mapped[list["VitalSign"]] = relationship("VitalSign", back_populates="clinical_notes")
     notes: Mapped[list["Notes"]] = relationship("Notes", back_populates="clinical_notes")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class Complaint(Base):
+class Complaint(Base, TimestampMixin):
     __tablename__ = "complaints"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -73,9 +72,8 @@ class Complaint(Base):
 
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="complaints")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class Diagnosis(Base):
+class Diagnosis(Base, TimestampMixin):
     __tablename__ = "diagnoses"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -83,9 +81,8 @@ class Diagnosis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class VitalSign(Base):
+class VitalSign(Base, TimestampMixin):
     __tablename__ = "vital_signs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -93,9 +90,8 @@ class VitalSign(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class Notes(Base):
+class Notes(Base, TimestampMixin):
     __tablename__ = "notes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -103,9 +99,8 @@ class Notes(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class ClinicalNoteAttachment(Base):
+class ClinicalNoteAttachment(Base, TimestampMixin):
     __tablename__ = "clinical_note_attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -114,10 +109,9 @@ class ClinicalNoteAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="attachments")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
 
-class ClinicalNoteTreatment(Base):
+class ClinicalNoteTreatment(Base, TimestampMixin):
     __tablename__ = "clinical_note_treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -126,9 +120,8 @@ class ClinicalNoteTreatment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
 
-    __mapper_args__ = {"order_by": created_at.desc()}
 
-class Medicine(Base):
+class Medicine(Base, TimestampMixin):
     __tablename__ = "medicines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -141,5 +134,3 @@ class Medicine(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="medicines")
-
-    __mapper_args__ = {"order_by": created_at.desc()}
