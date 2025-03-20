@@ -33,6 +33,7 @@ class Permission(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+
 class User(Base):
     __tablename__ = "users"
 
@@ -74,6 +75,8 @@ class User(Base):
 
     def __repr__(self):
         return f"<User {self.email}>"
+    
+    __mapper_args__ = {"order_by": created_at.desc()}
 
 
 
@@ -96,3 +99,5 @@ class ImportLog(Base):
 
     # Relationship with User
     user: Mapped["User"] = relationship("User", back_populates="import_logs")
+
+    __mapper_args__ = {"order_by": created_at.desc()}

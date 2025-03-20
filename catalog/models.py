@@ -20,6 +20,8 @@ class ProcedureCatalog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 class Treatment(Base):
     __tablename__ = "treatments"
 
@@ -38,6 +40,8 @@ class Treatment(Base):
     doctor: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 
 
 class TreatmentPlan(Base):
@@ -49,6 +53,8 @@ class TreatmentPlan(Base):
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+    __mapper_args__ = {"order_by": created_at.desc()}
 
 class TreatmentPlanItem(Base):
     __tablename__ = "treatment_plan_items"

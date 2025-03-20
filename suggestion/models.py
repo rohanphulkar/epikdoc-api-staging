@@ -17,12 +17,16 @@ class TreatmentNameSuggestion(Base):
     treatment_name: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 class ComplaintSuggestion(Base):
     __tablename__ = "complaint_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     complaint: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+    __mapper_args__ = {"order_by": created_at.desc()}
 
 
 class DiagnosisSuggestion(Base):
@@ -32,6 +36,8 @@ class DiagnosisSuggestion(Base):
     diagnosis: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 
 class VitalSignSuggestion(Base):
     __tablename__ = "vital_sign_suggestions"
@@ -39,3 +45,5 @@ class VitalSignSuggestion(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     vital_sign: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+    __mapper_args__ = {"order_by": created_at.desc()}

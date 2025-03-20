@@ -25,6 +25,8 @@ class Expense(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 
 class Payment(Base):
     __tablename__ = "payments"
@@ -48,6 +50,8 @@ class Payment(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 
 class Invoice(Base):
     __tablename__ = "invoices"
@@ -68,6 +72,8 @@ class Invoice(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
     invoice_items = relationship("InvoiceItem", back_populates="invoice")
+
+    __mapper_args__ = {"order_by": created_at.desc()}
 
 
 class InvoiceItem(Base):

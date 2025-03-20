@@ -21,6 +21,8 @@ class XRay(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 class Prediction(Base):
     __tablename__ = "predictions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -29,6 +31,8 @@ class Prediction(Base):
     notes: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    __mapper_args__ = {"order_by": created_at.desc()}
 
 class Legend(Base):
     __tablename__ = "legends"
@@ -42,6 +46,8 @@ class Legend(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
+    __mapper_args__ = {"order_by": created_at.desc()}
+
 class DeletedLegend(Base):
     __tablename__ = "deleted_legends"
 
@@ -50,3 +56,5 @@ class DeletedLegend(Base):
     prediction_data: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    __mapper_args__ = {"order_by": created_at.desc()}
