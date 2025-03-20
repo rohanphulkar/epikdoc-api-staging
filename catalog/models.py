@@ -24,6 +24,7 @@ class Treatment(Base):
     __tablename__ = "treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id'), nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     treatment_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -38,23 +39,12 @@ class Treatment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 
-class ClinicalNote(Base):
-    __tablename__ = "clinical_notes"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
-    date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    note_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    is_revised: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-
 
 class TreatmentPlan(Base):
     __tablename__ = "treatment_plans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id'), nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

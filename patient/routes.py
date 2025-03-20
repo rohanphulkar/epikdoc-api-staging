@@ -17,7 +17,7 @@ from datetime import datetime, time
 from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
-from catalog.models import Treatment, ClinicalNote, TreatmentPlan
+from catalog.models import Treatment, TreatmentPlan
 from sqlalchemy import case
 
 patient_router = APIRouter()
@@ -1063,11 +1063,11 @@ async def delete_patient(
         )
 
 @patient_router.post(
-    "/create-medical-record/{patient_id}",
+    "/create-clinical-note/{patient_id}",
     status_code=status.HTTP_201_CREATED,
-    summary="Create medical record with treatments, medicines and attachments",
+    summary="Create clinical note with treatments, medicines and attachments",
     description="""
-    Create a new medical record for a patient with treatments, medicines and file attachments.
+    Create a new clinical note for a patient with treatments, medicines and file attachments.
     
     **Path Parameters:**
     - patient_id: ID of the patient
@@ -1082,6 +1082,7 @@ async def delete_patient(
             "pulse": "72",
             "respiratory_rate": "16"
         }
+    - notes (optional): Notes of clinical note
     - treatments (optional): JSON array of treatments
         [
             {
@@ -1108,7 +1109,7 @@ async def delete_patient(
     - Token must be for the doctor associated with the patient
     
     **Notes:**
-    - Creates a medical record entry with basic details
+    - Creates a clinical note entry with basic details
     - Optionally adds treatments, medicines and file attachments
     - File paths are stored in database, files saved to disk
     - Medicine amount is auto-calculated as price * quantity
@@ -1116,12 +1117,12 @@ async def delete_patient(
     """,
     responses={
         201: {
-            "description": "Medical record created successfully",
+            "description": "Clinical note created successfully",
             "content": {
                 "application/json": {
                     "example": {
-                        "message": "Medical record created successfully",
-                        "medical_record_id": "550e8400-e29b-41d4-a716-446655440000"
+                        "message": "Clinical note created successfully",
+                        "clinical_note_id": "550e8400-e29b-41d4-a716-446655440000"
                     }
                 }
             }
@@ -1177,12 +1178,13 @@ async def delete_patient(
         }
     }
 )
-async def create_medical_record(
+async def create_clinical_note(
     request: Request,
     patient_id: str,
-    complaint: str = Form(...),
-    diagnosis: str = Form(...),
+    complaints: str = Form(...),
+    diagnoses: str = Form(...),
     vital_signs: str = Form(...),
+    notes: str = Form(None),
     treatments: str = Form(None),  # JSON string of treatments
     medicines: str = Form(None),   # JSON string of medicines
     files: Optional[List[UploadFile]] = File(None),
@@ -1205,30 +1207,50 @@ async def create_medical_record(
             )
 
         # Create medical record
-        medical_record_db = MedicalRecord(
+        clinical_note_db = ClinicalNote(
             patient_id=patient.id,
-            complaint=complaint,
-            diagnosis=diagnosis,
-            vital_signs=vital_signs
+            notes=notes
         )
-        db.add(medical_record_db)
-        db.commit()
-        db.refresh(medical_record_db)
 
+        db.add(clinical_note_db)
+        db.commit()
+        db.refresh(clinical_note_db)
+
+        for complaint in complaints:
+            db_complaint = Complaint(
+                clinical_note_id=clinical_note_db.id,
+                complaint=complaint
+            )
+            db.add(db_complaint)
+
+        for diagnosis in diagnoses:
+            db_diagnosis = Diagnosis(
+                clinical_note_id=clinical_note_db.id,
+                diagnosis=diagnosis
+            )
+            db.add(db_diagnosis)
+        
+        for vital_sign in vital_signs:
+            db_vital_sign = VitalSign(
+                clinical_note_id=clinical_note_db.id,
+                vital_sign=vital_sign
+            )
+            db.add(db_vital_sign)
+            
         # Handle file attachments
         if files:
             attachments = []
-            os.makedirs("uploads/medical_records", exist_ok=True)
+            os.makedirs("uploads/clinical_notes", exist_ok=True)
             
             for file in files:
                 file_ext = os.path.splitext(str(file.filename))[1]
-                file_path = f"uploads/medical_records/{generate_uuid()}{file_ext}"
+                file_path = f"uploads/clinical_notes/{generate_uuid()}{file_ext}"
                 
                 with open(file_path, "wb") as f:
                     f.write(await file.read())
 
-                attachments.append(MedicalRecordAttachment(
-                    medical_record_id=medical_record_db.id,
+                attachments.append(ClinicalNoteAttachment(
+                    clinical_note_id=clinical_note_db.id,
                     attachment=file_path
                 ))
 
@@ -1238,8 +1260,8 @@ async def create_medical_record(
         if treatments:
             treatments_list = json.loads(treatments)
             treatments_db = [
-                MedicalRecordTreatment(
-                    medical_record_id=medical_record_db.id,
+                ClinicalNoteTreatment(
+                    clinical_note_id=clinical_note_db.id,
                     name=treatment["name"]
                 )
                 for treatment in treatments_list
@@ -1251,7 +1273,7 @@ async def create_medical_record(
             medicines_list = json.loads(medicines)
             medicines_db = [
                 Medicine(
-                    medical_record_id=medical_record_db.id,
+                    clinical_note_id=clinical_note_db.id,
                     item_name=medicine["name"],
                     quantity=medicine.get("quantity", 1),
                     price=medicine.get("price", 0),
@@ -1266,8 +1288,8 @@ async def create_medical_record(
         db.commit()
         
         return {
-            "message": "Medical record created successfully",
-            "medical_record_id": medical_record_db.id
+            "message": "Clinical note created successfully",
+            "clinical_note_id": clinical_note_db.id
         }
         
     except json.JSONDecodeError:
@@ -1286,3 +1308,45 @@ async def create_medical_record(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"message": f"Internal server error: {str(e)}"}
         )
+    
+@patient_router.get("/get-clinical-notes")
+async def get_clinical_notes(
+    request: Request,
+    patient_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user and get patient
+        decoded_token = verify_token(request)
+        patient = db.execute(
+            select(Patient).filter(
+                Patient.id == patient_id,
+                Patient.doctor_id == decoded_token.get("user_id")
+            )
+        ).scalar_one_or_none()
+        
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Patient not found"}
+            )
+
+        # Get clinical notes
+        clinical_notes = db.query(ClinicalNote).filter_by(patient_id=patient.id).all()
+
+        # Get additional data for each clinical note
+        for note in clinical_notes:
+            note.treatments = db.query(ClinicalNoteTreatment).filter_by(clinical_note_id=note.id).all()
+            note.medicines = db.query(Medicine).filter_by(clinical_note_id=note.id).all()
+            note.attachments = db.query(ClinicalNoteAttachment).filter_by(clinical_note_id=note.id).all()
+            note.vital_signs = db.query(VitalSign).filter_by(clinical_note_id=note.id).all()
+            note.complaints = db.query(Complaint).filter_by(clinical_note_id=note.id).all()
+            note.diagnoses = db.query(Diagnosis).filter_by(clinical_note_id=note.id).all()
+
+        return clinical_notes
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )
+    

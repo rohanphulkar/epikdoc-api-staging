@@ -18,6 +18,7 @@ from payment.routes import payment_router
 from appointment.routes import appointment_router
 from staff.routes import staff_router
 from catalog.routes import catalog_router
+from suggestion.routes import suggestion_router
 
 # Configure logging
 logging.basicConfig(
@@ -55,6 +56,7 @@ app = FastAPI(
         {"name": "payments", "description": "Payment processing, invoicing and financial reporting"},
         {"name": "predictions", "description": "AI-powered medical image analysis and diagnostic predictions"},
         {"name": "catalog", "description": "Catalog of treatments, procedures and services"},
+        {"name": "suggestion", "description": "Personalized recommendations based on user preferences"},
         {"name": "staff", "description": "Staff management, roles and access control"},
     ],
     terms_of_service="https://www.epikdoc.com/terms",
@@ -118,3 +120,4 @@ app.include_router(payment_router, prefix=f"/payments", tags=["payments"])
 app.include_router(appointment_router, prefix=f"/appointments", tags=["appointments"])
 app.include_router(staff_router, prefix=f"/staff", tags=["staff"])
 app.include_router(catalog_router, prefix=f"/catalog", tags=["catalog"])
+app.include_router(suggestion_router, prefix=f"/suggestion", tags=["suggestion"])

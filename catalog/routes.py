@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, Depends, File, UploadFile, status, Form,
 from sqlalchemy.orm import Session
 from .schemas import *
 from .models import *
+from patient.models import Patient
 from db.db import get_db
 from auth.models import User
 from fastapi.responses import JSONResponse
@@ -14,7 +15,7 @@ import io
 import numpy as np
 import json
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from appointment.models import Appointment
 from math import ceil
 
@@ -34,6 +35,7 @@ catalog_router = APIRouter()
     - amount: Total amount for treatment (decimal number)
     
     Optional fields:
+    - appointment_id: Unique identifier of the appointment (UUID)
     - patient_id: Unique identifier of the patient (UUID)
     - tooth_number: Tooth number for dental procedures (1-32)
     - treatment_notes: Additional notes about treatment (text)
@@ -95,8 +97,20 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
+        
+        # Check if appointment exists
+        appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid appointment ID"})
+        
+        # Check if patient exists
+        patient = db.query(Patient).filter(Patient.id == treatment.patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
 
         new_treatment = Treatment(
+            patient_id=treatment.patient_id,
+            appointment_id=treatment.appointment_id,
             treatment_date=treatment.treatment_date,
             treatment_name = treatment.treatment_name,
             tooth_number = treatment.tooth_number,
@@ -210,6 +224,7 @@ async def get_treatments(
         user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
+    
         
         # Get total count
         total = db.query(func.count(Treatment.id)).filter(Treatment.doctor == user.id).scalar()
@@ -267,6 +282,7 @@ async def get_treatments(
             treatment_list.append({
                 "id": treatment.id,
                 "patient_id": treatment.patient_id,
+                "appointment_id": treatment.appointment_id,
                 "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
                 "treatment_name": treatment.treatment_name,
                 "tooth_number": treatment.tooth_number,
@@ -322,6 +338,7 @@ async def get_treatments(
     Query parameters:
     - treatment_name: Search by treatment name (optional)
     - patient_id: Filter by patient ID (optional)
+    - appointment_id: Filter by appointment ID (optional)
     - start_date: Filter by start date (format: YYYY-MM-DD, optional)
     - end_date: Filter by end date (format: YYYY-MM-DD, optional)
     - page: Page number (default: 1)
@@ -339,6 +356,7 @@ async def search_treatments(
     request: Request, 
     treatment_name: str = Query(None, description="Search by treatment name"),
     patient_id: str = Query(None, description="Filter by patient ID"),
+    appointment_id: str = Query(None, description="Filter by appointment ID"),
     start_date: str = Query(None, description="Filter by start date (YYYY-MM-DD)"),
     end_date: str = Query(None, description="Filter by end date (YYYY-MM-DD)"),
     page: int = Query(default=1, ge=1, description="Page number"),
@@ -364,6 +382,9 @@ async def search_treatments(
             query = query.filter(Treatment.treatment_name.ilike(f"%{treatment_name}%"))
         if patient_id:
             query = query.filter(Treatment.patient_id == patient_id)
+        
+        if appointment_id:
+            query = query.filter(Treatment.appointment_id == appointment_id)
             
         # Apply filters if provided
         if start_date:
@@ -394,6 +415,7 @@ async def search_treatments(
             treatment_list.append({
                 "id": treatment.id,
                 "patient_id": treatment.patient_id,
+                "appointment_id": treatment.appointment_id,
                 "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
                 "treatment_name": treatment.treatment_name,
                 "tooth_number": treatment.tooth_number,
@@ -450,6 +472,7 @@ async def search_treatments(
                         "treatment": {
                             "id": "123e4567-e89b-12d3-a456-426614174000",
                             "patient_id": "patient-uuid",
+                            "appointment_id": "appointment-uuid",
                             "treatment_date": "2023-01-01T10:00:00",
                             "treatment_name": "Root Canal",
                             "tooth_number": 1,
@@ -492,6 +515,7 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
             "treatment": {
                 "id": treatment.id,
                 "patient_id": treatment.patient_id,
+                "appointment_id": treatment.appointment_id,
                 "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
                 "treatment_name": treatment.treatment_name,
                 "tooth_number": treatment.tooth_number,
@@ -625,365 +649,6 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@catalog_router.post("/create-clinical-note",
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a new clinical note",
-    description="""
-    Create a new clinical note in the system.
-    
-    The clinical note will be associated with the authenticated doctor and specified patient.
-    
-    Required fields:
-    - patient_id: ID of the patient this note is for
-    - note_type: Type of clinical note (e.g. Progress Note, Assessment, Treatment Plan)
-    - description: Detailed content of the clinical note
-    - date: Date of the clinical note
-    
-    Optional fields:
-    - is_revised: Whether this note has been revised (default: false)
-    """
-)
-async def create_clinical_note(request: Request, clinical_note: ClinicalNoteCreate, db: Session = Depends(get_db)):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        clinical_note_data = clinical_note.model_dump()
-        new_clinical_note = ClinicalNote(**clinical_note_data)
-        db.add(new_clinical_note)
-        db.commit()
-        db.refresh(new_clinical_note)
-        
-        return JSONResponse(status_code=status.HTTP_201_CREATED, content={
-            "message": "Clinical note created successfully"
-        })
-    except SQLAlchemyError as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-@catalog_router.get("/get-clinical-notes",
-    status_code=status.HTTP_200_OK,
-    summary="Get all clinical notes with pagination",
-    description="""
-    Get all clinical notes from the system with pagination support.
-    
-    Query parameters:
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10, max: 100)
-    
-    Returns:
-    - List of clinical notes for the authenticated doctor
-    - Pagination metadata
-    - Statistics about clinical notes:
-        - Today's count
-        - This month's count  
-        - This year's count
-        - Overall total count
-    """
-)
-async def get_clinical_notes(
-    request: Request,
-    page: int = Query(1, gt=0, description="Page number"),
-    per_page: int = Query(10, gt=0, le=100, description="Items per page"),
-    db: Session = Depends(get_db)
-):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        # Get total count
-        total_count = db.query(ClinicalNote).filter(ClinicalNote.doctor == user.id).count()
-        
-        # Get paginated results
-        clinical_notes = db.query(ClinicalNote)\
-            .filter(ClinicalNote.doctor == user.id)\
-            .offset((page - 1) * per_page)\
-            .limit(per_page)\
-            .all()
-            
-        clinical_note_list = []
-        for note in clinical_notes:
-            clinical_note_list.append({
-                "id": note.id,
-                "patient_id": note.patient_id,
-                "date": note.date.isoformat() if note.date else None,
-                "note_type": note.note_type,
-                "description": note.description,
-                "is_revised": note.is_revised,
-                "created_at": note.created_at.isoformat() if note.created_at else None
-            })
-            
-        # Get statistics
-        today = datetime.now().date()
-        first_day_of_month = today.replace(day=1)
-        first_day_of_year = today.replace(month=1, day=1)
-        
-        today_count = db.query(ClinicalNote)\
-            .filter(ClinicalNote.doctor == user.id)\
-            .filter(func.date(ClinicalNote.created_at) == today)\
-            .count()
-            
-        month_count = db.query(ClinicalNote)\
-            .filter(ClinicalNote.doctor == user.id)\
-            .filter(ClinicalNote.created_at >= first_day_of_month)\
-            .count()
-            
-        year_count = db.query(ClinicalNote)\
-            .filter(ClinicalNote.doctor == user.id)\
-            .filter(ClinicalNote.created_at >= first_day_of_year)\
-            .count()
-        
-        return JSONResponse(status_code=status.HTTP_200_OK, content={
-            "message": "Clinical notes retrieved successfully",
-            "clinical_notes": clinical_note_list,
-            "pagination": {
-                "page": page,
-                "per_page": per_page,
-                "total_items": total_count,
-                "total_pages": (total_count + per_page - 1) // per_page
-            },
-            "statistics": {
-                "today": today_count,
-                "this_month": month_count,
-                "this_year": year_count,
-                "total": total_count
-            }
-        })
-    except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-@catalog_router.get("/search-clinical-notes",
-    status_code=status.HTTP_200_OK,
-    summary="Search clinical notes with pagination",
-    description="""
-    Search clinical notes by patient ID and/or date range with pagination support.
-    
-    Query parameters:
-    - patient_id: Filter by patient ID (optional)
-    - start_date: Filter notes from this date (YYYY-MM-DD format)
-    - end_date: Filter notes until this date (YYYY-MM-DD format)
-    - page: Page number (default: 1)
-    - per_page: Number of items per page (default: 10, max: 100)
-    
-    Returns:
-    - Filtered list of clinical notes
-    - Pagination metadata
-    - Statistics about filtered notes
-    """
-)
-async def search_clinical_notes(
-    request: Request,
-    patient_id: str = Query(None, description="Patient ID to filter by"),
-    start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, gt=0, description="Page number"),
-    per_page: int = Query(10, gt=0, le=100, description="Items per page"),
-    db: Session = Depends(get_db)
-):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        # Build base query
-        query = db.query(ClinicalNote).filter(ClinicalNote.doctor == user.id)
-        
-        # Apply filters if provided
-        if patient_id:
-            query = query.filter(ClinicalNote.patient_id == patient_id)
-        if start_date:
-            query = query.filter(ClinicalNote.date >= start_date)
-        if end_date:
-            query = query.filter(ClinicalNote.date <= end_date)
-            
-        # Get total filtered count
-        total_count = query.count()
-            
-        # Get paginated results
-        clinical_notes = query.offset((page - 1) * per_page).limit(per_page).all()
-        
-        clinical_note_list = []
-        for note in clinical_notes:
-            clinical_note_list.append({
-                "id": note.id,
-                "patient_id": note.patient_id,
-                "date": note.date.isoformat() if note.date else None,
-                "note_type": note.note_type,
-                "description": note.description,
-                "is_revised": note.is_revised,
-                "created_at": note.created_at.isoformat() if note.created_at else None
-            })
-        
-        return JSONResponse(status_code=status.HTTP_200_OK, content={
-            "message": "Clinical notes retrieved successfully",
-            "clinical_notes": clinical_note_list,
-            "pagination": {
-                "page": page,
-                "per_page": per_page,
-                "total_items": total_count,
-                "total_pages": (total_count + per_page - 1) // per_page
-            }
-        })
-    except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    
-@catalog_router.get("/get-clinical-note/{clinical_note_id}",
-    status_code=status.HTTP_200_OK,
-    summary="Get a clinical note by ID",
-    description="""
-    Get a clinical note by its unique ID.
-    
-    Path parameters:
-    - clinical_note_id: Unique identifier of the clinical note
-    
-    Returns:
-    - Detailed information about the clinical note
-    - The note must belong to the authenticated doctor
-    """
-)
-async def get_clinical_note(clinical_note_id: str, request: Request, db: Session = Depends(get_db)):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        clinical_note = db.query(ClinicalNote).filter(ClinicalNote.id == clinical_note_id, ClinicalNote.doctor == user.id).first()
-        if not clinical_note:
-            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Clinical note not found"})
-
-        return JSONResponse(status_code=status.HTTP_200_OK, content={
-            "message": "Clinical note retrieved successfully",
-            "clinical_note": {
-                "id": clinical_note.id,
-                "patient_id": clinical_note.patient_id,
-                "date": clinical_note.date.isoformat() if clinical_note.date else None,
-                "note_type": clinical_note.note_type,
-                "description": clinical_note.description,
-                "is_revised": clinical_note.is_revised,
-                "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None
-            }
-        })
-    except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-@catalog_router.patch("/update-clinical-note/{clinical_note_id}",
-    status_code=status.HTTP_200_OK,
-    summary="Update a clinical note by ID",
-    description="""
-    Update a clinical note by its unique ID.
-    
-    Path parameters:
-    - clinical_note_id: Unique identifier of the clinical note to update
-    
-    The note must belong to the authenticated doctor.
-    
-    Updatable fields:
-    - patient_id
-    - date 
-    - note_type
-    - description
-    - is_revised
-    
-    Only provide the fields that need to be updated.
-    """
-)
-async def update_clinical_note(clinical_note_id: str, request: Request, clinical_note: ClinicalNoteUpdate, db: Session = Depends(get_db)):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        existing_clinical_note = db.query(ClinicalNote).filter(ClinicalNote.id == clinical_note_id, ClinicalNote.doctor == user.id).first()
-        if not existing_clinical_note:
-            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Clinical note not found"})
-        
-        clinical_note_data = clinical_note.model_dump(exclude_unset=True)
-        
-        for field, value in clinical_note_data.items():
-            setattr(existing_clinical_note, field, value)
-            
-        db.commit()
-
-        return JSONResponse(status_code=status.HTTP_200_OK, content={
-            "message": "Clinical note updated successfully"
-        })
-    except SQLAlchemyError as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-@catalog_router.delete("/delete-clinical-note/{clinical_note_id}",
-    status_code=status.HTTP_200_OK,
-    summary="Delete a clinical note by ID",
-    description="""
-    Permanently delete a clinical note by its unique ID.
-    
-    Path parameters:
-    - clinical_note_id: Unique identifier of the clinical note to delete
-    
-    The note must belong to the authenticated doctor.
-    
-    Note: This action cannot be undone. The clinical note will be permanently removed from the system.
-    """
-)
-async def delete_clinical_note(clinical_note_id: str, request: Request, db: Session = Depends(get_db)):
-    try:
-        decoded_token = verify_token(request)
-        if not decoded_token:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
-        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
-        if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
-        clinical_note = db.query(ClinicalNote).filter(ClinicalNote.id == clinical_note_id, ClinicalNote.doctor == user.id).first()
-        if not clinical_note:
-            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Clinical note not found"})
-        
-        db.delete(clinical_note)
-        db.commit()
-        
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Clinical note deleted successfully"})
-    except SQLAlchemyError as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
 @catalog_router.post("/create-treatment-plan",
     status_code=status.HTTP_201_CREATED,
     summary="Create a new treatment plan",
@@ -994,6 +659,7 @@ async def delete_clinical_note(clinical_note_id: str, request: Request, db: Sess
     
     Required fields:
     - patient_id: ID of the patient
+    - appoitment_id: ID of the appoitment
     - treatment_name: Name of the treatment
     - unit_cost: Cost per unit of treatment
     - quantity: Number of units
@@ -1016,6 +682,16 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
+        
+        if treatment_plan.patient_id:
+            patient = db.query(Patient).filter(Patient.id == treatment_plan.patient_id).first()
+            if not patient:
+                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Invalid patient"})
+        
+        if treatment_plan.appointment_id:
+            appointment = db.query(Appointment).filter(Appointment.id == treatment_plan.appointment_id).first()
+            if not appointment:
+                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Invalid appointment"})
         
         treatment_plan_data = treatment_plan.model_dump()
         new_treatment_plan = TreatmentPlan(**treatment_plan_data)
@@ -1113,6 +789,7 @@ async def get_treatment_plans(
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
+                "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
                 "treatment_name": plan.treatment_name,
                 "unit_cost": plan.unit_cost,
@@ -1149,6 +826,7 @@ async def get_treatment_plans(
     
     Query parameters:
     - patient_id: Filter by patient ID
+    - appointment_id: Filter by appointment ID
     - start_date: Filter by start date (YYYY-MM-DD)
     - end_date: Filter by end date (YYYY-MM-DD)
     - page: Page number (default: 1)
@@ -1165,6 +843,7 @@ async def get_treatment_plans(
 async def search_treatment_plans(
     request: Request,
     patient_id: str = Query(None, description="Patient ID to filter by"),
+    appointment_id: str = Query(None, description="Appointment ID to filter by"),
     start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -1186,6 +865,8 @@ async def search_treatment_plans(
         
         if patient_id:
             query = query.filter(TreatmentPlan.patient_id == patient_id)
+        if appointment_id:
+            query = query.filter(TreatmentPlan.appointment_id == appointment_id)
         if start_date:
             query = query.filter(TreatmentPlan.date >= start_date)
         if end_date:
@@ -1211,6 +892,7 @@ async def search_treatment_plans(
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
+                "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
                 "treatment_name": plan.treatment_name,
                 "unit_cost": plan.unit_cost,
@@ -1271,6 +953,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
             "treatment_plan": {
                 "id": treatment_plan.id,
                 "patient_id": treatment_plan.patient_id,
+                "appointment_id": treatment_plan.appointment_id,
                 "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
                 "treatment_name": treatment_plan.treatment_name,
                 "unit_cost": treatment_plan.unit_cost,
@@ -1352,18 +1035,18 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
-        
+
         user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
-        
+
         treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
 
         db.delete(treatment_plan)
         db.commit()
-        
+
         return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment plan deleted successfully"})
     except SQLAlchemyError as e:
         db.rollback()
@@ -1371,3 +1054,5 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+   

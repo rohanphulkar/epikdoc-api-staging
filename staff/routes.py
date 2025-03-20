@@ -297,7 +297,21 @@ async def get_staff(
         
         # Get paginated staff users
         staff_users = current_user.created_doctors[start:end]
-        staff_users_data = [UserSchema.model_validate(user) for user in staff_users]
+        staff_users_data = []
+        for staff_user in staff_users:
+            staff_user_data = {
+                "id": str(staff_user.id),
+                "name": staff_user.name,
+                "email": staff_user.email,
+                "phone": staff_user.phone,
+                "bio": staff_user.bio,
+                "profile_pic": staff_user.profile_pic,
+                "user_type": staff_user.user_type,
+                "permissions": [permission.name for permission in staff_user.permissions],
+                "created_at": staff_user.created_at.isoformat() if staff_user.created_at else None
+            }
+            # Add staff_user_data to staff_users_data list
+            staff_users_data.append(staff_user_data)
         
         return JSONResponse(
             status_code=200, 
@@ -477,7 +491,23 @@ async def search_staff(
         paginated_users = staff_users[start:end]
         
         # Convert to schema and return results
-        staff_users_data = [UserSchema.model_validate(user) for user in paginated_users]
+        staff_users_data = []
+
+        for user in paginated_users:
+            staff_user_data = {
+                "id": str(user.id),
+                "name": user.name,
+                "email": user.email,
+                "phone": user.phone,
+                "bio": user.bio,
+                "user_type": user.user_type,
+                "permissions": [permission.name for permission in user.permissions],
+                "profile_pic": user.profile_pic,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+            }
+            staff_users_data.append(staff_user_data)
+        
         return JSONResponse(
             status_code=200, 
             content={
@@ -632,7 +662,20 @@ async def get_staff_by_id(
         if not staff_user:
             return JSONResponse(status_code=404, content={"error": "Staff user not found"})
         
-        return JSONResponse(status_code=200, content={"staff": UserSchema.model_validate(staff_user)})
+        staff_user_data = {
+            "id": str(staff_user.id),
+            "name": staff_user.name,
+            "email": staff_user.email,
+            "phone": staff_user.phone,
+            "bio": staff_user.bio,
+            "user_type": staff_user.user_type,
+            "permissions": [permission.name for permission in staff_user.permissions],
+            "profile_pic": staff_user.profile_pic,
+            "created_at": staff_user.created_at.isoformat() if staff_user.created_at else None,
+            "updated_at": staff_user.updated_at.isoformat() if staff_user.updated_at else None,
+        }
+        
+        return JSONResponse(status_code=200, content={"staff": staff_user_data})
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -819,7 +862,7 @@ async def update_staff(
         db.commit()
         db.refresh(staff_user)
         
-        return JSONResponse(status_code=200, content={"staff": UserSchema.model_validate(staff_user)})
+        return JSONResponse(status_code=200, content={"message":"Staff updated successfully"})
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

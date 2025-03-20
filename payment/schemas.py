@@ -36,36 +36,6 @@ class ExpenseUpdate(BaseModel):
     class Config:
         from_attributes = True
 
-class PaymentMethodResponse(BaseModel):
-    id: str
-    payment_id: str
-    payment_mode: Optional[str]
-    card_number: Optional[str]
-    card_type: Optional[str]
-    cheque_number: Optional[str]
-    cheque_bank: Optional[str]
-    netbanking_bank_name: Optional[str]
-    vendor_name: Optional[str]
-    vendor_fees_percent: Optional[float]
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-class PaymentMethodCreate(BaseModel):
-    payment_mode: Optional[str] = None
-    card_number: Optional[str] = None
-    card_type: Optional[str] = None
-    cheque_number: Optional[str] = None
-    cheque_bank: Optional[str] = None
-    netbanking_bank_name: Optional[str] = None
-    vendor_name: Optional[str] = None
-    vendor_fees_percent: Optional[float] = None
-
-    class Config:
-        from_attributes = True
-
 class PaymentResponse(BaseModel):
     id: str
     date: Optional[datetime]
@@ -78,13 +48,13 @@ class PaymentResponse(BaseModel):
     amount_paid: Optional[float]
     invoice_number: Optional[str]
     notes: Optional[str]
+    payment_mode: Optional[str]
     refund: Optional[bool]
     refund_receipt_number: Optional[str]
     refunded_amount: Optional[float]
     cancelled: Optional[bool]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
-    payment_methods: List[PaymentMethodResponse]
 
     class Config:
         from_attributes = True
@@ -96,11 +66,11 @@ class PaymentCreate(BaseModel):
     amount_paid: Optional[float] = None
     invoice_number: Optional[str] = None
     notes: Optional[str] = None
+    payment_mode: Optional[str] = None
     refund: Optional[bool] = False
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
     cancelled: Optional[bool] = False
-    payment_methods: Optional[List[PaymentMethodCreate]] = []
 
     class Config:
         from_attributes = True
@@ -112,11 +82,11 @@ class PaymentUpdate(BaseModel):
     amount_paid: Optional[float] = None
     invoice_number: Optional[str] = None
     notes: Optional[str] = None
+    payment_mode: Optional[str] = None
     refund: Optional[bool] = None
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
     cancelled: Optional[bool] = None
-    payment_methods: Optional[List[PaymentMethodCreate]] = None
 
     class Config:
         from_attributes = True

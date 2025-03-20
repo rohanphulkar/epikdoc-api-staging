@@ -23,6 +23,8 @@ from typing import List
 import json, shutil
 from math import ceil
 from sqlalchemy import func
+from collections import defaultdict
+from suggestion.models import *
 
 
 user_router = APIRouter()
@@ -1192,6 +1194,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
+            treatment_name = str(row.get("Treatment Name", "")).strip("'")
             if patient:
                 treatments.append(Treatment(
                     patient_id=patient.id,
@@ -1206,6 +1209,14 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                     discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
                     doctor=user.id
                 ))
+                if treatment_name:
+                    existing_treatment_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == treatment_name).first()
+                    if not existing_treatment_suggestion:
+                        treatment_suggestion = TreatmentNameSuggestion(
+                            treatment_name=treatment_name,
+                        )
+                        db.add(treatment_suggestion)
+                        
         except Exception as e:
             print(f"Error processing treatment row: {str(e)}")
             db.rollback()
@@ -1224,6 +1235,9 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
+def normalize_string(s: str) -> str:
+    return " ".join(s.split()).lower()
+
 async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing clinical note data")
     
@@ -1234,32 +1248,111 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
 
-    clinical_notes = []
+    # Convert Date column to datetime for sorting
+    df["Date"] = pd.to_datetime(df["Date"])
+
+    # Initialize an empty defaultdict for nested grouping
+    result = defaultdict(lambda: {"Patient Name": "", "Visits": defaultdict(lambda: defaultdict(list))})
+
+    # Iterate through the DataFrame to populate the nested structure
     for _, row in df.iterrows():
-        try:
-            patient_number = str(row.get("Patient Number", ""))
-            patient = patients.get(patient_number)
-            if patient:
-                clinical_notes.append(ClinicalNote(
-                    patient_id=patient.id,
-                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor=user.id,
-                    note_type=str(row.get("Type", ""))[:255],
-                    description=str(row.get("Description", "")),
-                    is_revised=bool(row.get("Revised", False)),
-                    created_at=datetime.now()
-                ))
-        except Exception as e:
-            print(f"Error processing clinical note row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
-            db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing clinical note row: {str(e)}"})
+        patient_id = row["Patient Number"]
+        patient_name = row["Patient Name"]
+        date = row["Date"].strftime("%Y-%m-%d")  # Format date as string
+        type_ = row["Type"]
+
+        # Ensure the patient's name is stored
+        result[patient_id]["Patient Name"] = patient_name
+
+        # Append the description under the correct patient, date, and type
+        result[patient_id]["Visits"][date][type_].append(row["Description"])
+
+    # Convert defaultdict to regular dict for cleaner output
+    structured_data = {k: {"Patient Name": v["Patient Name"], "Visits": dict(v["Visits"])} for k, v in result.items()}
 
     try:
-        if clinical_notes:
-            db.bulk_save_objects(clinical_notes)
-            db.commit()
+        for patient_id, data in structured_data.items():
+            patient = patients.get(patient_id)
+            if patient:
+                for date, visit_data in data["Visits"].items():
+                    complaints = visit_data.get("'complaints'", [])
+                    diagnoses = visit_data.get("'diagnoses'", [])
+                    vital_signs = visit_data.get("'observations'", [])
+                    notes = visit_data.get("'treatmentnotes'", [])
+                    
+                    clinical_note = ClinicalNote(
+                        patient_id=patient.id,
+                        date=pd.to_datetime(date),
+                    )
+                    db.add(clinical_note)
+                    db.commit()
+                    db.refresh(clinical_note)
+
+                    complaints_db = []
+                    complaint_suggestions_db = set()  # Use a set to avoid redundant merges
+
+                    for complaint in complaints:
+                        cleaned_complaint = complaint.strip().strip("'").strip('"')
+
+                        # Create Complaint instance
+                        complaints_db.append(Complaint(
+                            clinical_note_id=clinical_note.id,
+                            complaint=cleaned_complaint
+                        ))
+
+                        # Avoid redundant merges by using a set
+                        normalized_complaint = normalize_string(cleaned_complaint)
+                        if normalized_complaint not in complaint_suggestions_db:
+                            db.merge(ComplaintSuggestion(complaint=normalized_complaint))
+                            complaint_suggestions_db.add(normalized_complaint)
+
+                    diagnoses_db = []
+                    diagnoses_suggestion_db = set()
+
+                    for diagnosis in diagnoses:
+                        cleaned_diagnosis = diagnosis.strip().strip("'").strip('"')
+
+                        diagnoses_db.append(Diagnosis(
+                            clinical_note_id=clinical_note.id,
+                            diagnosis=cleaned_diagnosis
+                        ))
+
+                        normalized_diagnosis = normalize_string(cleaned_diagnosis)
+                        if normalized_diagnosis not in diagnoses_suggestion_db:
+                            db.merge(DiagnosisSuggestion(diagnosis=normalized_diagnosis))
+                            diagnoses_suggestion_db.add(normalized_diagnosis)
+
+                        # db.merge(DiagnosisSuggestion(diagnosis=cleaned_diagnosis))
+                    db.bulk_save_objects(diagnoses_db)
+                    db.commit()
+
+                    vital_signs_db = []
+                    vital_sign_suggestions_db = set()
+                    for vital_sign in vital_signs:
+                        cleaned_vital_sign = vital_sign.strip().strip("'").strip('"')
+
+                        vital_signs_db.append(VitalSign(
+                            clinical_note_id=clinical_note.id,
+                            vital_sign=cleaned_vital_sign
+                        ))
+                        normalized_vital_sign = normalize_string(cleaned_vital_sign)
+                        if normalized_vital_sign not in vital_sign_suggestions_db:
+                            db.merge(VitalSignSuggestion(vital_sign=normalized_vital_sign))
+                            vital_sign_suggestions_db.add(normalized_vital_sign)
+                    db.bulk_save_objects(vital_signs_db)
+                    db.commit()
+
+                    treatment_notes_db = []
+                    for treatment_note in notes:
+                        cleaned_treatment_note = treatment_note.strip().strip("'").strip('"')
+                        treatment_notes_db.append(Notes(
+                            clinical_notes_id=clinical_note.id,
+                            note=cleaned_treatment_note
+                        ))
+                        
+                    db.bulk_save_objects(treatment_notes_db)
+                    db.commit()
+
     except Exception as e:
         print(f"Error during bulk insert: {str(e)}")
         db.rollback()
@@ -1282,6 +1375,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         try:
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
+            treatment_name = str(row.get("Treatment Name", "")).strip("'")
             if patient:
                 treatment_plans.append(TreatmentPlan(
                     patient_id=patient.id,
@@ -1296,6 +1390,12 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                     treatment_description=str(row.get("Treatment Description", "")),
                     tooth_diagram=str(row.get("Tooth Diagram", ""))
                 ))
+                existing_treatment_name_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == treatment_name).first()
+                if not existing_treatment_name_suggestion:
+                    db.add(TreatmentNameSuggestion(
+                        treatment_name=treatment_name,
+                    ))
+                    db.commit()
         except Exception as e:
             print(f"Error processing treatment plan row: {str(e)}")
             db.rollback()
@@ -1313,7 +1413,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         import_log.status = ImportStatus.FAILED
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
-
 
 async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing expense data")
@@ -1398,6 +1497,7 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     amount_paid=row["Amount Paid"],
                     invoice_number=str(row.get("Invoice Number", ""))[:255],
                     notes=str(row.get("Notes", "")),
+                    payment_mode=str(row.get("Payment Mode", "")),
                     refund=bool(row.get("Refund", False)),
                     refund_receipt_number=str(row.get("Refund Receipt Number", ""))[:255],
                     refunded_amount=row["Refunded amount"],
@@ -1407,20 +1507,6 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 # Save payment first to get ID
                 db.add(payment)
                 db.flush()
-
-                # Create payment method with payment ID
-                payment_method = PaymentMethod(
-                    payment_id=payment.id,
-                    payment_mode=str(row.get("Payment Mode", ""))[:255],
-                    card_number=str(row.get("Card Number", ""))[:255],
-                    card_type=str(row.get("Card Type", ""))[:255],
-                    cheque_number=str(row.get("Cheque Number", ""))[:255],
-                    cheque_bank=str(row.get("Cheque Bank", ""))[:255],
-                    netbanking_bank_name=str(row.get("Netbanking Bank Name", ""))[:255],
-                    vendor_name=str(row.get("Vendor Name", ""))[:255],
-                    vendor_fees_percent=safe_float_convert(row.get("Vendor Fees Percent"))
-                )
-                db.add(payment_method)
 
         db.commit()
     except Exception as e:
@@ -1512,17 +1598,22 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
 
     try:
         # Create all ProcedureCatalog objects in memory
-        procedures = [
-            ProcedureCatalog(
+        procedures = []
+        for _, row in df.iterrows():
+            procedure =  ProcedureCatalog(
                 user_id=user.id,
                 treatment_name=row['treatment_name'],
                 treatment_cost=row['treatment_cost'], 
                 treatment_notes=row['treatment_notes'],
                 locale=row['locale']
             )
-            for _, row in df.iterrows()
-        ]
-
+            procedures.append(procedure)
+            existing_treatment_name_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == row['treatment_name']).first()
+            if not existing_treatment_name_suggestion:
+                suggestion = TreatmentNameSuggestion(
+                    treatment_name=row['treatment_name']
+                )
+                db.add(suggestion)
         # Bulk insert all records at once
         if procedures:
             db.bulk_save_objects(procedures)

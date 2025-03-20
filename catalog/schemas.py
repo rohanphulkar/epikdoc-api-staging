@@ -22,6 +22,7 @@ class ProcedureCatalogUpdate(BaseModel):
 
 class TreatmentCreate(BaseModel):
     patient_id: Optional[str] = None
+    appointment_id: Optional[str] = None
     treatment_date: datetime
     treatment_name: str
     tooth_number: Optional[str] = None
@@ -50,27 +51,29 @@ class TreatmentUpdate(BaseModel):
         from_attributes = True
 
 
-class ClinicalNoteCreate(BaseModel):
-    patient_id: Optional[str] = None
-    date: datetime
-    note_type: str
-    description: str
-    is_revised: bool = False
+# class ClinicalNoteCreate(BaseModel):
+#     patient_id: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+#     date: datetime
+#     note_type: str
+#     description: str
+#     is_revised: bool = False
 
-class ClinicalNoteUpdate(BaseModel):
-    date: Optional[datetime] = None
-    note_type: Optional[str] = None
-    description: Optional[str] = None
-    is_revised: Optional[bool] = None
+#     class Config:
+#         from_attributes = True
 
-    class Config:
-        from_attributes = True
+# class ClinicalNoteUpdate(BaseModel):
+#     date: Optional[datetime] = None
+#     note_type: Optional[str] = None
+#     description: Optional[str] = None
+#     is_revised: Optional[bool] = None
+
+#     class Config:
+#         from_attributes = True
 
 class TreatmentPlanCreate(BaseModel):
     patient_id: Optional[str] = None
+    appointment_id: Optional[str] = None
     date: datetime
     treatment_name: str
     unit_cost: float
@@ -97,3 +100,4 @@ class TreatmentPlanUpdate(BaseModel):
 
     class Config:
         from_attributes = True
+

@@ -40,31 +40,13 @@ class Payment(Base):
     amount_paid: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     invoice_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payment_mode: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     refund: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
     refund_receipt_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     refunded_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     cancelled: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
-    payment_methods = relationship("PaymentMethod", back_populates="payment")
-
-
-class PaymentMethod(Base):
-    __tablename__ = "payment_methods"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    payment_id: Mapped[str] = mapped_column(String(36), ForeignKey("payments.id"), nullable=False)
-    payment_mode: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    card_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    card_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    cheque_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    cheque_bank: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    netbanking_bank_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    vendor_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    vendor_fees_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-    payment = relationship("Payment", back_populates="payment_methods")
 
 
 class Invoice(Base):

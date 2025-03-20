@@ -41,47 +41,82 @@ class Patient(Base):
     groups: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    medical_records: Mapped[list["MedicalRecord"]] = relationship("MedicalRecord", back_populates="patient")
+    clinical_notes: Mapped[list["ClinicalNote"]] = relationship("ClinicalNote", back_populates="patient")
 
 
-class MedicalRecord(Base):
-    __tablename__ = "medical_records"
+class ClinicalNote(Base):
+    __tablename__ = "clinical_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
-    complaint: Mapped[str] = mapped_column(Text, nullable=False)
-    diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
-    vital_signs: Mapped[str] = mapped_column(Text, nullable=False)
+    date: Mapped[datetime] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="medical_records")
-    attachments: Mapped[list["MedicalRecordAttachment"]] = relationship("MedicalRecordAttachment", back_populates="medical_record")
-    treatments: Mapped[list["MedicalRecordTreatment"]] = relationship("MedicalRecordTreatment", back_populates="medical_record")
-    medicines: Mapped[list["Medicine"]] = relationship("Medicine", back_populates="medical_record")
+    patient: Mapped["Patient"] = relationship("Patient", back_populates="clinical_notes")
+    attachments: Mapped[list["ClinicalNoteAttachment"]] = relationship("ClinicalNoteAttachment", back_populates="clinical_notes")
+    treatments: Mapped[list["ClinicalNoteTreatment"]] = relationship("ClinicalNoteTreatment", back_populates="clinical_notes")
+    medicines: Mapped[list["Medicine"]] = relationship("Medicine", back_populates="clinical_notes")
+    complaints: Mapped[list["Complaint"]] = relationship("Complaint", back_populates="clinical_notes")
+    diagnoses: Mapped[list["Diagnosis"]] = relationship("Diagnosis", back_populates="clinical_notes")
+    vital_signs: Mapped[list["VitalSign"]] = relationship("VitalSign", back_populates="clinical_notes")
+    notes: Mapped[list["Notes"]] = relationship("Notes", back_populates="clinical_notes")
 
-class MedicalRecordAttachment(Base):
-    __tablename__ = "medical_record_attachments"
+class Complaint(Base):
+    __tablename__ = "complaints"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    complaint: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="complaints")
+
+class Diagnosis(Base):
+    __tablename__ = "diagnoses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
+
+class VitalSign(Base):
+    __tablename__ = "vital_signs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    vital_sign: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
+
+class Notes(Base):
+    __tablename__ = "notes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
+
+class ClinicalNoteAttachment(Base):
+    __tablename__ = "clinical_note_attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    medical_record_id: Mapped[str] = mapped_column(String(36), ForeignKey("medical_records.id"), nullable=False)
+    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     attachment: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    medical_record: Mapped["MedicalRecord"] = relationship("MedicalRecord", back_populates="attachments")
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="attachments")
 
 
-class MedicalRecordTreatment(Base):
-    __tablename__ = "medical_record_treatments"
+class ClinicalNoteTreatment(Base):
+    __tablename__ = "clinical_note_treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    medical_record_id: Mapped[str] = mapped_column(String(36), ForeignKey("medical_records.id"), nullable=False)
+    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    medical_record: Mapped["MedicalRecord"] = relationship("MedicalRecord", back_populates="treatments")
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
 
 class Medicine(Base):
     __tablename__ = "medicines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    medical_record_id: Mapped[str] = mapped_column(String(36), ForeignKey("medical_records.id"), nullable=False)
+    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -89,4 +124,4 @@ class Medicine(Base):
     instructions: Mapped[str] = mapped_column(String(255), nullable=True)
     amount: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    medical_record: Mapped["MedicalRecord"] = relationship("MedicalRecord", back_populates="medicines")
+    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="medicines")

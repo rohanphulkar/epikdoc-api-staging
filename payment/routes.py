@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import ExpenseCreate, ExpenseUpdate, ExpenseResponse, PaymentCreate, PaymentUpdate, PaymentResponse, InvoiceCreate, InvoiceUpdate, InvoiceResponse
-from .models import Expense, Payment, Invoice, PaymentMethod, InvoiceItem
+from .models import Expense, Payment, Invoice, InvoiceItem
 from db.db import get_db
 from auth.models import User
 from patient.models import Patient
@@ -594,15 +594,9 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     - amount_paid (float): Payment amount
     
     Optional parameters:
-    - payment_methods (array): List of payment methods used, each containing:
-        - payment_mode (string): Mode of payment (Cash/Card/Cheque/NetBanking)
-        - amount (float): Amount paid through this method
-        - Additional fields based on payment mode:
-            - For Card: card_number, card_type
-            - For Cheque: cheque_number, cheque_bank
-            - For NetBanking: netbanking_bank_name
     - invoice_number (string): Associated invoice number
     - notes (string): Additional payment notes
+    - payment_mode (string): payment mode (e.g., cash, card, cheque, netbanking)
     - refund (boolean): Whether this is a refund
     - refund_receipt_number (string): Original receipt number for refund
     - refunded_amount (float): Amount being refunded
@@ -694,7 +688,6 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
             
         payment_data = payment.model_dump()
-        payment_methods = payment_data.pop("payment_methods", [])
         
         payment_data["doctor_id"] = user.id
         payment_data["patient_id"] = patient_id
@@ -704,12 +697,6 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
         new_payment = Payment(**payment_data)
         db.add(new_payment)
         db.flush()
-        
-        if payment_methods:
-            for method in payment_methods:
-                method["payment_id"] = new_payment.id
-                payment_method = PaymentMethod(**method)
-                db.add(payment_method)
             
         db.commit()
         db.refresh(new_payment)
@@ -770,13 +757,6 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                                 "receipt_number": "REC001",
                                 "treatment_name": "Consultation",
                                 "amount_paid": 1000.00,
-                                "payment_methods": [
-                                    {
-                                        "payment_mode": "Card",
-                                        "amount": 1000.00,
-                                        "card_number": "****1234"
-                                    }
-                                ]
                             }
                         ],
                         "pagination": {
@@ -882,26 +862,13 @@ async def get_payments(
                 "amount_paid": payment.amount_paid,
                 "invoice_number": payment.invoice_number,
                 "notes": payment.notes,
+                "payment_mode":payment.payment_mode,
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-                "payment_methods": [{
-                    "id": pm.id,
-                    "payment_id": pm.payment_id,
-                    "payment_mode": pm.payment_mode,
-                    "card_number": pm.card_number,
-                    "card_type": pm.card_type,
-                    "cheque_number": pm.cheque_number,
-                    "cheque_bank": pm.cheque_bank,
-                    "netbanking_bank_name": pm.netbanking_bank_name,
-                    "vendor_name": pm.vendor_name,
-                    "vendor_fees_percent": pm.vendor_fees_percent,
-                    "created_at": pm.created_at.isoformat(),
-                    "updated_at": pm.updated_at.isoformat()
-                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -954,13 +921,6 @@ async def get_payments(
                 "receipt_number": "REC001",
                 "treatment_name": "Consultation",
                 "amount_paid": 1000.00,
-                "payment_methods": [
-                    {
-                        "payment_mode": "Card",
-                        "amount": 1000.00,
-                        "card_number": "****1234"
-                    }
-                ]
             }
         ],
         "pagination": {
@@ -1095,26 +1055,13 @@ async def get_payments_by_patient_id(
                 "amount_paid": payment.amount_paid,
                 "invoice_number": payment.invoice_number,
                 "notes": payment.notes,
+                "payment_mode": payment.payment_mode,
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-                "payment_methods": [{
-                    "id": pm.id,
-                    "payment_id": pm.payment_id,
-                    "payment_mode": pm.payment_mode,
-                    "card_number": pm.card_number,
-                    "card_type": pm.card_type,
-                    "cheque_number": pm.cheque_number,
-                    "cheque_bank": pm.cheque_bank,
-                    "netbanking_bank_name": pm.netbanking_bank_name,
-                    "vendor_name": pm.vendor_name,
-                    "vendor_fees_percent": pm.vendor_fees_percent,
-                    "created_at": pm.created_at.isoformat(),
-                    "updated_at": pm.updated_at.isoformat()
-                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -1168,12 +1115,6 @@ async def get_payments_by_patient_id(
                         "date": "2023-01-01T10:00:00",
                         "amount_paid": 1000.00,
                         "patient_name": "John Doe",
-                        "payment_methods": [
-                            {
-                                "payment_mode": "CARD",
-                                "amount": 1000.00
-                            }
-                        ]
                     }
                 }
             }
@@ -1210,26 +1151,13 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
             "amount_paid": payment.amount_paid,
             "invoice_number": payment.invoice_number,
             "notes": payment.notes,
+            "payment_mode": payment.payment_mode,
             "refund": payment.refund,
             "refund_receipt_number": payment.refund_receipt_number,
             "refunded_amount": payment.refunded_amount,
             "cancelled": payment.cancelled,
             "created_at": payment.created_at.isoformat() if payment.created_at else None,
             "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-            "payment_methods": [{
-                "id": pm.id,
-                "payment_id": pm.payment_id,
-                "payment_mode": pm.payment_mode,
-                "card_number": pm.card_number,
-                "card_type": pm.card_type,
-                "cheque_number": pm.cheque_number,
-                "cheque_bank": pm.cheque_bank,
-                "netbanking_bank_name": pm.netbanking_bank_name,
-                "vendor_name": pm.vendor_name,
-                "vendor_fees_percent": pm.vendor_fees_percent,
-                "created_at": pm.created_at.isoformat(),
-                "updated_at": pm.updated_at.isoformat()
-            } for pm in payment.payment_methods]
         }
         
         return JSONResponse(status_code=200, content=payment_dict)
@@ -1287,12 +1215,6 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
                                 "date": "2023-01-01",
                                 "patient_name": "John Doe",
                                 "amount_paid": 1000.00,
-                                "payment_methods": [
-                                    {
-                                        "payment_mode": "Card",
-                                        "amount": 1000.00
-                                    }
-                                ]
                             }
                         ],
                         "pagination": {
@@ -1405,26 +1327,13 @@ async def search_payments(
                 "amount_paid": payment.amount_paid,
                 "invoice_number": payment.invoice_number,
                 "notes": payment.notes,
+                "payment_mode":payment.payment_mode,
                 "refund": payment.refund,
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-                "payment_methods": [{
-                    "id": pm.id,
-                    "payment_id": pm.payment_id,
-                    "payment_mode": pm.payment_mode,
-                    "card_number": pm.card_number,
-                    "card_type": pm.card_type,
-                    "cheque_number": pm.cheque_number,
-                    "cheque_bank": pm.cheque_bank,
-                    "netbanking_bank_name": pm.netbanking_bank_name,
-                    "vendor_name": pm.vendor_name,
-                    "vendor_fees_percent": pm.vendor_fees_percent,
-                    "created_at": pm.created_at.isoformat(),
-                    "updated_at": pm.updated_at.isoformat()
-                } for pm in payment.payment_methods]
             }
             payments_list.append(payment_dict)
             
@@ -1458,12 +1367,11 @@ async def search_payments(
     - amount_paid: New payment amount
     - invoice_number: Updated invoice reference
     - notes: Additional or updated notes
+    - payment_mode: Updated payment mode (e.g., cash, card, cheque, netbanking)
     - refund: Toggle refund status (true/false)
     - refund_receipt_number: Receipt number for refund
     - refunded_amount: Amount refunded
     - cancelled: Mark payment as cancelled (true/false)
-    - payment_methods: Updated list of payment methods
-        - Each method can include: mode, card details, bank details, etc.
     
     Notes:
     - Only the provided fields will be updated
@@ -1506,20 +1414,9 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
             return JSONResponse(status_code=404, content={"message": "Payment not found"})
 
         payment_data = payment.model_dump(exclude_unset=True)
-        payment_methods = payment_data.pop("payment_methods", None)
 
         for key, value in payment_data.items():
             setattr(existing_payment, key, value)
-
-        if payment_methods:
-            # Delete existing payment methods
-            db.query(PaymentMethod).filter(PaymentMethod.payment_id == payment_id).delete()
-            
-            # Add new payment methods
-            for method in payment_methods:
-                method["payment_id"] = payment_id
-                payment_method = PaymentMethod(**method)
-                db.add(payment_method)
 
         db.commit()
         db.refresh(existing_payment)
@@ -1579,9 +1476,6 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
         payment = db.query(Payment).filter(Payment.id == payment_id).first()
         if not payment:
             return JSONResponse(status_code=404, content={"message": "Payment not found"})
-
-        # Delete associated payment methods first due to foreign key constraint
-        db.query(PaymentMethod).filter(PaymentMethod.payment_id == payment_id).delete()
         
         # Then delete the payment
         db.query(Payment).filter(Payment.id == payment_id).delete()
