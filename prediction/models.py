@@ -5,12 +5,11 @@ from db.db import Base
 from datetime import datetime
 import uuid
 from typing import Optional
-from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
 
-class XRay(Base, TimestampMixin):
+class XRay(Base):
     __tablename__ = "xrays"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     prediction_id: Mapped[str] = mapped_column(String(36), ForeignKey("predictions.id"), nullable=True)
@@ -23,7 +22,7 @@ class XRay(Base, TimestampMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
-class Prediction(Base, TimestampMixin):
+class Prediction(Base):
     __tablename__ = "predictions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     xray_id: Mapped[str] = mapped_column(String(36), ForeignKey("xrays.id"), nullable=False)
@@ -33,7 +32,7 @@ class Prediction(Base, TimestampMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
-class Legend(Base, TimestampMixin):
+class Legend(Base):
     __tablename__ = "legends"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -46,7 +45,7 @@ class Legend(Base, TimestampMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
-class DeletedLegend(Base, TimestampMixin):
+class DeletedLegend(Base):
     __tablename__ = "deleted_legends"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

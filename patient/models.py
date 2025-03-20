@@ -5,7 +5,6 @@ from datetime import datetime
 import uuid
 import enum
 from typing import Optional
-from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -15,7 +14,7 @@ class Gender(enum.Enum):
     FEMALE = "female" 
     OTHER = "other"
 
-class Patient(Base, TimestampMixin):
+class Patient(Base):
     __tablename__ = "patients"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -46,7 +45,7 @@ class Patient(Base, TimestampMixin):
 
 
 
-class ClinicalNote(Base, TimestampMixin):
+class ClinicalNote(Base):
     __tablename__ = "clinical_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -63,7 +62,7 @@ class ClinicalNote(Base, TimestampMixin):
     notes: Mapped[list["Notes"]] = relationship("Notes", back_populates="clinical_notes")
 
 
-class Complaint(Base, TimestampMixin):
+class Complaint(Base):
     __tablename__ = "complaints"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -73,7 +72,7 @@ class Complaint(Base, TimestampMixin):
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="complaints")
 
 
-class Diagnosis(Base, TimestampMixin):
+class Diagnosis(Base):
     __tablename__ = "diagnoses"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -82,7 +81,7 @@ class Diagnosis(Base, TimestampMixin):
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
 
 
-class VitalSign(Base, TimestampMixin):
+class VitalSign(Base):
     __tablename__ = "vital_signs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -91,7 +90,7 @@ class VitalSign(Base, TimestampMixin):
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
 
 
-class Notes(Base, TimestampMixin):
+class Notes(Base):
     __tablename__ = "notes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
@@ -100,7 +99,7 @@ class Notes(Base, TimestampMixin):
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
 
 
-class ClinicalNoteAttachment(Base, TimestampMixin):
+class ClinicalNoteAttachment(Base):
     __tablename__ = "clinical_note_attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -111,7 +110,7 @@ class ClinicalNoteAttachment(Base, TimestampMixin):
 
 
 
-class ClinicalNoteTreatment(Base, TimestampMixin):
+class ClinicalNoteTreatment(Base):
     __tablename__ = "clinical_note_treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -121,7 +120,7 @@ class ClinicalNoteTreatment(Base, TimestampMixin):
     clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
 
 
-class Medicine(Base, TimestampMixin):
+class Medicine(Base):
     __tablename__ = "medicines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

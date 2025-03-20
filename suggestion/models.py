@@ -5,13 +5,12 @@ from db.db import Base
 from typing import Optional
 from datetime import datetime
 import uuid
-from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
 
 
-class TreatmentNameSuggestion(Base, TimestampMixin):
+class TreatmentNameSuggestion(Base):
     __tablename__ = "treatment_name_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -19,7 +18,7 @@ class TreatmentNameSuggestion(Base, TimestampMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 
-class ComplaintSuggestion(Base, TimestampMixin):
+class ComplaintSuggestion(Base):
     __tablename__ = "complaint_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -28,7 +27,7 @@ class ComplaintSuggestion(Base, TimestampMixin):
 
 
 
-class DiagnosisSuggestion(Base, TimestampMixin):
+class DiagnosisSuggestion(Base):
     __tablename__ = "diagnosis_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -37,7 +36,7 @@ class DiagnosisSuggestion(Base, TimestampMixin):
 
 
 
-class VitalSignSuggestion(Base, TimestampMixin):
+class VitalSignSuggestion(Base):
     __tablename__ = "vital_sign_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

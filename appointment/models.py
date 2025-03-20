@@ -4,7 +4,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from db.db import Base
 import uuid
-from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -14,7 +13,7 @@ class AppointmentStatus(enum.Enum):
     CANCELLED = "cancelled"
     COMPLETED = "completed"
 
-class Appointment(Base, TimestampMixin):
+class Appointment(Base):
     __tablename__ = "appointments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

@@ -4,12 +4,11 @@ from db.db import Base
 from typing import Optional
 from datetime import datetime
 import uuid, enum
-from db.mixins import TimestampMixin
 
 def generate_uuid():
     return str(uuid.uuid4())
 
-class ProcedureCatalog(Base, TimestampMixin):
+class ProcedureCatalog(Base):
     __tablename__ = "procedure_catalog"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -22,7 +21,7 @@ class ProcedureCatalog(Base, TimestampMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
-class Treatment(Base, TimestampMixin):
+class Treatment(Base):
     __tablename__ = "treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -43,7 +42,7 @@ class Treatment(Base, TimestampMixin):
 
 
 
-class TreatmentPlan(Base, TimestampMixin):
+class TreatmentPlan(Base):
     __tablename__ = "treatment_plans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
@@ -54,7 +53,7 @@ class TreatmentPlan(Base, TimestampMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 
-class TreatmentPlanItem(Base, TimestampMixin):
+class TreatmentPlanItem(Base):
     __tablename__ = "treatment_plan_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

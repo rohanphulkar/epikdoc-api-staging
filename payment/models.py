@@ -6,14 +6,13 @@ from datetime import datetime
 import uuid
 import enum
 from typing import Optional
-from db.mixins import TimestampMixin
 
 
 def generate_uuid():
     return str(uuid.uuid4())
 
 
-class Expense(Base, TimestampMixin):
+class Expense(Base):
     __tablename__ = "expenses"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -28,7 +27,7 @@ class Expense(Base, TimestampMixin):
 
 
 
-class Payment(Base, TimestampMixin):
+class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -52,7 +51,7 @@ class Payment(Base, TimestampMixin):
 
 
 
-class Invoice(Base, TimestampMixin):
+class Invoice(Base):
     __tablename__ = "invoices"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
@@ -74,7 +73,7 @@ class Invoice(Base, TimestampMixin):
 
 
 
-class InvoiceItem(Base, TimestampMixin):
+class InvoiceItem(Base):
     __tablename__ = "invoice_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)

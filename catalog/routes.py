@@ -817,6 +817,7 @@ async def get_treatment_plans(
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
                 "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+                "completed": item.completed
             }
                 for item in db.query(TreatmentPlanItem)
                 .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
@@ -928,6 +929,7 @@ async def search_treatment_plans(
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
                 "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+                "completed": item.completed
             }
                 for item in db.query(TreatmentPlanItem)
                 .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
@@ -995,6 +997,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
                 "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+                "completed": item.completed
             }
                 for item in db.query(TreatmentPlanItem)
                 .filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)

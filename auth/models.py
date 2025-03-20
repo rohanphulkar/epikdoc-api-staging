@@ -5,7 +5,6 @@ from datetime import datetime
 import uuid
 from typing import Optional, List
 import enum
-from db.mixins import TimestampMixin
 # Association table for self-referential many-to-many relationship
 doctors_created = Table(
     'doctors_created',
@@ -25,7 +24,7 @@ user_permissions = Table(
 def generate_uuid():
     return str(uuid.uuid4())    
 
-class Permission(Base, TimestampMixin):
+class Permission(Base):
     __tablename__ = "permissions"
 
     id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=generate_uuid, primary_key=True)
@@ -35,7 +34,7 @@ class Permission(Base, TimestampMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
-class User(Base, TimestampMixin):
+class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), nullable=True, unique=True, default=generate_uuid, primary_key=True)
@@ -86,7 +85,7 @@ class ImportStatus(enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
-class ImportLog(Base, TimestampMixin):
+class ImportLog(Base):
     __tablename__ = "import_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
