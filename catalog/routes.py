@@ -1130,4 +1130,28 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-   
+@catalog_router.get("/mark-treatment-as-completed/{treatment_plan_item_id}")
+async def mark_treatment(request: Request, treatment_plan_item_id: str, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
+        
+        treatment_plan_item = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.id == treatment_plan_item_id).first()
+
+        if not treatment_plan_item:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan item not found"})
+        
+        treatment_plan_item.completed = True
+        db.commit()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment status updated successfully"})
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
