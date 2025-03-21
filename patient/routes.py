@@ -19,6 +19,10 @@ from appointment.models import Appointment
 from math import ceil
 from catalog.models import Treatment, TreatmentPlan, TreatmentPlanItem
 from sqlalchemy import case
+from payment.models import Payment, Invoice, InvoiceItem
+from appointment.models import Appointment
+from catalog.models import *
+from prediction.models import *
 
 patient_router = APIRouter()
 
@@ -1038,7 +1042,53 @@ async def delete_patient(
                 content={"message": "Patient not found"}
             )
 
-        # Delete patient
+        # Delete all appointments for the patient
+        db.query(Appointment).filter(Appointment.patient_id == patient_id).delete()
+
+        # Delete all payments and invoices
+        db.query(Payment).filter(Payment.patient_id == patient_id).delete()
+        
+        # Get all invoice IDs for this patient
+        invoice_ids = [row[0] for row in db.query(Invoice.id).filter(Invoice.patient_id == patient_id).all()]
+        
+        # Delete invoice items for all patient's invoices
+        if invoice_ids:
+            db.query(InvoiceItem).filter(InvoiceItem.invoice_id.in_(invoice_ids)).delete()
+        
+        # Delete invoices
+        db.query(Invoice).filter(Invoice.patient_id == patient_id).delete()
+
+        # Delete all treatments
+        db.query(Treatment).filter(Treatment.patient_id == patient_id).delete()
+        db.query(TreatmentPlanItem).filter(
+            TreatmentPlanItem.treatment_plan_id.in_(
+                db.query(TreatmentPlan.id).filter(TreatmentPlan.patient_id == patient_id)
+            )
+        ).delete()
+        db.query(TreatmentPlan).filter(TreatmentPlan.patient_id == patient_id).delete()
+
+        # Delete all X-rays and predictions
+        xray_ids = [row[0] for row in db.query(XRay.id).filter(XRay.patient == patient_id).all()]
+        if xray_ids:
+            db.query(Prediction).filter(Prediction.xray_id.in_(xray_ids)).delete()
+            db.query(Legend).filter(Legend.prediction_id.in_(
+                db.query(Prediction.id).filter(Prediction.xray_id.in_(xray_ids))
+            )).delete()
+        db.query(XRay).filter(XRay.patient == patient_id).delete()
+
+        # Delete all clinical notes and related data
+        clinical_note_ids = [row[0] for row in db.query(ClinicalNote.id).filter(ClinicalNote.patient_id == patient_id).all()]
+        if clinical_note_ids:
+            db.query(Medicine).filter(Medicine.clinical_notes_id.in_(clinical_note_ids)).delete()
+            db.query(Complaint).filter(Complaint.clinical_note_id.in_(clinical_note_ids)).delete()
+            db.query(Diagnosis).filter(Diagnosis.clinical_note_id.in_(clinical_note_ids)).delete()
+            db.query(VitalSign).filter(VitalSign.clinical_note_id.in_(clinical_note_ids)).delete()
+            db.query(Notes).filter(Notes.clinical_notes_id.in_(clinical_note_ids)).delete()
+            db.query(ClinicalNoteAttachment).filter(ClinicalNoteAttachment.clinical_notes_id.in_(clinical_note_ids)).delete()
+            db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_notes_id.in_(clinical_note_ids)).delete()
+        db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete()
+
+        # Finally delete the patient
         db.delete(patient)
         db.commit()
         
