@@ -1328,7 +1328,7 @@ async def get_clinical_notes(
             )
 
         # Get clinical notes
-        clinical_notes = db.query(ClinicalNote).filter_by(patient_id=patient.id).all()
+        clinical_notes = db.query(ClinicalNote).filter_by(patient_id=patient.id).order_by(ClinicalNote.created_at.desc()).all()
 
         # Get additional data for each clinical note
         for note in clinical_notes:

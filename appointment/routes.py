@@ -717,6 +717,8 @@ async def search_appointments(
     appointment_date: Optional[datetime] = None,
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query("appointment_date", description="Field to sort by"),
+    sort_order: str = Query("desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -791,6 +793,10 @@ async def search_appointments(
         query = query.offset(offset).limit(per_page)
 
         appointments = query.all()
+        if sort_order == "asc":
+            appointments = sorted(appointments, key=lambda x: getattr(x[0], sort_by))
+        else:
+            appointments = sorted(appointments, key=lambda x: getattr(x[0], sort_by), reverse=True)
 
         # Format response
         appointment_list = []

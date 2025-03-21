@@ -71,6 +71,7 @@ class PaymentCreate(BaseModel):
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
     cancelled: Optional[bool] = False
+    status: Optional[str] = "pending"
 
     class Config:
         from_attributes = True
@@ -87,6 +88,7 @@ class PaymentUpdate(BaseModel):
     refund_receipt_number: Optional[str] = None
     refunded_amount: Optional[float] = None
     cancelled: Optional[bool] = None
+    status: Optional[str] = "pending"
 
     class Config:
         from_attributes = True

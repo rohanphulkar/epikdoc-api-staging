@@ -37,6 +37,14 @@ suggestion_router = APIRouter()
                 }
             }
         },
+        400: {
+            "description": "Bad Request - Treatment suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "A treatment suggestion with the same name already exists"}
+                }
+            }
+        },
         401: {
             "description": "Unauthorized - Authentication required or invalid token",
             "content": {
@@ -93,12 +101,26 @@ async def add_treatment_suggestion(request: Request, treatment_suggestion: Treat
                 }
             }
         },
-        401: {"description": "Unauthorized", "content": {"application/json": {"example": {"message": "Authentication required"}}}},
-        500: {"description": "Internal Server Error"}
+        401: {
+            "description": "Unauthorized - Authentication required",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Authentication required"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
     })
 async def get_treatment_suggestions(request: Request, db: Session = Depends(get_db)):
     try:        
-        treatment_suggestions = db.query(TreatmentNameSuggestion).all()
+        treatment_suggestions = db.query(TreatmentNameSuggestion).order_by(TreatmentNameSuggestion.created_at.desc()).all()
 
         treatment_suggestions_list = []
 
@@ -121,13 +143,40 @@ async def get_treatment_suggestions(request: Request, db: Session = Depends(get_
     summary="Search treatment suggestions",
     description="Search for treatment suggestions by name using a query string.",
     responses={
-        200: {"description": "Search results"},
-        401: {"description": "Unauthorized"},
-        500: {"description": "Internal Server Error"}
+        200: {
+            "description": "Search results retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Treatment suggestions retrieved successfully",
+                        "treatment_suggestions": [
+                            {"id": 1, "treatment_name": "Physical Therapy"},
+                            {"id": 2, "treatment_name": "Physiotherapy"}
+                        ]
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Authentication required"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
     })
 async def search_treatment_suggestion(request: Request, query: str, db: Session = Depends(get_db)):
     try:        
-        treatment_suggestions = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name.ilike(f"%{query}%")).all()
+        treatment_suggestions = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name.ilike(f"%{query}%")).order_by(TreatmentNameSuggestion.treatment_name.asc()).all()
 
         treatment_suggestions_list = []
 
@@ -150,10 +199,44 @@ async def search_treatment_suggestion(request: Request, query: str, db: Session 
     summary="Update a treatment suggestion",
     description="Modify the name of an existing treatment suggestion.",
     responses={
-        200: {"description": "Treatment suggestion updated successfully"},
-        404: {"description": "Treatment suggestion not found"},
-        401: {"description": "Unauthorized"},
-        500: {"description": "Internal Server Error"}
+        200: {
+            "description": "Treatment suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Treatment suggestion updated successfully",
+                        "treatment_suggestion": {
+                            "id": 1,
+                            "treatment_name": "Updated Treatment Name"
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Treatment suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Treatment suggestion not found"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Authentication required"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
     })
 async def update_treatment_suggestion(treatment_suggestion_id: str, request: Request, treatment_suggestion_update: TreatmentNameSuggestionSchema, db: Session = Depends(get_db)):
     try:        
@@ -179,10 +262,38 @@ async def update_treatment_suggestion(treatment_suggestion_id: str, request: Req
     summary="Delete a treatment suggestion",
     description="Remove a treatment suggestion by its ID.",
     responses={
-        200: {"description": "Treatment suggestion deleted successfully"},
-        404: {"description": "Treatment suggestion not found"},
-        401: {"description": "Unauthorized"},
-        500: {"description": "Internal Server Error"}
+        200: {
+            "description": "Treatment suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Treatment suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Treatment suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Treatment suggestion not found"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Authentication required"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
     })
 async def delete_treatment_suggestion(treatment_suggestion_id: str, request: Request, db: Session = Depends(get_db)):
     try:        
@@ -199,8 +310,44 @@ async def delete_treatment_suggestion(treatment_suggestion_id: str, request: Req
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-@suggestion_router.post("/add-complaint-suggestion")
+    
+@suggestion_router.post("/add-complaint-suggestion",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a new complaint suggestion",
+    description="Add a new complaint suggestion to the system.",
+    responses={
+        201: {
+            "description": "Complaint suggestion added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Complaint suggestion added successfully",
+                        "complaint_suggestion": {
+                            "id": 1,
+                            "complaint": "Headache"
+                        }
+                    }
+                }
+            }
+        },
+        409: {
+            "description": "Conflict - Complaint suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Complaint suggestion already exists"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def add_complaint_suggestion(complaint_suggestion: ComplaintSuggestionSchema, db: Session = Depends(get_db)):
     try:
         existing_suggestion = db.query(ComplaintSuggestion).filter(ComplaintSuggestion.complaint == complaint_suggestion.complaint).first()
@@ -222,10 +369,40 @@ async def add_complaint_suggestion(complaint_suggestion: ComplaintSuggestionSche
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@suggestion_router.get("/get-complaint-suggestions")
+@suggestion_router.get("/get-complaint-suggestions",
+    response_model=Dict[str, List[Dict[str, str]]],
+    summary="Get all complaint suggestions",
+    description="Retrieve a list of all complaint suggestions.",
+    responses={
+        200: {
+            "description": "Complaint suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Complaint suggestions retrieved successfully",
+                        "complaint_suggestions": [
+                            {
+                                "id": 1,
+                                "complaint": "Headache",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def get_complaint_suggestions(request: Request, db: Session = Depends(get_db)):
     try:        
-        complaint_suggestions = db.query(ComplaintSuggestion).all()
+        complaint_suggestions = db.query(ComplaintSuggestion).order_by(ComplaintSuggestion.created_at.desc()).all()
         complaint_suggestions_list = []
         for suggestion in complaint_suggestions:
             complaint_suggestions_list.append({
@@ -245,10 +422,37 @@ async def get_complaint_suggestions(request: Request, db: Session = Depends(get_
 @suggestion_router.get("/search-complaint-suggestion", response_model=Dict[str, List[Dict[str, str]]],
     summary="Search complaint suggestions",
     description="Search for complaint suggestions by complaint using a query string.",
+    responses={
+        200: {
+            "description": "Search results retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Complaint suggestions retrieved successfully",
+                        "complaint_suggestions": [
+                            {
+                                "id": 1,
+                                "complaint": "Headache",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
 )
 async def search_complaint_suggestion(request: Request, query: str, db: Session = Depends(get_db)):
     try:        
-        complaint_suggestions = db.query(ComplaintSuggestion).filter(ComplaintSuggestion.complaint.ilike(f"%{query}%")).all()
+        complaint_suggestions = db.query(ComplaintSuggestion).filter(ComplaintSuggestion.complaint.ilike(f"%{query}%")).order_by(ComplaintSuggestion.complaint.asc()).all()
         complaint_suggestions_list = []
         for suggestion in complaint_suggestions:
             complaint_suggestions_list.append({
@@ -267,7 +471,39 @@ async def search_complaint_suggestion(request: Request, query: str, db: Session 
     
 @suggestion_router.patch("/update-complaint-suggestion/{complaint_suggestion_id}", response_model=Dict[str, str],
     summary="Update a complaint suggestion",
-    description="Modify the complaint of an existing complaint suggestion."
+    description="Modify the complaint of an existing complaint suggestion.",
+    responses={
+        200: {
+            "description": "Complaint suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Complaint suggestion updated successfully",
+                        "complaint_suggestion": {
+                            "id": 1,
+                            "complaint": "Updated Complaint"
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Complaint suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Complaint suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
 )
 async def update_complaint_suggestion(complaint_suggestion_id: str, request: Request, complaint_suggestion_update: ComplaintSuggestionSchema, db: Session = Depends(get_db)):
     try:        
@@ -291,7 +527,33 @@ async def update_complaint_suggestion(complaint_suggestion_id: str, request: Req
     
 @suggestion_router.delete("/delete-complaint-suggestion/{complaint_suggestion_id}", response_model=Dict[str, str],
     summary="Delete a complaint suggestion",
-    description="Remove a complaint suggestion by its ID."
+    description="Remove a complaint suggestion by its ID.",
+    responses={
+        200: {
+            "description": "Complaint suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Complaint suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Complaint suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Complaint suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
 )
 async def delete_complaint_suggestion(complaint_suggestion_id: str, request: Request, db: Session = Depends(get_db)):
     try:        
@@ -309,7 +571,43 @@ async def delete_complaint_suggestion(complaint_suggestion_id: str, request: Req
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.post("/add-diagnosis-suggestion")
+@suggestion_router.post("/add-diagnosis-suggestion",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a new diagnosis suggestion",
+    description="Add a new diagnosis suggestion to the system.",
+    responses={
+        201: {
+            "description": "Diagnosis suggestion added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Diagnosis suggestion added successfully",
+                        "diagnosis_suggestion": {
+                            "id": 1,
+                            "diagnosis": "Migraine"
+                        }
+                    }
+                }
+            }
+        },
+        409: {
+            "description": "Conflict - Diagnosis suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Diagnosis suggestion already exists"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def add_diagnosis_suggestion(diagnosis_suggestion: DiagnosisSuggestionSchema, db: Session = Depends(get_db)):
     try:
         existing_suggestion = db.query(DiagnosisSuggestion).filter(DiagnosisSuggestion.diagnosis == diagnosis_suggestion.diagnosis).first()
@@ -331,10 +629,40 @@ async def add_diagnosis_suggestion(diagnosis_suggestion: DiagnosisSuggestionSche
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.get("/get-diagnosis-suggestions")
+@suggestion_router.get("/get-diagnosis-suggestions",
+    response_model=Dict[str, List[Dict[str, str]]],
+    summary="Get all diagnosis suggestions",
+    description="Retrieve a list of all diagnosis suggestions.",
+    responses={
+        200: {
+            "description": "Diagnosis suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Diagnosis suggestions retrieved successfully",
+                        "diagnosis_suggestions": [
+                            {
+                                "id": 1,
+                                "diagnosis": "Migraine",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def get_diagnosis_suggestions(request: Request, db: Session = Depends(get_db)):
     try:        
-        diagnosis_suggestions = db.query(DiagnosisSuggestion).all()
+        diagnosis_suggestions = db.query(DiagnosisSuggestion).order_by(DiagnosisSuggestion.created_at.desc()).all()
         diagnosis_suggestions_list = []
         for suggestion in diagnosis_suggestions:
             diagnosis_suggestions_list.append({
@@ -351,10 +679,40 @@ async def get_diagnosis_suggestions(request: Request, db: Session = Depends(get_
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@suggestion_router.get("/search-diagnosis-suggestion")
+@suggestion_router.get("/search-diagnosis-suggestion",
+    response_model=Dict[str, List[Dict[str, str]]],
+    summary="Search diagnosis suggestions",
+    description="Search for diagnosis suggestions by name using a query string.",
+    responses={
+        200: {
+            "description": "Search results retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Diagnosis suggestions retrieved successfully",
+                        "diagnosis_suggestions": [
+                            {
+                                "id": 1,
+                                "diagnosis": "Migraine",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def search_diagnosis_suggestion(request: Request, query: str, db: Session = Depends(get_db)):
     try:        
-        diagnosis_suggestions = db.query(DiagnosisSuggestion).filter(DiagnosisSuggestion.diagnosis.ilike(f"%{query}%")).all()
+        diagnosis_suggestions = db.query(DiagnosisSuggestion).filter(DiagnosisSuggestion.diagnosis.ilike(f"%{query}%")).order_by(DiagnosisSuggestion.diagnosis.asc()).all()
         diagnosis_suggestions_list = []
         for suggestion in diagnosis_suggestions:
             diagnosis_suggestions_list.append({
@@ -371,7 +729,42 @@ async def search_diagnosis_suggestion(request: Request, query: str, db: Session 
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@suggestion_router.patch("/update-diagnosis-suggestion/{diagnosis_suggestion_id}")
+@suggestion_router.patch("/update-diagnosis-suggestion/{diagnosis_suggestion_id}",
+    response_model=Dict[str, str],
+    summary="Update a diagnosis suggestion",
+    description="Modify the diagnosis of an existing diagnosis suggestion.",
+    responses={
+        200: {
+            "description": "Diagnosis suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Diagnosis suggestion updated successfully",
+                        "diagnosis_suggestion": {
+                            "id": 1,
+                            "diagnosis": "Updated Diagnosis"
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Diagnosis suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Diagnosis suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    })
 async def update_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Request, diagnosis_suggestion_update: DiagnosisSuggestionSchema, db: Session = Depends(get_db)):
     try:        
         existing_suggestion = db.query(DiagnosisSuggestion).filter(DiagnosisSuggestion.id == diagnosis_suggestion_id).first()
@@ -392,7 +785,38 @@ async def update_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Req
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.delete("/delete-diagnosis-suggestion/{diagnosis_suggestion_id}")
+@suggestion_router.delete(
+    "/delete-diagnosis-suggestion/{diagnosis_suggestion_id}",
+    status_code=200,
+    summary="Delete a diagnosis suggestion",
+    description="Delete an existing diagnosis suggestion by its ID",
+    responses={
+        200: {
+            "description": "Diagnosis suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Diagnosis suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Diagnosis suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Diagnosis suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def delete_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Request, db: Session = Depends(get_db)):
     try:        
         existing_suggestion = db.query(DiagnosisSuggestion).filter(DiagnosisSuggestion.id == diagnosis_suggestion_id).first()
@@ -409,7 +833,45 @@ async def delete_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Req
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.post("/add-vital-sign-suggestion")
+@suggestion_router.post(
+    "/add-vital-sign-suggestion",
+    status_code=201,
+    summary="Add a new vital sign suggestion",
+    description="Create a new vital sign suggestion in the system",
+    responses={
+        201: {
+            "description": "Vital sign suggestion created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Vital sign suggestion added successfully",
+                        "vital_sign_suggestion": {
+                            "id": 1,
+                            "vital_sign": "Blood Pressure",
+                            "created_at": "2023-01-01T00:00:00"
+                        }
+                    }
+                }
+            }
+        },
+        409: {
+            "description": "Vital sign suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Vital sign suggestion already exists"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def add_vital_sign_suggestion(vital_sign_suggestion: VitalSignSuggestionSchema, db: Session = Depends(get_db)):
     try:
         existing_suggestion = db.query(VitalSignSuggestion).filter(VitalSignSuggestion.vital_sign == vital_sign_suggestion.vital_sign).first()
@@ -419,7 +881,7 @@ async def add_vital_sign_suggestion(vital_sign_suggestion: VitalSignSuggestionSc
         new_suggestion = VitalSignSuggestion(vital_sign=vital_sign_suggestion.vital_sign)
         db.add(new_suggestion)
         db.commit()
-        db.refresh(new_suggestion)  # Refresh the new_suggestion with the latest data from the database
+        db.refresh(new_suggestion)
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Vital sign suggestion added successfully",
             "vital_sign_suggestion": new_suggestion
@@ -431,10 +893,42 @@ async def add_vital_sign_suggestion(vital_sign_suggestion: VitalSignSuggestionSc
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.get("/get-vital-sign-suggestions")
+@suggestion_router.get(
+    "/get-vital-sign-suggestions",
+    status_code=200,
+    summary="Get all vital sign suggestions",
+    description="Retrieve a list of all vital sign suggestions ordered by creation date",
+    responses={
+        200: {
+            "description": "Vital sign suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Vital sign suggestions retrieved successfully",
+                        "vital_sign_suggestions": [
+                            {
+                                "id": 1,
+                                "vital_sign": "Blood Pressure",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def get_vital_sign_suggestions(request: Request, db: Session = Depends(get_db)):
     try:        
-        vital_sign_suggestions = db.query(VitalSignSuggestion).all()
+        vital_sign_suggestions = db.query(VitalSignSuggestion).order_by(VitalSignSuggestion.created_at.desc()).all()
         vital_sign_suggestions_list = []
         for suggestion in vital_sign_suggestions:
             vital_sign_suggestions_list.append({
@@ -451,10 +945,42 @@ async def get_vital_sign_suggestions(request: Request, db: Session = Depends(get
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
     
-@suggestion_router.get("/search-vital-sign-suggestion")
+@suggestion_router.get(
+    "/search-vital-sign-suggestion",
+    status_code=200,
+    summary="Search vital sign suggestions",
+    description="Search for vital sign suggestions using a text query. The search is case-insensitive and matches partial strings.",
+    responses={
+        200: {
+            "description": "Search completed successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Vital sign suggestions retrieved successfully",
+                        "vital_sign_suggestions": [
+                            {
+                                "id": 1,
+                                "vital_sign": "Blood Pressure",
+                                "created_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def search_vital_sign_suggestion(request: Request, query: str, db: Session = Depends(get_db)):
     try:        
-        vital_sign_suggestions = db.query(VitalSignSuggestion).filter(VitalSignSuggestion.vital_sign.ilike(f"%{query}%")).all()
+        vital_sign_suggestions = db.query(VitalSignSuggestion).filter(VitalSignSuggestion.vital_sign.ilike(f"%{query}%")).order_by(VitalSignSuggestion.vital_sign.asc()).all()
         vital_sign_suggestions_list = []
         for suggestion in vital_sign_suggestions:
             vital_sign_suggestions_list.append({
@@ -471,7 +997,45 @@ async def search_vital_sign_suggestion(request: Request, query: str, db: Session
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@suggestion_router.patch("/update-vital-sign-suggestion/{vital_sign_suggestion_id}")
+@suggestion_router.patch(
+    "/update-vital-sign-suggestion/{vital_sign_suggestion_id}",
+    status_code=200,
+    summary="Update a vital sign suggestion",
+    description="Update an existing vital sign suggestion by its ID",
+    responses={
+        200: {
+            "description": "Vital sign suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Vital sign suggestion updated successfully",
+                        "vital_sign_suggestion": {
+                            "id": 1,
+                            "vital_sign": "Updated Blood Pressure",
+                            "created_at": "2023-01-01T00:00:00"
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Vital sign suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Vital sign suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def update_vital_sign_suggestion(vital_sign_suggestion_id: str, request: Request, vital_sign_suggestion_update: VitalSignSuggestionSchema, db: Session = Depends(get_db)):
     try:        
         existing_suggestion = db.query(VitalSignSuggestion).filter(VitalSignSuggestion.id == vital_sign_suggestion_id).first()
@@ -480,7 +1044,7 @@ async def update_vital_sign_suggestion(vital_sign_suggestion_id: str, request: R
         
         existing_suggestion.vital_sign = vital_sign_suggestion_update.vital_sign
         db.commit()
-        db.refresh(existing_suggestion)  # Refresh the existing_suggestion with the latest data from the database
+        db.refresh(existing_suggestion)
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Vital sign suggestion updated successfully",
             "vital_sign_suggestion": existing_suggestion
@@ -492,7 +1056,38 @@ async def update_vital_sign_suggestion(vital_sign_suggestion_id: str, request: R
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
 
-@suggestion_router.delete("/delete-vital-sign-suggestion/{vital_sign_suggestion_id}")
+@suggestion_router.delete(
+    "/delete-vital-sign-suggestion/{vital_sign_suggestion_id}",
+    status_code=200,
+    summary="Delete a vital sign suggestion",
+    description="Delete an existing vital sign suggestion by its ID",
+    responses={
+        200: {
+            "description": "Vital sign suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Vital sign suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Vital sign suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Vital sign suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
 async def delete_vital_sign_suggestion(vital_sign_suggestion_id: str, request: Request, db: Session = Depends(get_db)):
     try:        
         existing_suggestion = db.query(VitalSignSuggestion).filter(VitalSignSuggestion.id == vital_sign_suggestion_id).first()

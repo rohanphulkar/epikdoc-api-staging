@@ -136,7 +136,7 @@ def create_professional_invoice(
             total += item_total
             
             items_data.append([
-                Paragraph(f'''<font name="Roboto" size=10>{item['treatment_name']}</font>''', styles["Normal"]),
+                Paragraph(f'''<font name="Roboto" size=10>{item['treatment_name'].strip().strip("'").strip('"').title()}</font>''', styles["Normal"]),
                 Paragraph(f'''<font name="Roboto" size=10>{item['quantity']}</font>''', styles["RightAlign"]),
                 Paragraph(f'''<font name="Roboto" size=10>{item['unit_cost']:,.2f}</font>''', styles["RightAlign"]),
                 Paragraph(f'''<font name="Roboto" size=10>{discount_amount:,.2f}</font>''', styles["RightAlign"]),

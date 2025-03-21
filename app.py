@@ -113,11 +113,26 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 async def root():
     return RedirectResponse(url="/docs")
 
+# Include user authentication and management routes
 app.include_router(user_router, prefix=f"/user", tags=["auth"])
+
+# Include patient management and record handling routes
 app.include_router(patient_router, prefix=f"/patients", tags=["patients"])
+
+# Include AI prediction and diagnostic routes
 app.include_router(prediction_router, prefix=f"/predictions", tags=["predictions"])
+
+# Include payment processing and billing routes
 app.include_router(payment_router, prefix=f"/payments", tags=["payments"])
+
+# Include appointment scheduling and management routes
 app.include_router(appointment_router, prefix=f"/appointments", tags=["appointments"])
+
+# Include staff management and access control routes
 app.include_router(staff_router, prefix=f"/staff", tags=["staff"])
+
+# Include service catalog and procedure routes
 app.include_router(catalog_router, prefix=f"/catalog", tags=["catalog"])
+
+# Include personalized recommendation routes
 app.include_router(suggestion_router, prefix=f"/suggestion", tags=["suggestion"])

@@ -316,7 +316,7 @@ async def get_staff(
         return JSONResponse(
             status_code=200, 
             content={
-                "staffs": staff_users_data,
+                "staffs": staff_users_data[::-1],
                 "total": total_staff,
                 "page": page,
                 "per_page": per_page
@@ -511,7 +511,7 @@ async def search_staff(
         return JSONResponse(
             status_code=200, 
             content={
-                "staffs": staff_users_data,
+                "staffs": staff_users_data[::-1],
                 "total": total_results,
                 "page": page,
                 "per_page": per_page,

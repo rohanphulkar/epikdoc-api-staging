@@ -371,7 +371,7 @@ async def get_created_doctors(request: Request, db: Session = Depends(get_db)):
                 "user_type": doctor.user_type
             })
 
-        return JSONResponse(status_code=200, content={"doctors": doctors_data})
+        return JSONResponse(status_code=200, content={"doctors": doctors_data[::-1]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -2540,7 +2540,7 @@ async def search_procedure_catalog(
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
         # Build base query
-        query = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id)
+        query = db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == user.id).order_by(ProcedureCatalog.created_at.desc())
         
         # Add search filter if search_query provided
         if search_query:

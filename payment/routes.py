@@ -225,7 +225,7 @@ async def get_expenses(
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         # Base query
-        query = db.query(Expense).filter(Expense.doctor_id == user.id)
+        query = db.query(Expense).filter(Expense.doctor_id == user.id).order_by(Expense.created_at.desc())
 
         # Date filters if provided
         if start_date:
@@ -586,37 +586,44 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
 @payment_router.post("/create-payment/{patient_id}",
     response_model=PaymentResponse,
     status_code=201,
-    summary="Create new payment",
+    summary="Create new payment record",
     description="""
-    Create a new payment record for a patient.
+    Create a new payment record for a patient with optional invoice generation.
     
     Path parameters:
     - patient_id (string, required): Unique identifier of the patient
     
-    Required parameters in request body:
-    - date (string): Payment date in YYYY-MM-DD format
-    - receipt_number (string): Unique receipt number
-    - treatment_name (string): Name/description of treatment
-    - amount_paid (float): Payment amount
+    Request body fields:
+    - date (string, required): Payment date in YYYY-MM-DD format
+    - receipt_number (string, required): Unique receipt number for the payment
+    - treatment_name (string, required): Name/description of treatment or service
+    - amount_paid (float, required): Payment amount (must be positive)
+    - invoice_number (string, optional): Reference number of associated invoice
+    - notes (string, optional): Additional notes or comments about payment
+    - payment_mode (string, optional): Method of payment (cash, card, cheque, netbanking, etc)
+    - status (string, optional): Payment status (pending, paid, failed)
+    - refund (boolean, optional): Whether this is a refund payment
+    - refund_receipt_number (string, optional): Receipt number of original payment being refunded
+    - refunded_amount (float, optional): Amount being refunded
+    - cancelled (boolean, optional): Whether payment is cancelled
     
-    Optional parameters:
-    - invoice_number (string): Associated invoice number
-    - notes (string): Additional payment notes
-    - payment_mode (string): payment mode (e.g., cash, card, cheque, netbanking)
-    - refund (boolean): Whether this is a refund
-    - refund_receipt_number (string): Original receipt number for refund
-    - refunded_amount (float): Amount being refunded
-    - cancelled (boolean): Whether payment is cancelled
+    Notes:
+    - Receipt numbers must be unique
+    - Amount paid must be a positive number
+    - If status is "paid", associated invoice will be updated
+    - Refund payments require original receipt number
+    - Patient details are auto-populated from patient_id
+    - Doctor details are auto-populated from authentication token
     
     Required headers:
     - Authorization: Bearer token from doctor login
     
     Returns:
     - 201: Payment created successfully with payment details
-    - 401: Unauthorized - Invalid or missing token
-    - 404: Patient not found
-    - 422: Validation error - Invalid request body
-    - 500: Internal server error with error details
+    - 401: Invalid or missing authentication token
+    - 404: Patient ID not found
+    - 422: Invalid input data format
+    - 500: Server error while processing request
     """,
     responses={
         201: {
@@ -626,27 +633,25 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
                     "example": {
                         "message": "Payment created successfully",
                         "payment": {
-                            "id": "uuid",
+                            "id": "123e4567-e89b-12d3-a456-426614174000",
                             "date": "2023-01-01",
-                            "patient_id": "patient_uuid",
-                            "receipt_number": "REC001",
-                            "treatment_name": "Consultation",
+                            "patient_id": "123e4567-e89b-12d3-a456-426614174111",
+                            "doctor_id": "123e4567-e89b-12d3-a456-426614174222", 
+                            "receipt_number": "REC-2023-001",
+                            "patient_name": "John Doe",
+                            "patient_number": "P001",
+                            "treatment_name": "Dental Consultation",
                             "amount_paid": 1000.00,
-                            "payment_methods": [
-                                {
-                                    "payment_mode": "Card",
-                                    "amount": 1000.00,
-                                    "card_number": "****1234",
-                                    "card_type": "Credit"
-                                }
-                            ]
+                            "payment_mode": "card",
+                            "status": "paid",
+                            "created_at": "2023-01-01T10:00:00Z"
                         }
                     }
                 }
             }
         },
         401: {
-            "description": "Unauthorized - Invalid token",
+            "description": "Unauthorized - Invalid or missing token",
             "content": {
                 "application/json": {
                     "example": {"message": "Unauthorized"}
@@ -665,7 +670,15 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
             "description": "Validation Error",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Invalid request body"}
+                    "example": {
+                        "detail": [
+                            {
+                                "loc": ["body", "amount_paid"],
+                                "msg": "Amount paid must be greater than 0",
+                                "type": "value_error"
+                            }
+                        ]
+                    }
                 }
             }
         },
@@ -673,7 +686,7 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"message": "Error details"}
+                    "example": {"message": "Error creating payment record"}
                 }
             }
         }
@@ -707,7 +720,60 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
         db.commit()
         db.refresh(new_payment)
 
-        return JSONResponse(status_code=201, content={"message": "Payment created successfully"})
+        if new_payment.status == "paid":
+            invoice = db.query(Invoice).filter(Invoice.id == new_payment.invoice_id).first()
+            if invoice:
+                if new_payment.status == "paid":
+                    items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+                    invoice_data = {
+                        "id": invoice.id,
+                        "date": invoice.date or datetime.now(),
+                        "patient_id": invoice.patient_id,
+                        "doctor_id": invoice.doctor_id,
+                        "patient_number": invoice.patient_number,
+                        "patient_name": invoice.patient_name,
+                        "doctor_name": invoice.doctor_name,
+                        "invoice_number": invoice.invoice_number,
+                        "notes": invoice.notes,
+                        "description": invoice.description,
+                        "doctor_phone": user.phone,
+                        "doctor_email": user.email,
+
+                    }
+
+                    invoice_items = [{
+                        "treatment_name": item.treatment_name,
+                        "unit_cost": item.unit_cost,
+                        "quantity": item.quantity,
+                        "discount": item.discount,
+                        "discount_type": item.discount_type or "fixed",
+                        "type": item.type,
+                        "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                        "tax_name": item.tax_name,
+                        "tax_percent": item.tax_percent
+                    } for item in items]
+
+                    pdf_path = create_professional_invoice(
+                        invoice_data=invoice_data,
+                        invoice_items=invoice_items
+                    )
+
+                    # Remove old pdf file
+                    if invoice.file_path:
+                        try:
+                            os.remove(invoice.file_path)
+                        except OSError:
+                            pass
+                    invoice.file_path = update_url(pdf_path, request)
+                invoice.payment_id = new_payment.id
+                new_payment.invoice_id = invoice.id
+
+                print(new_payment.invoice_id)
+                print(invoice.payment_id)
+                db.commit()
+
+
+        return JSONResponse(status_code=201, content={"message": "Payment created successfully", "payment_id": new_payment.id})
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -825,6 +891,7 @@ async def get_payments(
             .filter(Payment.doctor_id == user.id)\
             .offset(offset)\
             .limit(per_page)\
+            .order_by(Payment.created_at.desc())\
             .all()
 
         # Calculate statistics
@@ -861,6 +928,7 @@ async def get_payments(
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,
                 "receipt_number": payment.receipt_number,
@@ -1054,6 +1122,7 @@ async def get_payments_by_patient_id(
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,
                 "receipt_number": payment.receipt_number,
@@ -1150,6 +1219,7 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
             "date": payment.date.isoformat() if payment.date else None,
             "patient_id": payment.patient_id,
             "doctor_id": payment.doctor_id,
+            "invoice_id": payment.invoice_id,
             "patient_number": payment.patient_number,
             "patient_name": payment.patient_name,
             "receipt_number": payment.receipt_number,
@@ -1316,7 +1386,7 @@ async def search_payments(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        payments = query.offset(offset).limit(per_page).all()
+        payments = query.offset(offset).limit(per_page).order_by(Payment.created_at.desc()).all()
         
         # Format response
         payments_list = []
@@ -1326,6 +1396,7 @@ async def search_payments(
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,
                 "receipt_number": payment.receipt_number,
@@ -1364,29 +1435,38 @@ async def search_payments(
     Update an existing payment record with new information.
     
     Path parameters:
-    - payment_id: Unique identifier of the payment to update
+    - payment_id (string, required): Unique identifier of the payment to update
     
-    Updatable fields (all optional):
-    - date: Date of payment (format: YYYY-MM-DD)
-    - receipt_number: New receipt number
-    - treatment_name: Updated treatment name/description
-    - amount_paid: New payment amount
-    - invoice_number: Updated invoice reference
-    - notes: Additional or updated notes
-    - payment_mode: Updated payment mode (e.g., cash, card, cheque, netbanking)
-    - refund: Toggle refund status (true/false)
-    - refund_receipt_number: Receipt number for refund
-    - refunded_amount: Amount refunded
-    - cancelled: Mark payment as cancelled (true/false)
+    Request body fields (all optional):
+    - date (string): Date of payment in YYYY-MM-DD format
+    - receipt_number (string): New receipt number for the payment
+    - treatment_name (string): Name or description of the treatment
+    - amount_paid (number): Payment amount (must be positive)
+    - invoice_number (string): Reference number of associated invoice
+    - notes (string): Additional notes or comments
+    - payment_mode (string): Method of payment (cash, card, cheque, netbanking, etc)
+    - status (string): Payment status (pending, paid, failed)
+    - refund (boolean): Whether payment has been refunded
+    - refund_receipt_number (string): Receipt number for refund transaction
+    - refunded_amount (number): Amount that was refunded
+    - cancelled (boolean): Whether payment has been cancelled
     
     Notes:
-    - Only the provided fields will be updated
-    - Existing payment methods will be replaced if new ones are provided
-    - All amount fields should be positive numbers
-    - Original payment ID and patient details cannot be modified
+    - Only provided fields will be updated, others remain unchanged
+    - Patient and doctor details cannot be modified
+    - All amount fields must be positive numbers
+    - Status changes may trigger additional workflows (e.g. invoice updates)
+    - Refund and cancellation may have downstream effects
     
     Required headers:
     - Authorization: Bearer token from doctor login
+    
+    Returns:
+    - 200: Payment successfully updated with updated payment details
+    - 401: Invalid or missing authentication token
+    - 404: Payment ID not found
+    - 422: Invalid input data format
+    - 500: Server error while processing request
     """,
     responses={
         200: {
@@ -1395,14 +1475,26 @@ async def search_payments(
                 "application/json": {
                     "example": {
                         "message": "Payment updated successfully",
-                        "payment_id": "123e4567-e89b-12d3-a456-426614174000"
+                        "payment_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "status": "paid",
+                        "amount_paid": 1000.00,
+                        "updated_at": "2024-01-20T10:30:00Z"
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing token"},
-        404: {"description": "Payment not found - Invalid payment ID"},
-        500: {"description": "Internal server error - Error while processing request"}
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token"
+        },
+        404: {
+            "description": "Payment not found - Invalid payment ID"
+        },
+        422: {
+            "description": "Validation error - Invalid input data format"
+        },
+        500: {
+            "description": "Internal server error while processing request"
+        }
     }
 )
 async def update_payment(request: Request, payment_id: str, payment: PaymentUpdate, db: Session = Depends(get_db)):
@@ -1426,6 +1518,55 @@ async def update_payment(request: Request, payment_id: str, payment: PaymentUpda
 
         db.commit()
         db.refresh(existing_payment)
+
+        if existing_payment.invoice_id:
+            invoice = db.query(Invoice).filter(Invoice.id == existing_payment.invoice_id).first()
+            if invoice:
+                if existing_payment.status == "paid":
+                    items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+                    invoice_data = {
+                        "id": invoice.id,
+                        "date": invoice.date or datetime.now(),
+                        "patient_id": invoice.patient_id,
+                        "doctor_id": invoice.doctor_id,
+                        "patient_number": invoice.patient_number,
+                        "patient_name": invoice.patient_name,
+                        "doctor_name": invoice.doctor_name,
+                        "invoice_number": invoice.invoice_number,
+                        "notes": invoice.notes,
+                        "description": invoice.description,
+                        "doctor_phone": user.phone,
+                        "doctor_email": user.email,
+
+                    }
+
+                    invoice_items = [{
+                        "treatment_name": item.treatment_name,
+                        "unit_cost": item.unit_cost,
+                        "quantity": item.quantity,
+                        "discount": item.discount,
+                        "discount_type": item.discount_type or "fixed",
+                        "type": item.type,
+                        "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                        "tax_name": item.tax_name,
+                        "tax_percent": item.tax_percent
+                    } for item in items]
+
+                    pdf_path = create_professional_invoice(
+                        invoice_data=invoice_data,
+                        invoice_items=invoice_items
+                    )
+
+                    # Remove old pdf file
+                    if invoice.file_path:
+                        try:
+                            os.remove(invoice.file_path)
+                        except OSError:
+                            pass
+                    invoice.file_path = update_url(pdf_path, request)
+                    invoice.payment_id = existing_payment.id
+                    existing_payment.invoice_id = invoice.id
+                    db.commit()
 
         return JSONResponse(status_code=200, content={"message": "Payment updated successfully"})
     except Exception as e:
@@ -1500,33 +1641,36 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
     Create a new invoice record and generate a professional PDF invoice document.
     
     Required fields:
-    - patient_id: Unique identifier of the patient
-    - invoice_items: List of items to be included in the invoice
-        - treatment_name: Name/description of the treatment
-        - unit_cost: Cost per unit
-        - quantity: Number of units
-        - discount: Discount amount (optional)
-        - discount_type: Percentage or fixed amount (optional)
-        - tax_name: Name of applicable tax (optional)
-        - tax_percent: Tax percentage (optional)
+    - patient_id (UUID): Unique identifier of the patient
+    - invoice_items (array): List of items to be included in the invoice
+        - treatment_name (string): Name/description of the treatment
+        - unit_cost (decimal): Cost per unit
+        - quantity (integer): Number of units
+        - discount (decimal, optional): Discount amount
+        - discount_type (string, optional): Either 'percentage' or 'fixed'
+        - tax_name (string, optional): Name of applicable tax
+        - tax_percent (decimal, optional): Tax percentage
     
     Optional fields:
-    - date: Invoice date (defaults to current date)
-    - invoice_number: Custom invoice number (auto-generated if not provided)
-    - notes: Additional notes to appear on invoice
-    - description: Detailed description of services
-    - cancelled: Whether invoice is cancelled (default: false)
+    - date (datetime): Invoice date (defaults to current date)
+    - invoice_number (string): Custom invoice number (auto-generated if not provided)
+    - notes (string): Additional notes to appear on invoice
+    - description (string): Detailed description of services
+    - cancelled (boolean): Whether invoice is cancelled (default: false)
     
     Returns:
-    - Invoice details including generated PDF URL
-    - Automatically calculated totals and tax amounts
-    - Professional PDF document with clinic/doctor branding
+    - id (UUID): Unique identifier for the invoice
+    - invoice_number (string): Generated or provided invoice number
+    - pdf_url (string): URL to download generated PDF
+    - total_amount (decimal): Final calculated amount including tax and discounts
+    - created_at (datetime): Timestamp of invoice creation
     
     Notes:
-    - PDF is generated automatically and stored securely
+    - PDF is generated automatically with clinic/doctor branding
     - Invoice numbers are unique and sequential if auto-generated
     - Tax calculations follow local tax rules
     - Multiple items can be added with different tax rates
+    - All monetary values use decimal precision
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -1538,7 +1682,7 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
                 "application/json": {
                     "example": {
                         "id": "123e4567-e89b-12d3-a456-426614174000",
-                        "invoice_number": "INV-20230101-12345678",
+                        "invoice_number": "INV-20230101-12345678", 
                         "pdf_url": "https://example.com/invoices/INV-20230101-12345678.pdf",
                         "total_amount": 1000.00,
                         "created_at": "2023-01-01T10:00:00"
@@ -1546,6 +1690,7 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
                 }
             }
         },
+        400: {"description": "Bad request - Invalid input data"},
         401: {"description": "Unauthorized - Invalid or missing token"},
         404: {"description": "Patient not found - Invalid patient ID"},
         500: {"description": "Internal server error - Error while processing request"}
@@ -1567,99 +1712,124 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
         
-        # Prepare invoice data with required fields
+        # Prepare invoice data
         current_time = datetime.now()
-        invoice_number = generate_invoice_number()
-        invoice_data = {
-            "id": str(uuid.uuid4()),
-            "date": invoice.date or current_time,
-            "patient_id": patient.id,
-            "doctor_id": user.id,
-            "patient_name": patient.name,
-            "patient_number": patient.patient_number,
-            "doctor_name": user.name,
-            "invoice_number": invoice.invoice_number or str(invoice_number),
-            "notes": invoice.notes,
-            "description": invoice.description,
-            "cancelled": invoice.cancelled,
-            "created_at": current_time,
-            "updated_at": current_time
-        }
+        invoice_number = invoice.invoice_number or str(generate_invoice_number())
         
         # Create invoice record
-        new_invoice = Invoice(**invoice_data)
+        new_invoice = Invoice(
+            id=str(uuid.uuid4()),
+            date=invoice.date or current_time,
+            patient_id=patient.id,
+            doctor_id=user.id,
+            patient_name=patient.name,
+            patient_number=patient.patient_number,
+            doctor_name=user.name,
+            invoice_number=invoice_number,
+            notes=invoice.notes,
+            description=invoice.description,
+            cancelled=invoice.cancelled,
+            created_at=current_time,
+            updated_at=current_time,
+            total_amount=0  # Initialize total amount
+        )
+        
         db.add(new_invoice)
-        db.commit()
-        db.refresh(new_invoice)
+        db.flush()  # Get ID without committing
 
-        # Create invoice items and store them for PDF generation
+        # Process invoice items
+        total_amount = 0
         invoice_items_for_pdf = []
+        
         for item in invoice.invoice_items:
-            item_total = item.unit_cost * item.quantity  # Base cost
+            if not item.unit_cost or not item.quantity:
+                raise ValueError("Unit cost and quantity are required for invoice items")
+                
+            item_total = float(item.unit_cost) * int(item.quantity)
             
-            # Apply discount
+            # Apply discount if present
             if item.discount:
                 if item.discount_type == "percentage":
-                    item_total -= (item_total * item.discount / 100)
-                elif item.discount_type == "fixed":
-                    item_total -= item.discount
+                    item_total -= (item_total * float(item.discount) / 100)
+                else:  # fixed amount
+                    item_total -= float(item.discount)
             
-            # Apply tax
+            # Apply tax if present    
             if item.tax_percent:
-                tax_amount = (item_total * item.tax_percent / 100)
+                tax_amount = (item_total * float(item.tax_percent) / 100)
                 item_total += tax_amount
             
-            # Add to total invoice amount
             total_amount += item_total
-            invoice_item_data = {
-                "id": str(uuid.uuid4()),
-                "invoice_id": new_invoice.id,
-                "treatment_name": item.treatment_name,
-                "unit_cost": item.unit_cost,
-                "quantity": item.quantity,
-                "discount": item.discount,
-                "discount_type": item.discount_type,
-                "type": item.type,
-                "invoice_level_tax_discount": item.invoice_level_tax_discount,
-                "tax_name": item.tax_name,
-                "tax_percent": item.tax_percent,
-                "created_at": current_time,
-                "updated_at": current_time
-            }
 
-            new_invoice.total_amount = total_amount
+            # Create invoice item
+            invoice_item = InvoiceItem(
+                id=str(uuid.uuid4()),
+                invoice_id=new_invoice.id,
+                treatment_name=item.treatment_name,
+                unit_cost=item.unit_cost,
+                quantity=item.quantity,
+                discount=item.discount,
+                discount_type=item.discount_type,
+                type=item.type,
+                invoice_level_tax_discount=item.invoice_level_tax_discount,
+                tax_name=item.tax_name,
+                tax_percent=item.tax_percent,
+                created_at=current_time,
+                updated_at=current_time
+            )
             
-            invoice_item = InvoiceItem(**invoice_item_data)
             db.add(invoice_item)
-            invoice_items_for_pdf.append(invoice_item_data)
-        
-        db.commit()
+            invoice_items_for_pdf.append(invoice_item.__dict__)
 
-        invoice_data["doctor_phone"] = user.phone
-        invoice_data["doctor_email"] = user.email
-        invoice_data["patient_phone"] = patient.mobile_number
-        invoice_data["patient_email"] = patient.email
+        # Update invoice total
+        new_invoice.total_amount = total_amount
         
-        # Generate PDF invoice
+        # Generate PDF with contact details
+        invoice_data = {
+            **new_invoice.__dict__,
+            "doctor_phone": user.phone,
+            "doctor_email": user.email,
+            "patient_phone": patient.mobile_number,
+            "patient_email": patient.email
+        }
+        
         try:
             pdf_path = create_professional_invoice(
                 invoice_data=invoice_data,
                 invoice_items=invoice_items_for_pdf
             )
-            
-            # Update invoice with PDF path
             new_invoice.file_path = update_url(pdf_path, request)
-            db.commit()
-            
         except Exception as e:
-            # Log PDF generation error but don't fail the request
             print(f"Failed to generate PDF invoice: {str(e)}")
+            # Continue without PDF
+            
+        # Create pending payment record
+        new_payment = Payment(
+            id=str(uuid.uuid4()),
+            patient_id=patient.id,
+            doctor_id=user.id,
+            invoice_id=new_invoice.id,
+            amount_paid=total_amount,
+            payment_mode="invoice",
+            status="pending",
+            patient_number=patient.patient_number,
+            patient_name=patient.name,
+            invoice_number=invoice_number,
+            date=current_time
+        )
         
-        # Return full invoice response with items
-        db.refresh(new_invoice)                
-
-        return new_invoice
+        db.add(new_payment)
+        new_invoice.payment_id = new_payment.id
         
+        # Commit all changes
+        db.commit()
+        db.refresh(new_invoice)
+        
+        return JSONResponse(status_code=201, content={"message": "Invoice created successfully", "invoice_id": new_invoice.id})
+        
+    except ValueError as e:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"message": str(e)})
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"message": f"Failed to create invoice: {str(e)}"})
@@ -1830,7 +2000,7 @@ async def get_invoices(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).order_by(Invoice.date.desc()).all()
         
         # Format response
         invoice_list = []
@@ -1840,6 +2010,7 @@ async def get_invoices(
                 "date": invoice.date.isoformat() if invoice.date else None,
                 "patient_id": invoice.patient_id,
                 "doctor_id": invoice.doctor_id,
+                "payment_id": invoice.payment_id,
                 "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
@@ -2064,6 +2235,7 @@ async def get_invoices_by_patient(
                 "date": invoice.date.isoformat() if invoice.date else None,
                 "patient_id": invoice.patient_id,
                 "doctor_id": invoice.doctor_id, 
+                "payment_id": invoice.payment_id,
                 "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
@@ -2327,7 +2499,7 @@ async def search_invoices(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).order_by(Invoice.date.desc()).all()
 
         # Format response
         invoice_list = []
@@ -2337,6 +2509,7 @@ async def search_invoices(
                 "date": invoice.date.isoformat() if invoice.date else None,
                 "patient_id": invoice.patient_id,
                 "doctor_id": invoice.doctor_id,
+                "payment_id": invoice.payment_id,
                 "patient_number": invoice.patient_number,
                 "patient_name": invoice.patient_name,
                 "doctor_name": invoice.doctor_name,
@@ -2496,6 +2669,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "date": invoice.date.isoformat() if invoice.date else None,
             "patient_id": invoice.patient_id,
             "doctor_id": invoice.doctor_id,
+            "payment_id": invoice.payment_id,
             "patient_number": invoice.patient_number,
             "patient_name": invoice.patient_name,
             "doctor_name": invoice.doctor_name,
@@ -2571,38 +2745,37 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
     status_code=200,
     summary="Update an existing invoice",
     description="""
-    Updates an existing invoice with new information.
-    
-    Allows updating:
-    - Basic invoice details (date, number, notes, description)
-    - Invoice items with full treatment details
-    - Will regenerate PDF with updated information
+    Updates an existing invoice with new information and regenerates the PDF.
     
     Path parameters:
-    - invoice_id (string, required): Unique identifier of invoice to update
+    - invoice_id: Unique identifier of invoice to update
     
     Request body:
-    - date (string, optional): New invoice date (YYYY-MM-DD)
+    - date (string, optional): New invoice date in YYYY-MM-DD format
     - invoice_number (string, optional): New custom invoice number
-    - notes (string, optional): Updated additional notes
-    - description (string, optional): Updated detailed description
-    - invoice_items (array, optional): Updated list of invoice items containing:
-        - treatment_name (string): Name of treatment/service
+    - notes (string, optional): Additional notes to appear on invoice
+    - description (string, optional): Detailed description of services
+    - invoice_items (array, optional): List of invoice items containing:
+        - treatment_name (string): Name/description of the treatment
         - unit_cost (number): Cost per unit
         - quantity (integer): Number of units
-        - discount (number, optional): Discount amount or percentage
-        - discount_type (string, optional): "fixed" or "percentage"
-        - tax_name (string, optional): Name of tax applied
+        - discount (number, optional): Discount amount
+        - discount_type (string, optional): "percentage" or "fixed"
+        - tax_name (string, optional): Name of applicable tax
         - tax_percent (number, optional): Tax percentage
+        - invoice_level_tax_discount (number, optional): Additional tax discount percentage
+        - type (string, optional): Type of treatment/service
+    
+    Important notes:
+    - Providing invoice_items will replace all existing items
+    - Omitting invoice_items will preserve existing ones
+    - PDF will be regenerated with updated information
+    - Previous PDF file will be deleted
+    - All calculations (totals, tax, discounts) will be recomputed
+    - Payment record will be updated to match new total
     
     Required headers:
     - Authorization: Bearer token from doctor login
-    
-    Notes:
-    - If invoice items are provided, all existing items will be replaced
-    - If no items provided, existing items remain unchanged
-    - PDF will be regenerated with updated information
-    - Old PDF file will be deleted
     """,
     responses={
         200: {
@@ -2610,24 +2783,21 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "content": {
                 "application/json": {
                     "example": {
-                        "id": "uuid",
-                        "invoice_number": "INV-001",
-                        "date": "2023-01-01",
-                        "items": [{
-                            "treatment_name": "Updated Service",
-                            "unit_cost": 150.00
-                        }]
+                        "message": "Invoice updated successfully",
+                        "invoice_id": "123e4567-e89b-12d3-a456-426614174000"
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing authentication token"},
-        404: {"description": "Invoice not found with provided ID"},
+        400: {"description": "Bad request - Invalid invoice data"},
+        401: {"description": "Unauthorized - Invalid or missing token"},
+        404: {"description": "Invoice not found - Invalid invoice ID"},
         500: {"description": "Internal server error - Failed to update invoice"}
     }
 )
 async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpdate, db: Session = Depends(get_db)):
     try:
+        # Verify authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
@@ -2636,14 +2806,15 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
         if not user:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
+        # Get existing invoice
         existing_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if not existing_invoice:
             return JSONResponse(status_code=404, content={"message": "Invoice not found"})
         
-        # Update invoice fields
-        for field, value in invoice.model_dump(exclude={'invoice_items'}).items():
-            if value is not None:
-                setattr(existing_invoice, field, value)
+        # Update basic invoice fields
+        update_data = invoice.model_dump(exclude={'invoice_items'}, exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(existing_invoice, field, value)
         
         # Update invoice items if provided
         if invoice.invoice_items:
@@ -2651,9 +2822,30 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
             db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete()
 
             total_amount = 0.0
+            current_time = datetime.now()
             
             # Create new items
             for item in invoice.invoice_items:
+                if not item.unit_cost or not item.quantity:
+                    raise ValueError("Unit cost and quantity are required for invoice items")
+                    
+                item_total = float(item.unit_cost) * int(item.quantity)
+            
+                # Apply discount
+                if item.discount:
+                    if item.discount_type == "percentage":
+                        item_total -= (item_total * float(item.discount) / 100)
+                    else:  # fixed amount
+                        item_total -= float(item.discount)
+                
+                # Apply tax
+                if item.tax_percent:
+                    tax_amount = (item_total * float(item.tax_percent) / 100)
+                    if item.invoice_level_tax_discount:
+                        tax_amount *= (1 - float(item.invoice_level_tax_discount) / 100)
+                    item_total += tax_amount
+                
+                # Create invoice item
                 invoice_item = InvoiceItem(
                     id=str(uuid.uuid4()),
                     invoice_id=invoice_id,
@@ -2666,69 +2858,28 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                     invoice_level_tax_discount=item.invoice_level_tax_discount,
                     tax_name=item.tax_name,
                     tax_percent=item.tax_percent,
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
+                    created_at=current_time,
+                    updated_at=current_time
                 )
-                item_total = item.unit_cost * item.quantity  # Base cost
-            
-                # Apply discount
-                if item.discount:
-                    if item.discount_type == "percentage":
-                        item_total -= (item_total * item.discount / 100)
-                    elif item.discount_type == "fixed":
-                        item_total -= item.discount
                 
-                # Apply tax
-                if item.tax_percent:
-                    tax_amount = (item_total * item.tax_percent / 100)
-                    item_total += tax_amount
-                
-                # Add to total invoice amount
-                total_amount += item_total
                 db.add(invoice_item)
+                total_amount += item_total
+                
             existing_invoice.total_amount = total_amount
+            existing_invoice.updated_at = current_time
+
         db.commit()
         db.refresh(existing_invoice)
 
-        # Get all invoice items
+        # Get all invoice items for PDF generation
         items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).all()
-        if not items:
-            # Create default item if none exist
-            invoice_item = InvoiceItem(
-                id=str(uuid.uuid4()),
-                invoice_id=invoice_id,
-                treatment_name="General Consultation",
-                unit_cost=0.0,
-                quantity=1,
-                discount=0.0,
-                discount_type="",
-                type=None,
-                invoice_level_tax_discount=None,
-                tax_name=None,
-                tax_percent=None,
-                created_at=datetime.now(),
-                updated_at=datetime.now()
-            )
-            db.add(invoice_item)
-            db.commit()
-            items = [invoice_item]
-
+        
         # Generate PDF invoice
         try:
             invoice_data = {
-                "id": existing_invoice.id,
-                "date": existing_invoice.date or datetime.now(),
-                "patient_id": existing_invoice.patient_id,
-                "doctor_id": existing_invoice.doctor_id,
-                "patient_number": existing_invoice.patient_number,
-                "patient_name": existing_invoice.patient_name,
-                "doctor_name": existing_invoice.doctor_name,
-                "invoice_number": existing_invoice.invoice_number,
-                "notes": existing_invoice.notes,
-                "description": existing_invoice.description,
+                **existing_invoice.__dict__,
                 "doctor_phone": user.phone,
-                "doctor_email": user.email,
-
+                "doctor_email": user.email
             }
 
             invoice_items = [{
@@ -2754,17 +2905,50 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                     os.remove(existing_invoice.file_path)
                 except OSError:
                     pass
+                    
             existing_invoice.file_path = update_url(pdf_path, request)
             db.commit()
 
-            return JSONResponse(status_code=200, content={"message": "Invoice updated successfully"})
-
         except Exception as e:
-            # Log PDF generation error but don't fail the request
             print(f"Failed to generate PDF invoice: {str(e)}")
+            # Continue without PDF
 
-        return existing_invoice
+        # Update or create pending payment
+        payment = db.query(Payment).filter(Payment.invoice_id == invoice_id).first()
+        
+        payment_data = {
+            "date": datetime.now(),
+            "patient_id": existing_invoice.patient_id,
+            "doctor_id": existing_invoice.doctor_id,
+            "invoice_id": existing_invoice.id,
+            "patient_number": existing_invoice.patient_number,
+            "patient_name": existing_invoice.patient_name,
+            "treatment_name": existing_invoice.description,
+            "amount_paid": existing_invoice.total_amount,
+            "invoice_number": existing_invoice.invoice_number,
+            "notes": existing_invoice.notes,
+            "status": "pending"
+        }
 
+        if payment:
+            for key, value in payment_data.items():
+                setattr(payment, key, value)
+        else:
+            payment = Payment(**payment_data)
+            db.add(payment)
+            db.flush()
+            existing_invoice.payment_id = payment.id
+
+        db.commit()
+
+        return JSONResponse(status_code=200, content={
+            "message": "Invoice updated successfully",
+            "invoice_id": existing_invoice.id
+        })
+
+    except ValueError as e:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"message": str(e)})
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"message": f"Failed to update invoice: {str(e)}"})
