@@ -889,9 +889,9 @@ async def get_payments(
         # Get paginated payments
         payments = db.query(Payment)\
             .filter(Payment.doctor_id == user.id)\
+            .order_by(Payment.created_at.desc())\
             .offset(offset)\
             .limit(per_page)\
-            .order_by(Payment.created_at.desc())\
             .all()
 
         # Calculate statistics
@@ -941,6 +941,7 @@ async def get_payments(
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
+                "status": payment.status,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
             }
@@ -1135,6 +1136,7 @@ async def get_payments_by_patient_id(
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
+                "status": payment.status,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
             }
@@ -1232,6 +1234,7 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
             "refund_receipt_number": payment.refund_receipt_number,
             "refunded_amount": payment.refunded_amount,
             "cancelled": payment.cancelled,
+            "status": payment.status,
             "created_at": payment.created_at.isoformat() if payment.created_at else None,
             "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
         }
@@ -1319,6 +1322,7 @@ async def search_payments(
     patient_id: Optional[str] = None,
     patient_email: Optional[str] = None, 
     patient_name: Optional[str] = None,
+    invoice_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     date: Optional[datetime] = None,
@@ -1349,7 +1353,8 @@ async def search_payments(
                 query = query.filter(Payment.patient_id == patient.id)
         if patient_name:
             query = query.filter(Payment.patient_name.ilike(f"%{patient_name}%"))
-
+        if invoice_id:
+            query = query.filter(Payment.invoice_id == invoice_id)
         # Date filters
         if date:
             query = query.filter(Payment.date == date)
@@ -1386,7 +1391,7 @@ async def search_payments(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        payments = query.offset(offset).limit(per_page).order_by(Payment.created_at.desc()).all()
+        payments = query.order_by(Payment.created_at.desc()).offset(offset).limit(per_page).all()
         
         # Format response
         payments_list = []
@@ -1409,6 +1414,7 @@ async def search_payments(
                 "refund_receipt_number": payment.refund_receipt_number,
                 "refunded_amount": payment.refunded_amount,
                 "cancelled": payment.cancelled,
+                "status": payment.status,
                 "created_at": payment.created_at.isoformat() if payment.created_at else None,
                 "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
             }
