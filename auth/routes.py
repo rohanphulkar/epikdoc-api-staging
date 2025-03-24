@@ -10,7 +10,7 @@ from utils.auth import (
     verify_password, get_password_hash, generate_reset_token, verify_token
 )
 from utils.email import send_forgot_password_email
-from utils.send_otp import send_otp
+from utils.send_otp import send_otp, send_otp_email
 from gauthuserinfo import get_user_info
 import zipfile
 import os
@@ -255,16 +255,17 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
 @user_router.post("/login/otp",
     response_model=dict,
     status_code=200,
-    summary="Send OTP for phone login",
+    summary="Send OTP for phone/email login",
     description="""
-    Send OTP to user's registered phone number for login.
+    Send OTP to user's registered phone number or email for login.
     
     Required fields:
-    - phone: Registered phone number with country code
+    - phone: Registered phone number with country code (if using phone)
+    - email: Registered email address (if using email)
     
     Process:
     - Generates 4-digit OTP
-    - Sends OTP via SMS
+    - Sends OTP via SMS and/or email
     - OTP expires in 10 minutes
     """,
     responses={
@@ -277,10 +278,10 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
             }
         },
         400: {
-            "description": "Bad request",
+            "description": "Bad request", 
             "content": {
                 "application/json": {
-                    "example": {"error": "Phone number is required"}
+                    "example": {"error": "Either phone number or email is required"}
                 }
             }
         },
@@ -298,7 +299,10 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
                 "application/json": {
                     "examples": {
                         "sms_failed": {
-                            "value": {"error": "Failed to send OTP"}
+                            "value": {"error": "Failed to send OTP via SMS"}
+                        },
+                        "email_failed": {
+                            "value": {"error": "Failed to send OTP via email"}
                         },
                         "server_error": {
                             "value": {"error": "Internal server error"}
@@ -312,9 +316,14 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
 async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
     try:
         if not user.phone:
-            return JSONResponse(status_code=400, content={"error": "Phone number is required"})
+            return JSONResponse(status_code=400, content={"error": "Either phone number or email is required"})
         
-        db_user = db.query(User).filter(User.phone == user.phone).first()
+        # Find user by phone or email
+        query = db.query(User)
+        if user.phone:
+            query = query.filter(User.phone == user.phone)
+            
+        db_user = query.first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
@@ -324,10 +333,17 @@ async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_user)
         
-        if send_otp(user.phone, str(otp)):
+        sms_sent = True
+        email_sent = True
+        
+        if user.phone:
+            sms_sent = send_otp(user.phone, str(otp))
+            email_sent = send_otp_email(db_user.email, str(otp))
+            
+        if sms_sent or email_sent:
             return JSONResponse(status_code=200, content={"message": "OTP sent successfully"})
         else:
-            return JSONResponse(status_code=500, content={"error": "Failed to send OTP"})
+            return JSONResponse(status_code=500, content={"error": "Failed to send OTP via both SMS and email"})
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -3882,5 +3898,135 @@ async def get_doctor_list(
             }
         })
     
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+    
+@user_router.get("/dashboard",
+    response_model=dict,
+    status_code=200,
+    summary="Get dashboard statistics", 
+    description="""
+    Get comprehensive dashboard statistics for the authenticated user including:
+    - Patient statistics (total count, recent patients)
+    - Appointment metrics (today's appointments, upcoming, total count)
+    - Clinical data (total notes, recent activity)
+    - Financial overview (monthly earnings, recent transactions)
+    - Key performance indicators
+    """
+)
+async def get_dashboard(request: Request, clinic_id: Optional[str] = None, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        if clinic_id:
+            clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=404, content={"error": "Clinic not found"})
+
+        # Base query filters
+        base_filters = [Patient.doctor_id == user.id]
+        if clinic_id:
+            base_filters.append(Patient.clinic_id == clinic_id)
+
+        today = datetime.now().date()
+        current_month_start = today.replace(day=1)
+
+        # Patient Statistics
+        total_patients = db.query(Patient).filter(*base_filters).count()
+        recent_patients = db.query(Patient).filter(*base_filters).order_by(Patient.created_at.desc()).limit(10).all()
+        new_patients_this_month = db.query(Patient).filter(
+            *base_filters,
+            Patient.created_at >= current_month_start
+        ).count()
+
+        # Appointment Statistics
+        appointments_query = db.query(Appointment).filter(
+            Appointment.doctor_id == user.id,
+            *([Appointment.clinic_id == clinic_id] if clinic_id else [])
+        )
+        
+        total_appointments = appointments_query.count()
+        today_appointments = appointments_query.filter(
+            Appointment.appointment_date >= today,
+            Appointment.appointment_date < today + timedelta(days=1)
+        ).order_by(Appointment.appointment_date.asc()).all()
+        
+        upcoming_appointments = appointments_query.filter(
+            Appointment.appointment_date > today,
+            Appointment.status == AppointmentStatus.SCHEDULED
+        ).count()
+
+        # Clinical Notes Statistics
+        clinical_notes_query = db.query(ClinicalNote).filter(
+            ClinicalNote.doctor_id == user.id,
+            *([ClinicalNote.clinic_id == clinic_id] if clinic_id else [])
+        )
+        total_clinical_notes = clinical_notes_query.count()
+        recent_clinical_notes = clinical_notes_query.order_by(ClinicalNote.created_at.desc()).limit(5).count()
+        
+        # Financial Statistics
+        payments_query = db.query(Payment).filter(
+            Payment.doctor_id == user.id,
+            Payment.cancelled == False,
+            *([Payment.clinic_id == clinic_id] if clinic_id else [])
+        )
+        
+        monthly_payments = payments_query.filter(Payment.date >= current_month_start).all()
+        monthly_earnings = sum(payment.amount_paid or 0 for payment in monthly_payments)
+        
+        recent_transactions = payments_query.order_by(Payment.created_at.desc()).limit(10).all()
+        
+        # Calculate average daily earnings this month
+        days_in_month = (today - current_month_start).days + 1
+        avg_daily_earnings = monthly_earnings / days_in_month if days_in_month > 0 else 0
+
+        return JSONResponse(status_code=200, content={
+            "patient_statistics": {
+                "total_patients": total_patients,
+                "new_patients_this_month": new_patients_this_month,
+                "recent_patients": [{
+                    "id": patient.id,
+                    "name": patient.name,
+                    "mobile_number": patient.mobile_number,
+                    "email": patient.email,
+                    "gender": patient.gender.value,
+                    "created_at": patient.created_at.strftime("%Y-%m-%d %H:%M")
+                } for patient in recent_patients]
+            },
+            "appointment_statistics": {
+                "total_appointments": total_appointments,
+                "upcoming_appointments": upcoming_appointments,
+                "today_appointments": [{
+                    "id": appt.id,
+                    "patient_name": appt.patient_name,
+                    "time": appt.appointment_date.strftime("%H:%M"),
+                    "status": appt.status.value,
+                    "notes": appt.notes
+                } for appt in today_appointments]
+            },
+            "clinical_statistics": {
+                "total_notes": total_clinical_notes,
+                "recent_notes_count": recent_clinical_notes
+            },
+            "financial_statistics": {
+                "monthly_earnings": round(monthly_earnings, 2),
+                "average_daily_earnings": round(avg_daily_earnings, 2),
+                "recent_transactions": [{
+                    "date": payment.date.strftime("%Y-%m-%d %H:%M"),
+                    "patient_name": payment.patient_name,
+                    "amount": payment.amount_paid,
+                    "payment_mode": payment.payment_mode,
+                    "status": payment.status,
+                    "receipt_number": payment.receipt_number
+                } for payment in recent_transactions]
+            }
+        })
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
