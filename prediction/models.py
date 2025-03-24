@@ -15,7 +15,7 @@ class XRay(Base):
     prediction_id: Mapped[str] = mapped_column(String(36), ForeignKey("predictions.id"), nullable=True)
     patient: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
     doctor: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    clinic: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     original_image: Mapped[str] = mapped_column(String(500), nullable=False)
     predicted_image: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_annotated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -42,7 +42,7 @@ def calculate_age(date_of_birth: datetime) -> str:
     Create a new patient record in the system.
     
     Required fields:
-    - clinic_id: ID of the clinic where patient is being registered
+    - clinic_id: ID of the clinic where patient is being registered (optional)
     - name: Patient's full name
     - mobile_number: Primary contact number
     - gender: Patient's gender (male/female/other)
@@ -143,12 +143,13 @@ async def create_patient(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
-        if not clinic:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                content={"message": "You are not authorized to access this clinic"}
-            )
+        if patient.clinic_id:
+            clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
+            if not clinic:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED, 
+                    content={"message": "You are not authorized to access this clinic"}
+                )
         
         # calculate age
         age = calculate_age(patient.date_of_birth)
@@ -175,8 +176,10 @@ async def create_patient(
             referred_by=patient.referred_by,
             groups=patient.groups,
             patient_notes=patient.patient_notes,
-            clinic_id=patient.clinic_id
         )
+        
+        if patient.clinic_id:
+            new_patient.clinic_id = patient.clinic_id
 
         # Save to database
         db.add(new_patient)
@@ -1090,12 +1093,13 @@ async def update_patient(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
-        if not clinic:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                content={"message": "You are not authorized to access this clinic"}
-            )
+        if patient.clinic_id:
+            clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
+            if not clinic:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED, 
+                    content={"message": "You are not authorized to access this clinic"}
+                )
 
         # Update patient fields
         update_data = patient_update.dict(exclude_unset=True)
@@ -1187,7 +1191,7 @@ async def update_patient(
 async def delete_patient(
     request: Request,
     patient_id: str,
-    clinic_id: str,
+    clinic_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     try:
@@ -1209,12 +1213,13 @@ async def delete_patient(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
-        if not clinic:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                content={"message": "You are not authorized to access this clinic"}
-            )
+        if clinic_id:
+            clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+            if not clinic:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED, 
+                    content={"message": "You are not authorized to access this clinic"}
+                )
 
         # Delete all appointments for the patient
         db.query(Appointment).filter(Appointment.patient_id == patient_id).delete()

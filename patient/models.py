@@ -19,7 +19,7 @@ class Patient(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     mobile_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -51,8 +51,8 @@ class ClinicalNote(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
-    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     attachments: Mapped[List["ClinicalNoteAttachment"]] = relationship("ClinicalNoteAttachment", back_populates="clinical_note")

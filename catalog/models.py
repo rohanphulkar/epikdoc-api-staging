@@ -13,7 +13,7 @@ class ProcedureCatalog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
     treatment_cost: Mapped[str] = mapped_column(String(255), nullable=False, default="0")
     treatment_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -30,7 +30,7 @@ class TreatmentPlan(Base):
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 class Treatment(Base):
@@ -39,7 +39,7 @@ class Treatment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id'), nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
-    treatment_plan_id: Mapped[str] = mapped_column(String(36), ForeignKey("treatment_plans.id"), nullable=False)
+    treatment_plan_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("treatment_plans.id"), nullable=True)
     doctor: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     treatment_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from db.db import Base
 import uuid
-
+from typing import Optional
 def generate_uuid():
     return str(uuid.uuid4())
 
@@ -18,7 +18,7 @@ class Appointment(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     patient_number: Mapped[str] = mapped_column(String(50), nullable=True)
     patient_name: Mapped[str] = mapped_column(String(255), nullable=False)
     doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False) 

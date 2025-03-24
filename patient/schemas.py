@@ -4,7 +4,7 @@ from typing import Optional, List
 from .models import Gender
 
 class PatientCreateSchema(BaseModel):
-    clinic_id: str
+    clinic_id: Optional[str] = None
     name: str
     mobile_number: Optional[str] = None
     contact_number: Optional[str] = None
@@ -32,7 +32,7 @@ class PatientCreateSchema(BaseModel):
         from_attributes = True
 
 class PatientUpdateSchema(BaseModel):
-    clinic_id: str
+    clinic_id: Optional[str] = None
     patient_number: Optional[str] = None
     name: Optional[str] = None
     mobile_number: Optional[str] = None
