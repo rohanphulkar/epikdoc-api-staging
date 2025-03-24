@@ -791,7 +791,7 @@ async def set_default_clinic(request: Request, clinic_id: str, db: Session = Dep
         db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@user_router.patch("/clinic/update",
+@user_router.patch("/clinic/update/{clinic_id}",
     response_model=dict,
     status_code=200,
     summary="Update clinic details",
