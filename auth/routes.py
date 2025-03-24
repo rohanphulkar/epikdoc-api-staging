@@ -541,7 +541,7 @@ async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
                                 "city": "Anytown",
                                 "country": "USA",
                                 "phone": "+1234567890",
-                                "is_default": true
+                                "is_default": True
                             }
                         ],
                         "created_at": "2023-01-01T00:00:00",
