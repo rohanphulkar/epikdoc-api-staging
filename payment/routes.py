@@ -14,7 +14,7 @@ import os
 from datetime import datetime
 from sqlalchemy import func
 import random
-from catalog.models import TreatmentPlan, TreatmentPlanItem
+from catalog.models import TreatmentPlan
 from appointment.models import Appointment
 
 payment_router = APIRouter()
@@ -1246,54 +1246,136 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
 @payment_router.get("/search-payment",
     response_model=dict,
     status_code=200,
-    summary="Search and filter payments with statistics",
+    summary="Search and filter payments with comprehensive statistics",
     description="""
-    Search and filter payments using various criteria with pagination support and payment statistics.
+    Advanced search endpoint for payments with detailed filtering, pagination, sorting and statistics.
     
-    **Search Parameters (optional):**
-    - payment_id (UUID): Specific payment ID to search
-    - patient_id (UUID): Patient's unique identifier
-    - patient_email (str): Patient's registered email address
-    - patient_name (str): Full or partial name of the patient (case-insensitive)
+    **Search Filters:**
     
-    **Date Filter Parameters (optional):**
-    - start_date (YYYY-MM-DD): Start date for date range
-    - end_date (YYYY-MM-DD): End date for date range
-    - date (YYYY-MM-DD): Specific date to filter
+    Patient Related:
+    - patient_id (UUID): Filter by specific patient
+    - patient_email (str): Search by patient email (case-insensitive)
+    - patient_name (str): Search by full/partial patient name (case-insensitive)
     
-    **Pagination Parameters:**
-    - page (int, default=1): Page number for results
+    Payment Details:
+    - payment_id (UUID): Search by specific payment ID
+    - invoice_id (UUID): Filter by linked invoice
+    - payment_mode (str): Filter by payment method (cash/card etc)
+    - status (str): Filter by payment status
+    - receipt_number (str): Search by receipt number
+    - treatment_name (str): Filter by treatment name
+    
+    Amount Filters:
+    - min_amount (float): Filter payments >= minimum amount
+    - max_amount (float): Filter payments <= maximum amount
+    
+    Date Range Filters:
+    - date (YYYY-MM-DD): Filter by specific payment date
+    - start_date (YYYY-MM-DD): Filter payments from this date
+    - end_date (YYYY-MM-DD): Filter payments until this date
+    - created_after (YYYY-MM-DD): Filter by creation date >= this date
+    - created_before (YYYY-MM-DD): Filter by creation date <= this date
+    - updated_after (YYYY-MM-DD): Filter by last update >= this date
+    - updated_before (YYYY-MM-DD): Filter by last update <= this date
+    
+    Special Filters:
+    - refund (bool): Filter refunded payments (true/false)
+    - cancelled (bool): Filter cancelled payments (true/false)
+    
+    **Pagination & Sorting:**
+    - page (int, default=1): Page number for paginated results
     - per_page (int, default=10, max=100): Number of results per page
+    - sort_by (str, default="created_at"): Field to sort results by
+    - sort_order (str, default="desc"): Sort direction (asc/desc)
     
-    **Response Includes:**
-    - List of matching payments with full details
-    - Pagination metadata (total count, current page, total pages)
-    - Payment statistics:
-        - Today's total payments
-        - Current month's total payments
-        - Current year's total payments
-        - Overall total payments
+    **Response Format:**
+    ```json
+    {
+        "payments": [
+            {
+                "id": "uuid",
+                "date": "2023-01-01T10:00:00",
+                "patient_id": "uuid",
+                "doctor_id": "uuid",
+                "invoice_id": "uuid",
+                "patient_number": "P1234",
+                "patient_name": "John Doe",
+                "receipt_number": "R5678",
+                "treatment_name": "Dental Cleaning",
+                "amount_paid": 1000.00,
+                "invoice_number": "INV1234",
+                "notes": "Payment notes",
+                "payment_mode": "card",
+                "refund": false,
+                "refund_receipt_number": null,
+                "refunded_amount": 0.00,
+                "cancelled": false,
+                "status": "completed",
+                "created_at": "2023-01-01T10:00:00",
+                "updated_at": "2023-01-01T10:00:00"
+            }
+        ],
+        "pagination": {
+            "total": 50,
+            "page": 1,
+            "per_page": 10,
+            "total_pages": 5
+        },
+        "statistics": {
+            "today": {
+                "count": 5,
+                "total_amount": 5000.00
+            },
+            "this_month": {
+                "count": 25,
+                "total_amount": 25000.00
+            },
+            "this_year": {
+                "count": 150,
+                "total_amount": 150000.00
+            },
+            "overall": {
+                "count": 500,
+                "total_amount": 500000.00
+            }
+        }
+    }
+    ```
     
     **Authentication:**
-    - Requires valid doctor Bearer token
+    - Requires valid doctor Bearer token in Authorization header
+    - Results are scoped to authenticated doctor's payments only
     
     **Notes:**
-    - Results filtered to authenticated doctor's payments only
-    - Case-insensitive search for patient name
-    - Date filters can be combined or used individually
+    - All text searches are case-insensitive and support partial matching
+    - Date filters can be combined for custom date ranges
+    - Amount filters support decimal values
+    - Statistics include payment counts and amounts for different time periods
+    - Results are sorted by created_at in descending order by default
     """,
     responses={
         200: {
-            "description": "Search results with statistics retrieved successfully",
+            "description": "Successfully retrieved payments with statistics",
             "content": {
                 "application/json": {
                     "example": {
                         "payments": [
                             {
-                                "id": "uuid",
-                                "date": "2023-01-01",
+                                "id": "550e8400-e29b-41d4-a716-446655440000",
+                                "date": "2023-01-01T10:00:00",
+                                "patient_id": "uuid",
+                                "doctor_id": "uuid",
+                                "invoice_id": "uuid",
+                                "patient_number": "P1234",
                                 "patient_name": "John Doe",
+                                "receipt_number": "R5678",
+                                "treatment_name": "Dental Cleaning", 
                                 "amount_paid": 1000.00,
+                                "invoice_number": "INV1234",
+                                "payment_mode": "card",
+                                "status": "completed",
+                                "created_at": "2023-01-01T10:00:00",
+                                "updated_at": "2023-01-01T10:00:00"
                             }
                         ],
                         "pagination": {
@@ -1303,17 +1385,31 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
                             "total_pages": 5
                         },
                         "statistics": {
-                            "today": 5000.00,
-                            "month": 25000.00,
-                            "year": 150000.00,
-                            "overall": 500000.00
+                            "today": {"count": 5, "total_amount": 5000.00},
+                            "this_month": {"count": 25, "total_amount": 25000.00},
+                            "this_year": {"count": 150, "total_amount": 150000.00},
+                            "overall": {"count": 500, "total_amount": 500000.00}
                         }
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing token"},
-        500: {"description": "Internal server error"}
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error occurred"}
+                }
+            }
+        }
     }
 )
 async def search_payments(
@@ -1323,11 +1419,25 @@ async def search_payments(
     patient_email: Optional[str] = None, 
     patient_name: Optional[str] = None,
     invoice_id: Optional[str] = None,
+    payment_mode: Optional[str] = None,
+    status: Optional[str] = None,
+    receipt_number: Optional[str] = None,
+    treatment_name: Optional[str] = None,
+    refund: Optional[bool] = None,
+    cancelled: Optional[bool] = None,
+    min_amount: Optional[float] = None,
+    max_amount: Optional[float] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     date: Optional[datetime] = None,
+    created_after: Optional[datetime] = None,
+    created_before: Optional[datetime] = None,
+    updated_after: Optional[datetime] = None,
+    updated_before: Optional[datetime] = None,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query(default="created_at", description="Field to sort by"),
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -1342,28 +1452,55 @@ async def search_payments(
         # Base query
         query = db.query(Payment).filter(Payment.doctor_id == user.id)
 
-        # Apply filters
+        # Apply independent filters
         if payment_id:
             query = query.filter(Payment.id == payment_id)
         if patient_id:
             query = query.filter(Payment.patient_id == patient_id)
         if patient_email:
-            patient = db.query(Patient).filter(Patient.email == patient_email).first()
+            patient = db.query(Patient).filter(Patient.email.ilike(f"%{patient_email}%")).first()
             if patient:
                 query = query.filter(Payment.patient_id == patient.id)
         if patient_name:
             query = query.filter(Payment.patient_name.ilike(f"%{patient_name}%"))
         if invoice_id:
             query = query.filter(Payment.invoice_id == invoice_id)
+        if payment_mode:
+            query = query.filter(Payment.payment_mode.ilike(f"%{payment_mode}%"))
+        if status:
+            query = query.filter(Payment.status.ilike(f"%{status}%"))
+        if receipt_number:
+            query = query.filter(Payment.receipt_number.ilike(f"%{receipt_number}%"))
+        if treatment_name:
+            query = query.filter(Payment.treatment_name.ilike(f"%{treatment_name}%"))
+        if refund is not None:
+            query = query.filter(Payment.refund == refund)
+        if cancelled is not None:
+            query = query.filter(Payment.cancelled == cancelled)
+            
+        # Amount filters
+        if min_amount is not None:
+            query = query.filter(Payment.amount_paid >= min_amount)
+        if max_amount is not None:
+            query = query.filter(Payment.amount_paid <= max_amount)
+
         # Date filters
         if date:
-            query = query.filter(Payment.date == date)
-        elif start_date and end_date:
-            query = query.filter(Payment.date.between(start_date, end_date))
-        elif start_date:
+            query = query.filter(func.date(Payment.date) == date.date())
+        if start_date:
             query = query.filter(Payment.date >= start_date)
-        elif end_date:
+        if end_date:
             query = query.filter(Payment.date <= end_date)
+            
+        # Created/Updated filters    
+        if created_after:
+            query = query.filter(Payment.created_at >= created_after)
+        if created_before:
+            query = query.filter(Payment.created_at <= created_before)
+        if updated_after:
+            query = query.filter(Payment.updated_at >= updated_after)
+        if updated_before:
+            query = query.filter(Payment.updated_at <= updated_before)
 
         # Get statistics
         today = datetime.now().date()
@@ -1373,7 +1510,7 @@ async def search_payments(
         stats = {
             "today": db.query(func.sum(Payment.amount_paid)).filter(
                 Payment.doctor_id == user.id,
-                Payment.date == today
+                func.date(Payment.date) == today
             ).scalar() or 0,
             "month": db.query(func.sum(Payment.amount_paid)).filter(
                 Payment.doctor_id == user.id,
@@ -1388,10 +1525,17 @@ async def search_payments(
             ).scalar() or 0
         }
 
+        # Apply sorting
+        sort_column = getattr(Payment, sort_by)
+        if sort_order == "desc":
+            query = query.order_by(sort_column.desc())
+        else:
+            query = query.order_by(sort_column.asc())
+
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        payments = query.order_by(Payment.created_at.desc()).offset(offset).limit(per_page).all()
+        payments = query.offset(offset).limit(per_page).all()
         
         # Format response
         payments_list = []

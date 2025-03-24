@@ -6,7 +6,7 @@ from db.db import get_db
 from auth.models import User
 from fastapi.responses import JSONResponse
 from utils.auth import verify_token
-from sqlalchemy import insert, select, update, delete, func
+from sqlalchemy import select, func
 import os
 from sqlalchemy.exc import SQLAlchemyError
 from PIL import Image
@@ -17,12 +17,13 @@ from datetime import datetime, time
 from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
-from catalog.models import Treatment, TreatmentPlan, TreatmentPlanItem
+from catalog.models import Treatment, TreatmentPlan
 from sqlalchemy import case
 from payment.models import Payment, Invoice, InvoiceItem
 from appointment.models import Appointment
 from catalog.models import *
 from prediction.models import *
+from auth.models import Clinic
 
 patient_router = APIRouter()
 
@@ -41,6 +42,7 @@ def calculate_age(date_of_birth: datetime) -> str:
     Create a new patient record in the system.
     
     Required fields:
+    - clinic_id: ID of the clinic where patient is being registered
     - name: Patient's full name
     - mobile_number: Primary contact number
     - gender: Patient's gender (male/female/other)
@@ -48,11 +50,21 @@ def calculate_age(date_of_birth: datetime) -> str:
     - date_of_birth: Date of birth in YYYY-MM-DD format
     
     Optional fields:
-    - secondary_mobile: Alternative contact number
+    - secondary_mobile: Alternative contact number 
+    - contact_number: Additional contact number
     - address: Full residential address
-    - blood_group: Blood group
+    - locality: Area/neighborhood
+    - city: City name
+    - pincode: Postal code
+    - national_id: Government ID number
+    - abha_id: ABHA health ID
+    - blood_group: Blood group (A+, B+, AB+, O+, A-, B-, AB-, O-)
+    - occupation: Patient's profession
+    - relationship: Relationship status
     - medical_history: Previous medical conditions
-    - remarks: Additional notes
+    - referred_by: Referral source
+    - groups: Patient groups/categories
+    - patient_notes: Additional clinical notes
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -64,7 +76,16 @@ def calculate_age(date_of_birth: datetime) -> str:
                 "application/json": {
                     "example": {
                         "message": "Patient created successfully",
-                        "patient_id": "uuid"
+                        "patient": {
+                            "id": "uuid",
+                            "name": "John Doe",
+                            "mobile_number": "+1234567890",
+                            "email": "john@example.com",
+                            "gender": "male",
+                            "age": "45",
+                            "clinic_id": "clinic-uuid",
+                            "doctor_id": "doctor-uuid"
+                        }
                     }
                 }
             }
@@ -73,7 +94,14 @@ def calculate_age(date_of_birth: datetime) -> str:
             "description": "Invalid request data or database error",
             "content": {
                 "application/json": {
-                    "example": {"message": "Database error: [error details]"}
+                    "examples": {
+                        "invalid_data": {
+                            "value": {"message": "Invalid data: Missing required fields"}
+                        },
+                        "db_error": {
+                            "value": {"message": "Database error: [error details]"}
+                        }
+                    }
                 }
             }
         },
@@ -81,7 +109,14 @@ def calculate_age(date_of_birth: datetime) -> str:
             "description": "Unauthorized - Invalid or missing authentication token",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized"}
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid authentication token"}
+                        },
+                        "unauthorized_clinic": {
+                            "value": {"message": "You are not authorized to access this clinic"}
+                        }
+                    }
                 }
             }
         },
@@ -96,7 +131,7 @@ def calculate_age(date_of_birth: datetime) -> str:
     }
 )
 async def create_patient(
-    request: Request, 
+    request: Request,
     patient: PatientCreateSchema, 
     db: Session = Depends(get_db)
 ):
@@ -110,6 +145,14 @@ async def create_patient(
                 content={"message": "Unauthorized"}
             )
         
+        # check if clinic is associated with the doctor
+        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
+        if not clinic:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "You are not authorized to access this clinic"}
+            )
+        
         # calculate age
         age = calculate_age(patient.date_of_birth)
         
@@ -121,7 +164,21 @@ async def create_patient(
             gender=patient.gender,
             email=patient.email,
             date_of_birth=patient.date_of_birth,
-            age=age
+            age=age,
+            address=patient.address,
+            locality=patient.locality,
+            city=patient.city,
+            pincode=patient.pincode,
+            national_id=patient.national_id,
+            abha_id=patient.abha_id,
+            blood_group=patient.blood_group,
+            occupation=patient.occupation,
+            relationship=patient.relationship,
+            medical_history=patient.medical_history,
+            referred_by=patient.referred_by,
+            groups=patient.groups,
+            patient_notes=patient.patient_notes,
+            clinic_id=patient.clinic_id
         )
 
         # Save to database
@@ -301,6 +358,7 @@ async def get_all_patients(
             patient_dict = {
                 "id": patient.id,
                 "doctor_id": patient.doctor_id,
+                "clinic_id": patient.clinic_id,
                 "patient_number": patient.patient_number,
                 "name": patient.name,
                 "mobile_number": patient.mobile_number,
@@ -313,11 +371,13 @@ async def get_all_patients(
                 "city": patient.city,
                 "pincode": patient.pincode,
                 "national_id": patient.national_id,
+                "abha_id": patient.abha_id,
                 "date_of_birth": patient.date_of_birth,
                 "age": patient.age,
                 "anniversary_date": patient.anniversary_date,
                 "blood_group": patient.blood_group,
-                "remarks": patient.remarks,
+                "occupation": patient.occupation,
+                "relationship": patient.relationship,
                 "medical_history": patient.medical_history,
                 "referred_by": patient.referred_by,
                 "groups": patient.groups,
@@ -452,6 +512,7 @@ async def get_patient_by_id(
         patient_data = {
             "id": patient.id,
             "doctor_id": patient.doctor_id,
+            "clinic_id": patient.clinic_id,
             "patient_number": patient.patient_number,
             "name": patient.name,
             "mobile_number": patient.mobile_number,
@@ -464,11 +525,13 @@ async def get_patient_by_id(
             "city": patient.city,
             "pincode": patient.pincode,
             "national_id": patient.national_id,
+            "abha_id": patient.abha_id,
             "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
             "age": patient.age,
             "anniversary_date": patient.anniversary_date.isoformat() if patient.anniversary_date else None,
-            "blood_group": patient.blood_group,
-            "remarks": patient.remarks,
+            "blood_group": patient.blood_group.value if patient.blood_group else None,
+            "occupation": patient.occupation,
+            "relationship": patient.relationship.value if patient.relationship else None,
             "medical_history": patient.medical_history,
             "referred_by": patient.referred_by,
             "groups": patient.groups,
@@ -536,15 +599,15 @@ async def get_patient_by_id(
                     "amount": item.amount,
                     "treatment_description": item.treatment_description,
                     "tooth_diagram": item.tooth_diagram,
-                } for item in db.query(TreatmentPlanItem)
-                .filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
+                } for item in db.query(Treatment)
+                .filter(Treatment.treatment_plan_id == treatment_plan.id)
             ]
 
             treatment_plan_data["items"] = treatment_plan_items
 
             treatment_plans.append(treatment_plan_data)
 
-        for clinical_note in patient.clinical_notes:
+        for clinical_note in db_clinical_notes:
             clinical_note_data = {
                 "id": clinical_note.id,
                 "complaint": clinical_note.complaint,
@@ -630,12 +693,23 @@ async def get_patient_by_id(
     status_code=status.HTTP_200_OK,
     summary="Search patients by multiple criteria with statistics",
     description="""
-    Search for patients using various filters and get statistics:
+    Search and filter patients using any combination of fields:
     
-    Filters:
-    - Text search: Search in patient name, mobile number, ID, or email
-    - Gender: Filter by male/female/other/all
-    - Age range: Filter by minimum and maximum age
+    All fields support independent search/filter:
+    - Patient details: name, patient_number
+    - Contact info: mobile_number, contact_number, email, secondary_mobile
+    - IDs: national_id, abha_id
+    - Location: address, locality, city, pincode
+    - Demographics: gender, age, blood_group
+    - Dates: date_of_birth, anniversary_date, created_at
+    - Other: occupation, relationship, medical_history, referred_by, groups, patient_notes
+    
+    Search behavior:
+    - Text fields use partial matching (contains)
+    - Dates support range filtering (before/after)
+    - Exact matching for: gender, blood_group, relationship
+    - Numeric range for age (min/max)
+    - All filters are optional and can be combined
     
     Statistics returned:
     - Today: Number of patients added today
@@ -644,13 +718,10 @@ async def get_patient_by_id(
     - Overall: Total number of patients
     
     Query parameters:
-    - search_query: Text to search in name/mobile/ID/email
-    - gender: Filter by gender (male/female/other/all)
-    - min_age: Minimum age filter
-    - max_age: Maximum age filter
+    - All patient fields support filtering
     - page: Page number for pagination
     - per_page: Number of items per page
-    - sort_by: Sort field (name, created_at, etc)
+    - sort_by: Sort field (any patient field)
     - sort_order: Sort direction (asc/desc)
     
     Required headers:
@@ -706,10 +777,34 @@ async def get_patient_by_id(
 )
 async def search_patients(
     request: Request,
-    search_query: Optional[str] = None,
-    gender: Optional[str] = None,
+    name: Optional[str] = None,
+    patient_number: Optional[str] = None,
+    mobile_number: Optional[str] = None,
+    contact_number: Optional[str] = None,
+    email: Optional[str] = None,
+    secondary_mobile: Optional[str] = None,
+    national_id: Optional[str] = None,
+    abha_id: Optional[str] = None,
+    address: Optional[str] = None,
+    locality: Optional[str] = None,
+    city: Optional[str] = None,
+    pincode: Optional[str] = None,
+    gender: Optional[Gender] = None,
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
+    blood_group: Optional[BloodGroup] = None,
+    date_of_birth_after: Optional[datetime] = None,
+    date_of_birth_before: Optional[datetime] = None,
+    anniversary_date_after: Optional[datetime] = None,
+    anniversary_date_before: Optional[datetime] = None,
+    created_at_after: Optional[datetime] = None,
+    created_at_before: Optional[datetime] = None,
+    occupation: Optional[str] = None,
+    relationship: Optional[Relationship] = None,
+    medical_history: Optional[str] = None,
+    referred_by: Optional[str] = None,
+    groups: Optional[str] = None,
+    patient_notes: Optional[str] = None,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="created_at", description="Field to sort by"),
@@ -724,36 +819,69 @@ async def search_patients(
         # Base query
         query = select(Patient).filter(Patient.doctor_id == doctor_id)
         
-        # Add search filters if search_query provided
-        if search_query:
-            from sqlalchemy import or_
-            query = query.filter(
-                or_(
-                    Patient.name.ilike(f"%{search_query}%"),
-                    Patient.mobile_number.ilike(f"%{search_query}%"),
-                    Patient.id.ilike(f"%{search_query}%"),
-                    Patient.email.ilike(f"%{search_query}%")
-                )
-            )
-            
-        # Add gender filter if provided
+        # Add filters for each field if provided
+        if name:
+            query = query.filter(Patient.name.ilike(f"%{name}%"))
+        if patient_number:
+            query = query.filter(Patient.patient_number.ilike(f"%{patient_number}%"))
+        if mobile_number:
+            query = query.filter(Patient.mobile_number.ilike(f"%{mobile_number}%"))
+        if contact_number:
+            query = query.filter(Patient.contact_number.ilike(f"%{contact_number}%"))
+        if email:
+            query = query.filter(Patient.email.ilike(f"%{email}%"))
+        if secondary_mobile:
+            query = query.filter(Patient.secondary_mobile.ilike(f"%{secondary_mobile}%"))
+        if national_id:
+            query = query.filter(Patient.national_id.ilike(f"%{national_id}%"))
+        if abha_id:
+            query = query.filter(Patient.abha_id.ilike(f"%{abha_id}%"))
+        if address:
+            query = query.filter(Patient.address.ilike(f"%{address}%"))
+        if locality:
+            query = query.filter(Patient.locality.ilike(f"%{locality}%"))
+        if city:
+            query = query.filter(Patient.city.ilike(f"%{city}%"))
+        if pincode:
+            query = query.filter(Patient.pincode.ilike(f"%{pincode}%"))
         if gender:
-            if gender == "male":
-                query = query.filter(Patient.gender == Gender.MALE)
-            elif gender == "female":
-                query = query.filter(Patient.gender == Gender.FEMALE)
-            elif gender == "other":
-                query = query.filter(Patient.gender == Gender.OTHER)
-            elif gender == "all":
-                pass
-            
-        # Add age filter if provided
+            query = query.filter(Patient.gender == gender)
+        if blood_group:
+            query = query.filter(Patient.blood_group == blood_group)
+        if occupation:
+            query = query.filter(Patient.occupation.ilike(f"%{occupation}%"))
+        if relationship:
+            query = query.filter(Patient.relationship == relationship)
+        if medical_history:
+            query = query.filter(Patient.medical_history.ilike(f"%{medical_history}%"))
+        if referred_by:
+            query = query.filter(Patient.referred_by.ilike(f"%{referred_by}%"))
+        if groups:
+            query = query.filter(Patient.groups.ilike(f"%{groups}%"))
+        if patient_notes:
+            query = query.filter(Patient.patient_notes.ilike(f"%{patient_notes}%"))
+
+        # Add age range filter
         if min_age:
             from sqlalchemy import cast, Integer
             query = query.filter(cast(Patient.age, Integer) >= min_age)
         if max_age:
             from sqlalchemy import cast, Integer
             query = query.filter(cast(Patient.age, Integer) <= max_age)
+
+        # Add date range filters
+        if date_of_birth_after:
+            query = query.filter(Patient.date_of_birth >= date_of_birth_after)
+        if date_of_birth_before:
+            query = query.filter(Patient.date_of_birth <= date_of_birth_before)
+        if anniversary_date_after:
+            query = query.filter(Patient.anniversary_date >= anniversary_date_after)
+        if anniversary_date_before:
+            query = query.filter(Patient.anniversary_date <= anniversary_date_before)
+        if created_at_after:
+            query = query.filter(Patient.created_at >= created_at_after)
+        if created_at_before:
+            query = query.filter(Patient.created_at <= created_at_before)
 
         # Add sorting
         sort_column = getattr(Patient, sort_by)
@@ -780,7 +908,7 @@ async def search_patients(
         today_start = datetime.combine(today, time.min)
         today_end = datetime.combine(today, time.max)
 
-        # Simplified statistics queries
+        # Statistics queries
         total_count = db.execute(
             select(func.count(Patient.id))
             .where(Patient.doctor_id == doctor_id)
@@ -931,6 +1059,14 @@ async def update_patient(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"message": "Patient not found"}
             )
+        
+        # check if clinic is associated with the doctor
+        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+        if not clinic:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "You are not authorized to access this clinic"}
+            )
 
         # Update patient fields
         update_data = patient_update.dict(exclude_unset=True)
@@ -962,7 +1098,7 @@ async def update_patient(
         )
 
 @patient_router.delete(
-    "/delete/{patient_id}",
+    "/delete/{patient_id}/{clinic_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete patient record",
     description="""
@@ -1022,6 +1158,7 @@ async def update_patient(
 async def delete_patient(
     request: Request,
     patient_id: str,
+    clinic_id: str,
     db: Session = Depends(get_db)
 ):
     try:
@@ -1040,6 +1177,14 @@ async def delete_patient(
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"message": "Patient not found"}
+            )
+        
+        # check if clinic is associated with the doctor
+        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+        if not clinic:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "You are not authorized to access this clinic"}
             )
 
         # Delete all appointments for the patient
@@ -1060,11 +1205,6 @@ async def delete_patient(
 
         # Delete all treatments
         db.query(Treatment).filter(Treatment.patient_id == patient_id).delete()
-        db.query(TreatmentPlanItem).filter(
-            TreatmentPlanItem.treatment_plan_id.in_(
-                db.query(TreatmentPlan.id).filter(TreatmentPlan.patient_id == patient_id)
-            )
-        ).delete()
         db.query(TreatmentPlan).filter(TreatmentPlan.patient_id == patient_id).delete()
 
         # Delete all X-rays and predictions
@@ -1227,6 +1367,7 @@ async def delete_patient(
 async def create_clinical_note(
     request: Request,
     patient_id: str,
+    clinic_id: str,
     complaints: str = Form(...),
     diagnoses: str = Form(...),
     vital_signs: str = Form(...),
@@ -1251,10 +1392,20 @@ async def create_clinical_note(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"message": "Patient not found"}
             )
+        
+        # check if clinic is associated with the doctor
+        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+        if not clinic:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "You are not authorized to access this clinic"}
+            )
 
         # Create medical record
         clinical_note_db = ClinicalNote(
             patient_id=patient.id,
+            clinic_id=clinic_id,
+            doctor_id=decoded_token.get("user_id"),
             notes=notes
         )
 

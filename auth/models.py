@@ -1,10 +1,11 @@
-from sqlalchemy import String, DateTime, Boolean, Table, ForeignKey, Column, Float, Text, Enum as SQLAlchemyEnum
+from sqlalchemy import String, DateTime, Boolean, Table, ForeignKey, Column, Float, Text, Enum as SQLAlchemyEnum, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.db import Base
 from datetime import datetime
 import uuid
 from typing import Optional, List
 import enum
+
 # Association table for self-referential many-to-many relationship
 doctors_created = Table(
     'doctors_created',
@@ -19,6 +20,14 @@ user_permissions = Table(
     Base.metadata,
     Column('user_id', String(36), ForeignKey('users.id'), primary_key=True),
     Column('permission_id', String(36), ForeignKey('permissions.id'), primary_key=True)
+)
+
+# Association table for doctors and clinics
+doctor_clinics = Table(
+    'doctor_clinics',
+    Base.metadata,
+    Column('doctor_id', String(36), ForeignKey('users.id'), primary_key=True),
+    Column('clinic_id', String(36), ForeignKey('clinics.id'), primary_key=True)
 )
 
 def generate_uuid():
@@ -49,7 +58,10 @@ class User(Base):
     user_type: Mapped[str] = mapped_column(String(255), nullable=False, default="doctor")
     reset_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     reset_token_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    otp: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    otp_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    default_clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -69,14 +81,43 @@ class User(Base):
         backref="users"
     )
 
+    # Relationship with clinics (for doctors)
+    clinics: Mapped[List["Clinic"]] = relationship(
+        "Clinic",
+        secondary=doctor_clinics,
+        back_populates="doctors"
+    )
+
+    # Default clinic relationship
+    default_clinic: Mapped[Optional["Clinic"]] = relationship("Clinic", foreign_keys=[default_clinic_id])
 
     # Relationship with ImportLog
     import_logs: Mapped[List["ImportLog"]] = relationship("ImportLog", back_populates="user")
 
     def __repr__(self):
         return f"<User {self.email}>"
-    
 
+
+class Clinic(Base):
+    __tablename__ = "clinics"
+
+    id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=generate_uuid, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    speciality: Mapped[str] = mapped_column(String(255), nullable=False)
+    address: Mapped[str] = mapped_column(Text, nullable=True)
+    city: Mapped[str] = mapped_column(String(255), nullable=True)
+    country: Mapped[str] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str] = mapped_column(String(255), nullable=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # Relationship with doctors
+    doctors: Mapped[List[User]] = relationship(
+        "User",
+        secondary=doctor_clinics,
+        back_populates="clinics"
+    )
 
 
 class ImportStatus(enum.Enum):
@@ -90,6 +131,7 @@ class ImportLog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     zip_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[ImportStatus] = mapped_column(SQLAlchemyEnum(ImportStatus), nullable=False)
@@ -98,4 +140,3 @@ class ImportLog(Base):
 
     # Relationship with User
     user: Mapped["User"] = relationship("User", back_populates="import_logs")
-

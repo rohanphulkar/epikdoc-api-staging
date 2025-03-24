@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Query
 from db.db import get_db
 from sqlalchemy.orm import Session
-from .models import User, ImportLog, ImportStatus
+from .models import User, ImportLog, ImportStatus, Clinic
 from .schemas import *
 from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
@@ -10,6 +10,7 @@ from utils.auth import (
     verify_password, get_password_hash, generate_reset_token, verify_token
 )
 from utils.email import send_forgot_password_email
+from utils.send_otp import send_otp
 from gauthuserinfo import get_user_info
 import zipfile
 import os
@@ -25,6 +26,7 @@ from math import ceil
 from sqlalchemy import func
 from collections import defaultdict
 from suggestion.models import *
+import random
 
 
 user_router = APIRouter()
@@ -132,6 +134,22 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
+
+        # Create default clinic for the user
+        default_clinic = Clinic(
+            name=f"{new_user.name}'s Clinic",
+            speciality="General",
+            email=new_user.email,
+            phone=new_user.phone
+        )
+        db.add(default_clinic)
+        db.commit()
+        db.refresh(default_clinic)
+
+        # Associate clinic with user
+        new_user.clinics.append(default_clinic)
+        new_user.default_clinic_id = default_clinic.id
+        db.commit()
         
         return JSONResponse(status_code=201, content={"message": "User created successfully"})
         
@@ -224,7 +242,104 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
         return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@user_router.post("/login/otp",
+    response_model=dict,
+    status_code=200,
+    summary="Send OTP to user's phone number",
+    description="""
+    Send OTP to user's phone number.
+    """,
+)
+async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
+    try:
+        if not user.phone:
+            return JSONResponse(status_code=400, content={"error": "Phone number is required"})
+        
+        db_user = db.query(User).filter(User.phone == user.phone).first()
+        if not db_user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        otp = random.randint(1000, 9999)
+        setattr(db_user, 'otp', otp)
+        setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
+        db.commit()
+        db.refresh(db_user)
+        
+        if send_otp(user.phone, str(otp)):
+            return JSONResponse(status_code=200, content={"message": "OTP sent successfully"})
+        else:
+            return JSONResponse(status_code=500, content={"error": "Failed to send OTP"})
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
+@user_router.post("/login/otp/resend",
+    response_model=dict,
+    status_code=200,
+    summary="Resend OTP to user's phone number",
+    description="""
+    Resend OTP to user's phone number.
+    """,
+)
+async def resend_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
+    try:
+        if not user.phone:
+            return JSONResponse(status_code=400, content={"error": "Phone number is required"})
+        
+        db_user = db.query(User).filter(User.phone == user.phone).first()
+        if not db_user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        otp = random.randint(1000, 9999)
+        setattr(db_user, 'otp', otp)
+        setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
+        db.commit()
+        db.refresh(db_user)
+        
+        if send_otp(user.phone, str(otp)):
+            return JSONResponse(status_code=200, content={"message": "OTP resent successfully"})
+        else:
+            return JSONResponse(status_code=500, content={"error": "Failed to resend OTP"})
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@user_router.post("/login/otp/verify",
+    response_model=dict,
+    status_code=200,
+    summary="Verify OTP",
+    description="""
+    Verify OTP.
+    """,
+)
+async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
+    try:
+        if not user.otp:
+            return JSONResponse(status_code=400, content={"error": "OTP is required"})
+        
+        db_user = db.query(User).filter(User.otp == user.otp).first()
+        if not db_user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        if db_user.otp_expiry and db_user.otp_expiry < datetime.now():
+            return JSONResponse(status_code=400, content={"error": "OTP expired"})
+        
+        if db_user.otp != user.otp:
+            return JSONResponse(status_code=400, content={"error": "Invalid OTP"})
+        
+        # Reset OTP and expiry after successful verification
+        setattr(db_user, 'otp', None)
+        setattr(db_user, 'otp_expiry', None)
+        db.commit()
+        db.refresh(db_user)
+        
+        jwt_token = signJWT(str(db_user.id))
+        return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful"})
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+        
 @user_router.get("/profile", 
     response_model=UserResponse,
     status_code=200,
@@ -252,7 +367,18 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
                         "email": "john@example.com", 
                         "phone": "+1234567890",
                         "bio": "Doctor specializing in pediatrics",
-                        "profile_pic": "http://example.com/uploads/profile.jpg"
+                        "profile_pic": "http://example.com/uploads/profile.jpg",
+                        "clinics": [
+                            {
+                                "id": "550e8400-e29b-41d4-a716-446655440000",
+                                "name": "Clinic 1",
+                                "speciality": "Pediatrics",
+                                "address": "123 Main St, Anytown, USA",
+                                "city": "Anytown",
+                                "country": "USA",
+                                "phone": "+1234567890"
+                            }
+                        ]
                     }
                 }
             }
@@ -289,14 +415,186 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
             "bio": user.bio,
         }
 
+        clinics = user.clinics
+        clinics_data = []
+        for clinic in clinics:
+            is_default = False
+            if clinic.id == user.default_clinic_id:
+                is_default = True
+            clinics_data.append({
+                "id": str(clinic.id),
+                "name": clinic.name,
+                "speciality": clinic.speciality,
+                "address": clinic.address,
+                "city": clinic.city,
+                "country": clinic.country,
+                "phone": clinic.phone,
+                "is_default": is_default
+            })
+
         if user.profile_pic:
             profile_pic = f"{request.base_url}{user.profile_pic}"
             user_data["profile_pic"] = profile_pic
         else:
             user_data["profile_pic"] = None
         
+        user_data["clinics"] = clinics_data
+        user_data["created_at"] = user.created_at.isoformat()
+        user_data["updated_at"] = user.updated_at.isoformat()
+
+
         return JSONResponse(status_code=200, content=user_data)
     except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@user_router.post("/clinic/create",
+    response_model=dict,
+    status_code=200,
+    summary="Create clinic",
+    description="""
+    Create clinic.
+    """,
+)
+async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        # Check if user is already associated with a clinic with the same details
+        existing_clinic = db.query(Clinic).filter(
+            Clinic.name == clinic.name,
+            Clinic.address == clinic.address,
+            Clinic.city == clinic.city,
+            Clinic.country == clinic.country,
+            Clinic.doctors.any(User.id == user.id)
+        ).first()
+        
+        if existing_clinic:
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "You are already associated with this clinic"}
+            )
+        
+        new_clinic = Clinic(
+            name=clinic.name,
+            speciality=clinic.speciality,
+            address=clinic.address,
+            city=clinic.city,
+            country=clinic.country,
+            phone=clinic.phone,
+            email=clinic.email
+        )
+        db.add(new_clinic)
+        db.commit()
+        db.refresh(new_clinic)
+        
+        # Add the relationship after clinic is created
+        new_clinic.doctors.append(user)
+        db.commit()
+        
+        return JSONResponse(status_code=200, content={"message": "Clinic created successfully"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+
+@user_router.get("/set-default-clinic",
+    response_model=dict,
+    status_code=200,
+    summary="Set default clinic",
+    description="""
+    Set default clinic.
+    """,
+)
+async def set_default_clinic(request: Request, clinic_id: str, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+        if not clinic:
+            return JSONResponse(status_code=404, content={"error": "Clinic not found"})
+        
+        user.default_clinic_id = clinic_id
+        db.commit()
+        db.refresh(user)
+        
+        return JSONResponse(status_code=200, content={"message": "Default clinic set successfully"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@user_router.patch("/clinic/update",
+    response_model=dict,
+    status_code=200,
+    summary="Update clinic",
+    description="""
+    Update clinic.
+    """,
+)
+async def update_clinic(request: Request,clinic_id: str, clinic: ClinicUpdateSchema, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        existing_clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+        if not existing_clinic:
+            return JSONResponse(status_code=404, content={"error": "Clinic not found"})
+        
+        if clinic.name:
+            existing_clinic.name = clinic.name
+        if clinic.speciality:
+            existing_clinic.speciality = clinic.speciality
+        if clinic.address:
+            existing_clinic.address = clinic.address
+        if clinic.city:
+            existing_clinic.city = clinic.city
+        if clinic.country:
+            existing_clinic.country = clinic.country
+        if clinic.phone:
+            existing_clinic.phone = clinic.phone
+        if clinic.email:
+            existing_clinic.email = clinic.email
+        
+        db.commit()
+        db.refresh(existing_clinic)
+        
+        return JSONResponse(status_code=200, content={"message": "Clinic updated successfully"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@user_router.delete("/clinic/delete",
+    response_model=dict,
+    status_code=200,
+    summary="Delete clinic",
+    description="""
+    Delete clinic.
+    """,
+)
+async def delete_clinic(request: Request, clinic_id: str, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        clinic = db.query(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id)).first()
+        if not clinic:
+            return JSONResponse(status_code=404, content={"error": "Clinic not found"})
+        
+        db.delete(clinic)
+        db.commit()
+        
+        return JSONResponse(status_code=200, content={"message": "Clinic deleted successfully"})
+    except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @user_router.get("/created-doctors",
@@ -452,7 +750,7 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
         reset_token = generate_reset_token()
-        reset_link = f"{request.headers.get('origin') or request.base_url}/user/reset-password?token={reset_token}"
+        reset_link = f"{request.headers.get('origin') or request.base_url}user/reset-password?token={reset_token}"
         
         setattr(db_user, 'reset_token', reset_token)
         setattr(db_user, 'reset_token_expiry', datetime.now() + timedelta(hours=3))
@@ -1652,7 +1950,7 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog data: {str(e)}"})
 
-async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str):
+async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str, clinic_id: str):
     try:
         print(f"Starting background processing for file: {file_path}")
         import_log = db.query(ImportLog).filter(ImportLog.id == import_log_id).first()
@@ -1664,6 +1962,9 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             return
         if not user:
             print(f"User with id {user_id} not found")
+            return
+        if not clinic_id:
+            print(f"Clinic is required")
             return
 
         file_ext = os.path.splitext(file_path)[1].lower()
@@ -1755,9 +2056,9 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         processor = file_type["processor"]
                         if processor in [process_patient_data, process_appointment_data, process_expense_data, 
                                       process_payment_data, process_invoice_data, process_procedure_catalog_data, process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
-                            await processor(import_log, df, db, user)
+                            await processor(import_log, df, db, user, clinic_id)
                         else:
-                            await processor(import_log, df, db)
+                            await processor(import_log, df, db, clinic_id)
                             
                     except Exception as e:
                         print(f"Error processing file {filename}: {str(e)}")
@@ -1845,7 +2146,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         }
     }
 )
-async def import_data(background_tasks: BackgroundTasks,request: Request, file: UploadFile = File(...), db: Session = Depends(get_db) ):
+async def import_data(background_tasks: BackgroundTasks,request: Request, clinic_id:str, file: UploadFile = File(...), db: Session = Depends(get_db) ):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -1853,6 +2154,10 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
         
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+        if not clinic:
             return JSONResponse(status_code=404, content={"error": "User not found"})
 
         # Validate file extension
@@ -1885,7 +2190,7 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             db.commit()
 
         # Start background processing
-        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid)
+        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid, clinic_id)
 
         return JSONResponse(status_code=200, content={
             "message": "Data import started",

@@ -7,7 +7,7 @@ from db.db import get_db
 from auth.models import User
 from fastapi.responses import JSONResponse
 from utils.auth import verify_token
-from sqlalchemy import  func, asc, desc
+from sqlalchemy import func, asc, desc
 import os
 from sqlalchemy.exc import SQLAlchemyError
 from PIL import Image
@@ -90,6 +90,7 @@ catalog_router = APIRouter()
 )
 async def create_treatment(request: Request, treatment: TreatmentCreate, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -98,47 +99,51 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        # Check if appointment exists
-        appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
-        if not appointment:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid appointment ID"})
+        # Validate appointment and patient
+        if treatment.appointment_id:
+            appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
+            if not appointment:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid appointment ID"})
         
-        # Check if patient exists
-        patient = db.query(Patient).filter(Patient.id == treatment.patient_id).first()
-        if not patient:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
+        if treatment.patient_id:
+            patient = db.query(Patient).filter(Patient.id == treatment.patient_id).first()
+            if not patient:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
 
+        # Create treatment record
         new_treatment = Treatment(
+            doctor=user.id,
             patient_id=treatment.patient_id,
             appointment_id=treatment.appointment_id,
             treatment_date=treatment.treatment_date,
-            treatment_name = treatment.treatment_name,
-            tooth_number = treatment.tooth_number,
-            treatment_notes = treatment.treatment_notes,
-            quantity = treatment.quantity,
-            treatment_cost = treatment.treatment_cost,
-            amount = treatment.amount,
-            discount = treatment.discount,
-            discount_type = treatment.discount_type
+            treatment_name=treatment.treatment_name,
+            tooth_number=treatment.tooth_number,
+            treatment_notes=treatment.treatment_notes,
+            quantity=treatment.quantity or 1,
+            treatment_cost=treatment.treatment_cost,
+            amount=treatment.amount,
+            discount=treatment.discount,
+            discount_type=treatment.discount_type
         )
+
         db.add(new_treatment)
         db.commit()
         db.refresh(new_treatment)
-
         
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, 
             content={
                 "message": "Treatment created successfully",
-                "treatment_id":new_treatment.id
+                "treatment_id": new_treatment.id
             }
         )
+
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get(
     "/get-treatments",
@@ -217,6 +222,7 @@ async def get_treatments(
     db: Session = Depends(get_db)
 ):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -225,43 +231,25 @@ async def get_treatments(
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
     
-        
         # Get total count
         total = db.query(func.count(Treatment.id)).filter(Treatment.doctor == user.id).scalar()
         total_pages = ceil(total / per_page)
         
-        # Get statistics
+        # Calculate date ranges for statistics
         today = datetime.now().date()
         first_day_of_month = today.replace(day=1)
         first_day_of_year = today.replace(month=1, day=1)
         
-        today_stats = db.query(
+        # Get statistics using a single query for better performance
+        stats = db.query(
             func.count(Treatment.id).label('count'),
-            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount')
-        ).filter(
-            Treatment.doctor == user.id,
-            func.date(Treatment.treatment_date) == today
-        ).first()
-        
-        month_stats = db.query(
-            func.count(Treatment.id).label('count'),
-            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount')
-        ).filter(
-            Treatment.doctor == user.id,
-            Treatment.treatment_date >= first_day_of_month
-        ).first()
-        
-        year_stats = db.query(
-            func.count(Treatment.id).label('count'),
-            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount')
-        ).filter(
-            Treatment.doctor == user.id,
-            Treatment.treatment_date >= first_day_of_year
-        ).first()
-        
-        overall_stats = db.query(
-            func.count(Treatment.id).label('count'),
-            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount')
+            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount'),
+            func.sum(case([(func.date(Treatment.treatment_date) == today, 1)], else_=0)).label('today_count'),
+            func.coalesce(func.sum(case([(func.date(Treatment.treatment_date) == today, Treatment.amount)], else_=0)), 0).label('today_amount'),
+            func.sum(case([(Treatment.treatment_date >= first_day_of_month, 1)], else_=0)).label('month_count'),
+            func.coalesce(func.sum(case([(Treatment.treatment_date >= first_day_of_month, Treatment.amount)], else_=0)), 0).label('month_amount'),
+            func.sum(case([(Treatment.treatment_date >= first_day_of_year, 1)], else_=0)).label('year_count'),
+            func.coalesce(func.sum(case([(Treatment.treatment_date >= first_day_of_year, Treatment.amount)], else_=0)), 0).label('year_amount')
         ).filter(Treatment.doctor == user.id).first()
         
         # Get paginated treatments with sorting
@@ -276,25 +264,25 @@ async def get_treatments(
             .limit(per_page)\
             .all()
             
-        treatment_list = []
-
-        for treatment in treatments:
-            treatment_list.append({
-                "id": treatment.id,
-                "patient_id": treatment.patient_id,
-                "appointment_id": treatment.appointment_id,
-                "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
-                "treatment_name": treatment.treatment_name,
-                "tooth_number": treatment.tooth_number,
-                "treatment_notes": treatment.treatment_notes,
-                "quantity": treatment.quantity,
-                "treatment_cost": treatment.treatment_cost,
-                "amount": treatment.amount,
-                "discount": treatment.discount,
-                "discount_type": treatment.discount_type,
-                "doctor": treatment.doctor,
-                "created_at": treatment.created_at.isoformat() if treatment.created_at else None
-            })
+        treatment_list = [
+            {
+                "id": t.id,
+                "patient_id": t.patient_id,
+                "appointment_id": t.appointment_id,
+                "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
+                "treatment_name": t.treatment_name,
+                "tooth_number": t.tooth_number,
+                "treatment_notes": t.treatment_notes,
+                "quantity": t.quantity,
+                "treatment_cost": t.treatment_cost,
+                "amount": t.amount,
+                "discount": t.discount,
+                "discount_type": t.discount_type,
+                "doctor": t.doctor,
+                "created_at": t.created_at.isoformat() if t.created_at else None
+            }
+            for t in treatments
+        ]
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatments retrieved successfully", 
@@ -307,27 +295,27 @@ async def get_treatments(
             },
             "statistics": {
                 "today": {
-                    "count": today_stats[0] if today_stats else 0,
-                    "total_amount": float(today_stats[1]) if today_stats else 0.0
+                    "count": stats.today_count or 0,
+                    "total_amount": float(stats.today_amount) or 0.0
                 },
                 "this_month": {
-                    "count": month_stats[0] if month_stats else 0,
-                    "total_amount": float(month_stats[1]) if month_stats else 0.0
+                    "count": stats.month_count or 0,
+                    "total_amount": float(stats.month_amount) or 0.0
                 },
                 "this_year": {
-                    "count": year_stats[0] if year_stats else 0,
-                    "total_amount": float(year_stats[1]) if year_stats else 0.0
+                    "count": stats.year_count or 0,
+                    "total_amount": float(stats.year_amount) or 0.0
                 },
                 "overall": {
-                    "count": overall_stats[0] if overall_stats else 0,
-                    "total_amount": float(overall_stats[1]) if overall_stats else 0.0
+                    "count": stats.count or 0,
+                    "total_amount": float(stats.total_amount) or 0.0
                 }
             }
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
     
 @catalog_router.get("/search-treatments",
     status_code=status.HTTP_200_OK,
@@ -366,6 +354,7 @@ async def search_treatments(
     db: Session = Depends(get_db)
 ):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -377,16 +366,13 @@ async def search_treatments(
         # Build base query
         query = db.query(Treatment).filter(Treatment.doctor == user.id)
         
-        # Apply search if provided
+        # Apply filters
         if treatment_name:
             query = query.filter(Treatment.treatment_name.ilike(f"%{treatment_name}%"))
         if patient_id:
             query = query.filter(Treatment.patient_id == patient_id)
-        
         if appointment_id:
             query = query.filter(Treatment.appointment_id == appointment_id)
-            
-        # Apply filters if provided
         if start_date:
             query = query.filter(Treatment.treatment_date >= start_date)
         if end_date:
@@ -395,10 +381,10 @@ async def search_treatments(
         # Get statistics for filtered results
         stats = query.with_entities(
             func.count(Treatment.id).label('count'),
-            func.sum(Treatment.amount).label('total_amount')
+            func.coalesce(func.sum(Treatment.amount), 0).label('total_amount')
         ).first()
             
-        # Get total count
+        # Get total count and apply pagination
         total = query.count()
         total_pages = ceil(total / per_page)
         
@@ -407,27 +393,27 @@ async def search_treatments(
         if sort_order.lower() == "desc":
             sort_column = sort_column.desc()
             
-        # Apply pagination
         treatments = query.order_by(sort_column).offset((page - 1) * per_page).limit(per_page).all()
         
-        treatment_list = []
-        for treatment in treatments:
-            treatment_list.append({
-                "id": treatment.id,
-                "patient_id": treatment.patient_id,
-                "appointment_id": treatment.appointment_id,
-                "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
-                "treatment_name": treatment.treatment_name,
-                "tooth_number": treatment.tooth_number,
-                "treatment_notes": treatment.treatment_notes,
-                "quantity": treatment.quantity,
-                "treatment_cost": treatment.treatment_cost,
-                "amount": treatment.amount,
-                "discount": treatment.discount,
-                "discount_type": treatment.discount_type,
-                "doctor": treatment.doctor,
-                "created_at": treatment.created_at.isoformat() if treatment.created_at else None
-            })
+        treatment_list = [
+            {
+                "id": t.id,
+                "patient_id": t.patient_id,
+                "appointment_id": t.appointment_id,
+                "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
+                "treatment_name": t.treatment_name,
+                "tooth_number": t.tooth_number,
+                "treatment_notes": t.treatment_notes,
+                "quantity": t.quantity,
+                "treatment_cost": t.treatment_cost,
+                "amount": t.amount,
+                "discount": t.discount,
+                "discount_type": t.discount_type,
+                "doctor": t.doctor,
+                "created_at": t.created_at.isoformat() if t.created_at else None
+            }
+            for t in treatments
+        ]
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatments retrieved successfully",
@@ -440,15 +426,15 @@ async def search_treatments(
             },
             "statistics": {
                 "filtered_results": {
-                    "count": stats[0] if stats else 0,
-                    "total_amount": float(stats[1]) if stats else 0.0
+                    "count": stats.count or 0,
+                    "total_amount": float(stats.total_amount) or 0.0
                 }
             }
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/get-treatment/{treatment_id}",
     status_code=status.HTTP_200_OK,
@@ -498,6 +484,7 @@ async def search_treatments(
 )
 async def get_treatment(treatment_id: str, request: Request, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -506,7 +493,12 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
+        # Get treatment
+        treatment = db.query(Treatment).filter(
+            Treatment.id == treatment_id,
+            Treatment.doctor == user.id
+        ).first()
+        
         if not treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
         
@@ -530,9 +522,9 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
             }
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.patch("/update-treatment/{treatment_id}",
     status_code=status.HTTP_200_OK,
@@ -567,6 +559,7 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
 )
 async def update_treatment(treatment_id: str, request: Request, treatment: TreatmentUpdate, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -575,13 +568,16 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        existing_treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
+        # Get and update treatment
+        existing_treatment = db.query(Treatment).filter(
+            Treatment.id == treatment_id,
+            Treatment.doctor == user.id
+        ).first()
+        
         if not existing_treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
             
         treatment_data = treatment.model_dump(exclude_unset=True)
-        
-        # Update each field individually
         for field, value in treatment_data.items():
             setattr(existing_treatment, field, value)
             
@@ -589,13 +585,14 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatment updated successfully",
+            "treatment_id": existing_treatment.id
         })
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.delete("/delete-treatment/{treatment_id}",
     status_code=status.HTTP_200_OK,
@@ -626,6 +623,7 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
 )
 async def delete_treatment(treatment_id: str, request: Request, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -634,20 +632,28 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment = db.query(Treatment).filter(Treatment.id == treatment_id).first()
+        # Get and delete treatment
+        treatment = db.query(Treatment).filter(
+            Treatment.id == treatment_id,
+            Treatment.doctor == user.id
+        ).first()
+        
         if not treatment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment not found"})
 
         db.delete(treatment)
         db.commit()
         
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment deleted successfully"})
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Treatment deleted successfully",
+            "treatment_id": treatment_id
+        })
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.post("/create-treatment-plan",
     status_code=status.HTTP_201_CREATED,
@@ -704,7 +710,7 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         db.refresh(new_treatment_plan)
         
         for item in treatment_plan.treatment_plan_items:
-            new_treatment_plan_item = TreatmentPlanItem(
+            new_treatment_plan_item = Treatment(
                 treatment_plan_id=new_treatment_plan.id,
                 treatment_name=item.treatment_name,
                 unit_cost=item.unit_cost,

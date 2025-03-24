@@ -11,13 +11,12 @@ from typing import Optional
 def generate_uuid():
     return str(uuid.uuid4())
 
-
-
 class Expense(Base):
     __tablename__ = "expenses"
 
     id: Mapped[Optional[str]] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=True)
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     expense_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -35,6 +34,7 @@ class Payment(Base):
     date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     invoice_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("invoices.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -61,6 +61,7 @@ class Invoice(Base):
     date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     payment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("payments.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

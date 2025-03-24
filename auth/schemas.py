@@ -1,7 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from fastapi import UploadFile
+
 class UserSchema(BaseModel):
     email: str
     password: str
@@ -21,6 +22,12 @@ class UserResponse(BaseModel):
     email: str
     name: str
     phone: str
+
+class OtpLoginSchema(BaseModel):
+    phone: str
+
+class OtpSchema(BaseModel):
+    otp: int = Field(ge=1000, le=9999)
 
 class ResetPasswordSchema(BaseModel):
     password: str
@@ -60,4 +67,20 @@ class ProcedureCatalogUpdateSchema(ProcedureCatalogSchema):
     locale: Optional[str] = None
 
     
-    
+class ClinicCreateSchema(BaseModel):
+    name: str
+    speciality: str
+    address: Optional[str] = None
+    email: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    phone: Optional[str] = None
+
+class ClinicUpdateSchema(ClinicCreateSchema):
+    name: Optional[str] = None
+    speciality: Optional[str] = None
+    address: Optional[str] = None
+    email: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    phone: Optional[str] = None

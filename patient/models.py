@@ -4,7 +4,7 @@ from db.db import Base
 from datetime import datetime
 import uuid
 import enum
-from typing import Optional
+from typing import Optional, List
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -14,11 +14,30 @@ class Gender(enum.Enum):
     FEMALE = "female" 
     OTHER = "other"
 
+class BloodGroup(enum.Enum):
+    A_POSITIVE = "A+"
+    A_NEGATIVE = "A-"
+    B_POSITIVE = "B+"
+    B_NEGATIVE = "B-"
+    O_POSITIVE = "O+"
+    O_NEGATIVE = "O-"
+    AB_POSITIVE = "AB+"
+    AB_NEGATIVE = "AB-"
+
+class Relationship(enum.Enum):
+    SELF = "self"
+    SPOUSE = "spouse"
+    CHILD = "child"
+    PARENT = "parent"
+    SIBLING = "sibling"
+    OTHER = "other"
+
 class Patient(Base):
     __tablename__ = "patients"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     mobile_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -31,18 +50,18 @@ class Patient(Base):
     city: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     pincode: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     national_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    abha_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     date_of_birth: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     age: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     anniversary_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    blood_group: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    blood_group: Mapped[Optional[BloodGroup]] = mapped_column(SQLAlchemyEnum(BloodGroup), nullable=True)
+    occupation: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    relationship: Mapped[Optional[Relationship]] = mapped_column(SQLAlchemyEnum(Relationship), nullable=True)
     medical_history: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     referred_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     groups: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped[list["ClinicalNote"]] = relationship("ClinicalNote", back_populates="patient")
-
 
 
 class ClinicalNote(Base):
@@ -50,16 +69,17 @@ class ClinicalNote(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     date: Mapped[datetime] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="clinical_notes")
-    attachments: Mapped[list["ClinicalNoteAttachment"]] = relationship("ClinicalNoteAttachment", back_populates="clinical_notes")
-    treatments: Mapped[list["ClinicalNoteTreatment"]] = relationship("ClinicalNoteTreatment", back_populates="clinical_notes")
-    medicines: Mapped[list["Medicine"]] = relationship("Medicine", back_populates="clinical_notes")
-    complaints: Mapped[list["Complaint"]] = relationship("Complaint", back_populates="clinical_notes")
-    diagnoses: Mapped[list["Diagnosis"]] = relationship("Diagnosis", back_populates="clinical_notes")
-    vital_signs: Mapped[list["VitalSign"]] = relationship("VitalSign", back_populates="clinical_notes")
-    notes: Mapped[list["Notes"]] = relationship("Notes", back_populates="clinical_notes")
+    attachments: Mapped[List["ClinicalNoteAttachment"]] = relationship("ClinicalNoteAttachment", back_populates="clinical_note")
+    treatments: Mapped[List["ClinicalNoteTreatment"]] = relationship("ClinicalNoteTreatment", back_populates="clinical_note")
+    medicines: Mapped[List["Medicine"]] = relationship("Medicine", back_populates="clinical_note")
+    complaints: Mapped[List["Complaint"]] = relationship("Complaint", back_populates="clinical_note")
+    diagnoses: Mapped[List["Diagnosis"]] = relationship("Diagnosis", back_populates="clinical_note")
+    vital_signs: Mapped[List["VitalSign"]] = relationship("VitalSign", back_populates="clinical_note")
+    notes: Mapped[List["Notes"]] = relationship("Notes", back_populates="clinical_note")
 
 
 class Complaint(Base):
@@ -69,7 +89,7 @@ class Complaint(Base):
     complaint: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="complaints")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="complaints")
 
 
 class Diagnosis(Base):
@@ -78,7 +98,7 @@ class Diagnosis(Base):
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
 
 
 class VitalSign(Base):
@@ -87,26 +107,26 @@ class VitalSign(Base):
     clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     vital_sign: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
 
 
 class Notes(Base):
     __tablename__ = "notes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     note: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
 
 
 class ClinicalNoteAttachment(Base):
     __tablename__ = "clinical_note_attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     attachment: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="attachments")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="attachments")
 
 
 
@@ -114,17 +134,17 @@ class ClinicalNoteTreatment(Base):
     __tablename__ = "clinical_note_treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
 
 
 class Medicine(Base):
     __tablename__ = "medicines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_notes_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
     item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -132,4 +152,4 @@ class Medicine(Base):
     instructions: Mapped[str] = mapped_column(String(255), nullable=True)
     amount: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-    clinical_notes: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="medicines")
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="medicines")
