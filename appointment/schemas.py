@@ -27,6 +27,7 @@ class AppointmentResponse(BaseModel):
 class AppointmentCreate(BaseModel):
     patient_id: Optional[str] = None
     doctor_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     notes: Optional[str] = None
     appointment_date: datetime
     checked_in_at: Optional[datetime] = None

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse
 from .models import Appointment, AppointmentStatus
 from db.db import get_db
-from auth.models import User
+from auth.models import User, Clinic
 from patient.models import Patient
 from utils.auth import verify_token
 from utils.appointment_msg import send_appointment_email
@@ -37,6 +37,7 @@ appointment_router = APIRouter()
     **Required fields:**
     - patient_id (UUID): Patient's unique identifier
     - doctor_id (str): Doctor's unique identifier
+    - clinic_id (str): Clinic's unique identifier
     - notes (str): Appointment notes/description
     - appointment_date (datetime): Scheduled date and time
     - checked_in_at (datetime): Patient check-in time
@@ -111,6 +112,11 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
+
+        if not clinic:
+            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
 
         patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
 
@@ -122,6 +128,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 
         new_appointment = Appointment(
             patient_id=patient.id,
+            clinic_id=clinic.id,
             patient_number=patient.patient_number if patient.patient_number else None,
             patient_name=patient.name,
             doctor_id=user.id,
@@ -184,6 +191,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
             {
                 "id": "uuid",
                 "patient_id": "uuid",
+                "clinic_id": "uuid",
                 "patient_number": "P001", 
                 "patient_name": "John Doe",
                 "doctor_id": "uuid",
@@ -341,6 +349,7 @@ async def get_all_appointments(
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
+                "clinic_id": appointment.clinic_id,
                 "patient_number": appointment.patient_number,
                 "patient_name": appointment.patient_name,
                 "doctor_id": appointment.doctor_id,
@@ -419,6 +428,7 @@ async def get_all_appointments(
             {
                 "id": "uuid",
                 "patient_id": "uuid", 
+                "clinic_id": "uuid",
                 "patient_number": "P001",
                 "patient_name": "John Doe",
                 "doctor_id": "uuid",
@@ -553,6 +563,7 @@ async def get_patient_appointments(
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
+                "clinic_id": appointment.clinic_id,
                 "patient_number": appointment.patient_number,
                 "patient_name": appointment.patient_name,
                 "doctor_id": appointment.doctor_id,
@@ -600,6 +611,7 @@ async def get_patient_appointments(
     - doctor_email (str, optional): Search by doctor email (case-insensitive partial match)
     - doctor_phone (str, optional): Search by doctor phone number
     - patient_gender (str, optional): Filter by patient gender (MALE/FEMALE/OTHER)
+    - clinic_id (str, optional): Filter by clinic ID
     - status (str, optional): Filter by appointment status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
     - appointment_date (datetime, optional): Filter appointments from this date onwards (ISO format)
     - page (int): Page number for pagination (default: 1, min: 1)
@@ -621,6 +633,7 @@ async def get_patient_appointments(
             {
                 "id": "uuid",
                 "patient_id": "uuid",
+                "clinic_id": "uuid",
                 "patient_number": "P001",
                 "patient_name": "John Doe",
                 "doctor_id": "uuid",
@@ -713,6 +726,7 @@ async def search_appointments(
     doctor_email: Optional[str] = None,
     doctor_phone: Optional[str] = None,
     patient_gender: Optional[str] = None,
+    clinic_id: Optional[str] = None,
     status: Optional[str] = None,
     appointment_date: Optional[datetime] = None,
     page: int = Query(1, ge=1, description="Page number"),
@@ -748,10 +762,13 @@ async def search_appointments(
         if doctor_phone:
             search_filters.append(User.phone.ilike(f"%{doctor_phone}%"))
 
+
         # Filter conditions
         filter_conditions = []
         if patient_gender:
             filter_conditions.append(Patient.gender == patient_gender)
+        if clinic_id:
+            filter_conditions.append(Appointment.clinic_id == clinic_id)
         if status:
             filter_conditions.append(Appointment.status == status)
         if appointment_date:
@@ -804,6 +821,7 @@ async def search_appointments(
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
+                "clinic_id": appointment.clinic_id,
                 "patient_number": appointment.patient_number,
                 "patient_name": appointment.patient_name,
                 "doctor_id": appointment.doctor_id,
@@ -869,6 +887,7 @@ async def search_appointments(
         "appointment": {
             "id": "uuid",
             "patient_id": "uuid",
+            "clinic_id": "uuid",
             "patient_number": "P001",
             "patient_name": "John Doe",
             "doctor_id": "uuid",
@@ -960,6 +979,7 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
         appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
+                "clinic_id": appointment.clinic_id,
                 "patient_number": appointment.patient_number,
                 "patient_name": appointment.patient_name,
                 "doctor_id": appointment.doctor_id,
