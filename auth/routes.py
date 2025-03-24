@@ -496,6 +496,8 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
         
         # Add the relationship after clinic is created
         new_clinic.doctors.append(user)
+        user.clinics.append(new_clinic)
+        user.default_clinic_id = new_clinic.id
         db.commit()
         
         return JSONResponse(status_code=200, content={"message": "Clinic created successfully"})
