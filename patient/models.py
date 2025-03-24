@@ -14,24 +14,6 @@ class Gender(enum.Enum):
     FEMALE = "female" 
     OTHER = "other"
 
-class BloodGroup(enum.Enum):
-    A_POSITIVE = "A+"
-    A_NEGATIVE = "A-"
-    B_POSITIVE = "B+"
-    B_NEGATIVE = "B-"
-    O_POSITIVE = "O+"
-    O_NEGATIVE = "O-"
-    AB_POSITIVE = "AB+"
-    AB_NEGATIVE = "AB-"
-
-class Relationship(enum.Enum):
-    SELF = "self"
-    SPOUSE = "spouse"
-    CHILD = "child"
-    PARENT = "parent"
-    SIBLING = "sibling"
-    OTHER = "other"
-
 class Patient(Base):
     __tablename__ = "patients"
 
@@ -54,9 +36,9 @@ class Patient(Base):
     date_of_birth: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     age: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     anniversary_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    blood_group: Mapped[Optional[BloodGroup]] = mapped_column(SQLAlchemyEnum(BloodGroup), nullable=True)
+    blood_group: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     occupation: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    relationship: Mapped[Optional[Relationship]] = mapped_column(SQLAlchemyEnum(Relationship), nullable=True)
+    relationship: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     medical_history: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     referred_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     groups: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, List
-from .models import Gender, BloodGroup, Relationship
+from .models import Gender
 
 class PatientCreateSchema(BaseModel):
     clinic_id: str
@@ -20,9 +20,9 @@ class PatientCreateSchema(BaseModel):
     date_of_birth: Optional[datetime] = None
     age: Optional[str] = None
     anniversary_date: Optional[datetime] = None
-    blood_group: Optional[BloodGroup] = None
+    blood_group: Optional[str] = None
     occupation: Optional[str] = None
-    relationship: Optional[Relationship] = None
+    relationship: Optional[str] = None
     medical_history: Optional[str] = None
     referred_by: Optional[str] = None
     groups: Optional[str] = None
@@ -49,9 +49,9 @@ class PatientUpdateSchema(BaseModel):
     date_of_birth: Optional[datetime] = None
     age: Optional[str] = None
     anniversary_date: Optional[datetime] = None
-    blood_group: Optional[BloodGroup] = None
+    blood_group: Optional[str] = None
     occupation: Optional[str] = None
-    relationship: Optional[Relationship] = None
+    relationship: Optional[str] = None
     medical_history: Optional[str] = None
     referred_by: Optional[str] = None
     groups: Optional[str] = None
