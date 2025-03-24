@@ -506,7 +506,7 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
         return JSONResponse(status_code=500, content={"error": str(e)})
     
 
-@user_router.get("/set-default-clinic",
+@user_router.get("/set-default-clinic/{clinic_id}",
     response_model=dict,
     status_code=200,
     summary="Set default clinic",
@@ -521,7 +521,7 @@ async def set_default_clinic(request: Request, clinic_id: str, db: Session = Dep
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+        clinic = db.query(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id)).first()
         if not clinic:
             return JSONResponse(status_code=404, content={"error": "Clinic not found"})
         
