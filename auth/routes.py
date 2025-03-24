@@ -140,7 +140,10 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
             name=f"{new_user.name}'s Clinic",
             speciality="General",
             email=new_user.email,
-            phone=new_user.phone
+            phone=new_user.phone,
+            address="",
+            city="",
+            country=""
         )
         db.add(default_clinic)
         db.commit()
@@ -148,6 +151,7 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
 
         # Associate clinic with user
         new_user.clinics.append(default_clinic)
+        default_clinic.doctors.append(new_user)
         new_user.default_clinic_id = default_clinic.id
         db.commit()
         
