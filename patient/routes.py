@@ -1045,12 +1045,19 @@ async def update_patient(
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
+
+        user = db.execute(select(User).filter(User.id == decoded_token.get("user_id"))).scalar_one_or_none()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "Unauthorized"}
+            )
         
         # Get patient
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("user_id")
+                Patient.doctor_id == user.id
             )
         ).scalar_one_or_none()
         
@@ -1061,7 +1068,7 @@ async def update_patient(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+        clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
         if not clinic:
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
