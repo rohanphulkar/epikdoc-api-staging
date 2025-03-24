@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import logging
-import os
+import os, sys
 
 # Import local modules
 from db.db import Base, engine
@@ -23,9 +23,12 @@ from suggestion.routes import suggestion_router
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Ensure logs are output to the console
+    ]
 )
-logger = logging.getLogger("uvicorn")
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app with metadata
 app = FastAPI(
