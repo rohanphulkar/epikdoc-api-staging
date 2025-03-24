@@ -50,6 +50,11 @@ user_router = APIRouter()
     - At least 1 uppercase letter
     - At least 1 lowercase letter
     - At least 1 number
+    
+    On successful registration:
+    - Creates user account
+    - Creates default clinic for user
+    - Associates clinic with user
     """,
     responses={
         201: {
@@ -171,10 +176,10 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
     - email: Registered email address
     - password: Account password
     
-    Returns:
-    - access_token: JWT token for authentication
-    - token_type: Token type (bearer)
-    - message: Success message
+    On successful login:
+    - Updates last_login timestamp
+    - Generates JWT access token
+    - Returns token and success message
     """,
     responses={
         200: {
@@ -250,10 +255,59 @@ async def login(user: UserSchema, db: Session = Depends(get_db)):
 @user_router.post("/login/otp",
     response_model=dict,
     status_code=200,
-    summary="Send OTP to user's phone number",
+    summary="Send OTP for phone login",
     description="""
-    Send OTP to user's phone number.
+    Send OTP to user's registered phone number for login.
+    
+    Required fields:
+    - phone: Registered phone number with country code
+    
+    Process:
+    - Generates 4-digit OTP
+    - Sends OTP via SMS
+    - OTP expires in 10 minutes
     """,
+    responses={
+        200: {
+            "description": "OTP sent successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "OTP sent successfully"}
+                }
+            }
+        },
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Phone number is required"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "sms_failed": {
+                            "value": {"error": "Failed to send OTP"}
+                        },
+                        "server_error": {
+                            "value": {"error": "Internal server error"}
+                        }
+                    }
+                }
+            }
+        }
+    }
 )
 async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
     try:
@@ -281,10 +335,59 @@ async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
 @user_router.post("/login/otp/resend",
     response_model=dict,
     status_code=200,
-    summary="Resend OTP to user's phone number",
+    summary="Resend OTP",
     description="""
-    Resend OTP to user's phone number.
+    Resend OTP to user's registered phone number.
+    
+    Required fields:
+    - phone: Registered phone number with country code
+    
+    Process:
+    - Generates new 4-digit OTP
+    - Sends new OTP via SMS
+    - Resets 10-minute expiry timer
     """,
+    responses={
+        200: {
+            "description": "OTP resent successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "OTP resent successfully"}
+                }
+            }
+        },
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Phone number is required"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "sms_failed": {
+                            "value": {"error": "Failed to resend OTP"}
+                        },
+                        "server_error": {
+                            "value": {"error": "Internal server error"}
+                        }
+                    }
+                }
+            }
+        }
+    }
 )
 async def resend_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
     try:
@@ -312,10 +415,67 @@ async def resend_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
 @user_router.post("/login/otp/verify",
     response_model=dict,
     status_code=200,
-    summary="Verify OTP",
+    summary="Verify OTP and login",
     description="""
-    Verify OTP.
+    Verify OTP and generate access token for login.
+    
+    Required fields:
+    - otp: 4-digit OTP received via SMS
+    
+    Process:
+    - Validates OTP
+    - Checks OTP expiry
+    - Generates JWT access token on success
+    - Clears OTP data after successful verification
     """,
+    responses={
+        200: {
+            "description": "OTP verified and login successful",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "access_token": "eyJhbGciOiJIUzI1NiIs...",
+                        "token_type": "bearer",
+                        "message": "Login successful"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_otp": {
+                            "value": {"error": "OTP is required"}
+                        },
+                        "invalid_otp": {
+                            "value": {"error": "Invalid OTP"}
+                        },
+                        "expired_otp": {
+                            "value": {"error": "OTP expired"}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
+    }
 )
 async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
     try:
@@ -349,17 +509,17 @@ async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
     status_code=200,
     summary="Get user profile",
     description="""
-    Get authenticated user's profile information.
+    Get authenticated user's profile and associated clinic information.
     
     Required headers:
     - Authorization: Bearer {access_token}
     
     Returns:
-    - name: User's full name
-    - email: Email address
-    - phone: Phone number
-    - bio: User biography
-    - profile_pic: URL to profile picture (null if not set)
+    - User profile details including:
+      - Basic info (name, email, phone, bio)
+      - Profile picture URL if exists
+      - Associated clinics with default clinic marked
+      - Account timestamps
     """,
     responses={
         200: {
@@ -377,12 +537,15 @@ async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
                                 "id": "550e8400-e29b-41d4-a716-446655440000",
                                 "name": "Clinic 1",
                                 "speciality": "Pediatrics",
-                                "address": "123 Main St, Anytown, USA",
+                                "address": "123 Main St",
                                 "city": "Anytown",
                                 "country": "USA",
-                                "phone": "+1234567890"
+                                "phone": "+1234567890",
+                                "is_default": true
                             }
-                        ]
+                        ],
+                        "created_at": "2023-01-01T00:00:00",
+                        "updated_at": "2023-01-01T00:00:00"
                     }
                 }
             }
@@ -454,10 +617,61 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
 @user_router.post("/clinic/create",
     response_model=dict,
     status_code=200,
-    summary="Create clinic",
+    summary="Create new clinic",
     description="""
-    Create clinic.
+    Create a new clinic and associate it with the authenticated user.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Required fields:
+    - name: Clinic name
+    - speciality: Medical speciality
+    - address: Physical address
+    - city: City location
+    - country: Country location
+    - phone: Contact number
+    - email: Contact email
+    
+    Process:
+    - Creates new clinic
+    - Associates clinic with user
+    - Sets as default clinic
     """,
+    responses={
+        200: {
+            "description": "Clinic created successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Clinic created successfully"}
+                }
+            }
+        },
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "example": {"error": "You are already associated with this clinic"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
+    }
 )
 async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Session = Depends(get_db)):
     try:
@@ -511,8 +725,51 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
     status_code=200,
     summary="Set default clinic",
     description="""
-    Set default clinic.
+    Set a clinic as the default clinic for the authenticated user.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - clinic_id: UUID of clinic to set as default
+    
+    Process:
+    - Verifies user is associated with clinic
+    - Updates user's default clinic setting
     """,
+    responses={
+        200: {
+            "description": "Default clinic set successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Default clinic set successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user_not_found": {
+                            "value": {"error": "User not found"}
+                        },
+                        "clinic_not_found": {
+                            "value": {"error": "Clinic not found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
+    }
 )
 async def set_default_clinic(request: Request, clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -537,10 +794,58 @@ async def set_default_clinic(request: Request, clinic_id: str, db: Session = Dep
 @user_router.patch("/clinic/update",
     response_model=dict,
     status_code=200,
-    summary="Update clinic",
+    summary="Update clinic details",
     description="""
-    Update clinic.
+    Update details of an existing clinic.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - clinic_id: UUID of clinic to update
+    
+    Request body:
+    - name: New clinic name (optional)
+    - speciality: New clinic speciality (optional) 
+    - address: New clinic address (optional)
+    - city: New clinic city (optional)
+    - country: New clinic country (optional)
+    - phone: New clinic phone number (optional)
+    - email: New clinic email (optional)
     """,
+    responses={
+        200: {
+            "description": "Clinic updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Clinic updated successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user_not_found": {
+                            "value": {"error": "User not found"}
+                        },
+                        "clinic_not_found": {
+                            "value": {"error": "Clinic not found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error", 
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
+    }
 )
 async def update_clinic(request: Request,clinic_id: str, clinic: ClinicUpdateSchema, db: Session = Depends(get_db)):
     try:
@@ -579,10 +884,54 @@ async def update_clinic(request: Request,clinic_id: str, clinic: ClinicUpdateSch
 @user_router.delete("/clinic/delete",
     response_model=dict,
     status_code=200,
-    summary="Delete clinic",
+    summary="Delete a clinic",
     description="""
-    Delete clinic.
+    Permanently delete a clinic and its associated data.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - clinic_id: UUID of clinic to delete
+    
+    This will delete:
+    - Clinic details
+    - Clinic associations with doctors
+    - Any other clinic-specific data
     """,
+    responses={
+        200: {
+            "description": "Clinic deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Clinic deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Not found",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "user_not_found": {
+                            "value": {"error": "User not found"}
+                        },
+                        "clinic_not_found": {
+                            "value": {"error": "Clinic not found"}
+                        }
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"}
+                }
+            }
+        }
+    }
 )
 async def delete_clinic(request: Request, clinic_id: str, db: Session = Depends(get_db)):
     try:

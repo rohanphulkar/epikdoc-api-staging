@@ -68,6 +68,12 @@ def calculate_age(date_of_birth: datetime) -> str:
     
     Required headers:
     - Authorization: Bearer {access_token}
+    
+    Returns:
+    - 201: Patient created successfully with patient ID
+    - 400: Invalid request data or database error
+    - 401: Unauthorized access or invalid clinic association
+    - 500: Internal server error
     """,
     responses={
         201: {
@@ -76,16 +82,7 @@ def calculate_age(date_of_birth: datetime) -> str:
                 "application/json": {
                     "example": {
                         "message": "Patient created successfully",
-                        "patient": {
-                            "id": "uuid",
-                            "name": "John Doe",
-                            "mobile_number": "+1234567890",
-                            "email": "john@example.com",
-                            "gender": "male",
-                            "age": "45",
-                            "clinic_id": "clinic-uuid",
-                            "doctor_id": "doctor-uuid"
-                        }
+                        "patient_id": "uuid"
                     }
                 }
             }
@@ -111,7 +108,7 @@ def calculate_age(date_of_birth: datetime) -> str:
                 "application/json": {
                     "examples": {
                         "invalid_token": {
-                            "value": {"message": "Invalid authentication token"}
+                            "value": {"message": "Unauthorized"}
                         },
                         "unauthorized_clinic": {
                             "value": {"message": "You are not authorized to access this clinic"}
@@ -693,9 +690,9 @@ async def get_patient_by_id(
     status_code=status.HTTP_200_OK,
     summary="Search patients by multiple criteria with statistics",
     description="""
-    Search and filter patients using any combination of fields:
+    Search and filter patients using any combination of fields.
     
-    All fields support independent search/filter:
+    Search fields:
     - Patient details: name, patient_number
     - Contact info: mobile_number, contact_number, email, secondary_mobile
     - IDs: national_id, abha_id
@@ -719,10 +716,10 @@ async def get_patient_by_id(
     
     Query parameters:
     - All patient fields support filtering
-    - page: Page number for pagination
-    - per_page: Number of items per page
-    - sort_by: Sort field (any patient field)
-    - sort_order: Sort direction (asc/desc)
+    - page: Page number for pagination (default: 1)
+    - per_page: Number of items per page (default: 10, max: 100)
+    - sort_by: Sort field (default: created_at)
+    - sort_order: Sort direction (asc/desc, default: desc)
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -739,7 +736,12 @@ async def get_patient_by_id(
                             "mobile_number": "+1234567890",
                             "gender": "male",
                             "age": "35",
-                            "created_at": "2023-01-01T10:00:00"
+                            "created_at": "2023-01-01T10:00:00",
+                            "patient_number": "P123",
+                            "email": "john@example.com",
+                            "address": "123 Main St",
+                            "blood_group": "O+",
+                            "medical_history": "None"
                         }],
                         "pagination": {
                             "total": 100,
@@ -971,14 +973,26 @@ async def search_patients(
     
     Updatable fields:
     - name: Patient's full name
-    - mobile_number: Contact number
+    - mobile_number: Primary contact number
+    - contact_number: Secondary contact number
     - email: Email address
+    - secondary_mobile: Alternative mobile number
     - gender: Gender (male/female/other)
     - date_of_birth: Date of birth (YYYY-MM-DD)
+    - anniversary_date: Anniversary date (YYYY-MM-DD)
     - address: Full address
+    - locality: Area/locality
+    - city: City name
+    - pincode: Postal code
     - blood_group: Blood group
+    - occupation: Professional occupation
+    - relationship: Relationship status
     - medical_history: Medical history notes
-    - remarks: Additional notes
+    - referred_by: Referral source
+    - groups: Patient groups/categories
+    - patient_notes: Additional notes
+    - national_id: National ID number
+    - abha_id: ABHA ID number
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -995,8 +1009,16 @@ async def search_patients(
                             "name": "John Doe",
                             "email": "john@example.com",
                             "mobile_number": "+1234567890",
+                            "contact_number": "+0987654321",
                             "gender": "male",
-                            "age": "45"
+                            "age": "45",
+                            "blood_group": "O+",
+                            "address": "123 Main St",
+                            "city": "Mumbai",
+                            "pincode": "400001",
+                            "medical_history": "No major issues",
+                            "created_at": "2023-01-01T10:00:00",
+                            "updated_at": "2023-06-15T14:30:00"
                         }
                     }
                 }
@@ -1011,7 +1033,7 @@ async def search_patients(
             }
         },
         401: {
-            "description": "Unauthorized - Invalid or missing authentication token",
+            "description": "Unauthorized - Invalid or missing authentication token or clinic access",
             "content": {
                 "application/json": {
                     "example": {"message": "Unauthorized"}
