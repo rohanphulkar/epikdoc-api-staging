@@ -36,6 +36,7 @@ class Payment(Base):
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     invoice_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("invoices.id"), nullable=True)
+    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     receipt_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -63,6 +64,7 @@ class Invoice(Base):
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     payment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("payments.id"), nullable=True)
+    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     doctor_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -74,7 +76,7 @@ class Invoice(Base):
     total_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
-    invoice_items = relationship("InvoiceItem", back_populates="invoice")
+    invoice_items: Mapped[list["InvoiceItem"]] = relationship("InvoiceItem", back_populates="invoice")
 
 
 
@@ -94,4 +96,4 @@ class InvoiceItem(Base):
     tax_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-    invoice = relationship("Invoice", back_populates="invoice_items")
+    invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="invoice_items")

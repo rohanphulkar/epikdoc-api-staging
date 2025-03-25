@@ -2,10 +2,14 @@ from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse
-from .models import Appointment, AppointmentStatus
 from db.db import get_db
-from auth.models import User, Clinic
-from patient.models import Patient
+
+from .models import *
+from auth.models import *
+from patient.models import *
+from catalog.models import *
+from payment.models import *
+
 from utils.auth import verify_token
 from utils.appointment_msg import send_appointment_email
 from sqlalchemy.orm import joinedload
@@ -14,6 +18,7 @@ from sqlalchemy import or_, and_, func, select
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
+
 
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -871,9 +876,9 @@ async def search_appointments(
 @appointment_router.get("/details/{appointment_id}",
     response_model=dict,
     status_code=200,
-    summary="Get appointment details",
+    summary="Get appointment details with related records",
     description="""
-    Retrieve detailed information for a specific appointment.
+    Retrieve detailed information for a specific appointment including clinical notes, treatments, treatment plans, payments and invoices.
     
     **Path parameter:**
     - appointment_id (UUID): Appointment's unique identifier
@@ -886,7 +891,7 @@ async def search_appointments(
     {
         "appointment": {
             "id": "uuid",
-            "patient_id": "uuid",
+            "patient_id": "uuid", 
             "clinic_id": "uuid",
             "patient_number": "P001",
             "patient_name": "John Doe",
@@ -908,61 +913,70 @@ async def search_appointments(
                 "phone": "1234567890"
             },
             "patient": {
-                "id": "uuid",
+                "id": "uuid", 
                 "name": "John Doe",
                 "email": "john@example.com",
                 "mobile_number": "9876543210",
                 "date_of_birth": "1990-01-01",
                 "gender": "MALE"
-            }
+            },
+            "clinical_notes": [{
+                "id": "uuid",
+                "date": "2023-01-01T10:00:00",
+                "attachments": [],
+                "treatments": [],
+                "medicines": [],
+                "complaints": [],
+                "diagnoses": [],
+                "vital_signs": [],
+                "notes": []
+            }],
+            "treatments": [{
+                "id": "uuid",
+                "treatment_name": "Cleaning",
+                "treatment_date": "2023-01-01T10:00:00",
+                "amount": 100.00,
+                "completed": true
+            }],
+            "treatment_plans": [{
+                "id": "uuid",
+                "date": "2023-01-01T10:00:00",
+                "treatments": []
+            }],
+            "payments": [{
+                "id": "uuid",
+                "date": "2023-01-01T10:30:00",
+                "amount_paid": 100.00,
+                "payment_mode": "CASH",
+                "status": "COMPLETED",
+                "invoices": []
+            }]
         }
     }
     ```
     """,
     responses={
-        200: {
-            "description": "Successfully retrieved appointment details",
-            "content": {
-                "application/json": {
-                    "example": {"appointment": {}}
-                }
-            }
-        },
-        401: {
-            "description": "Authentication failed or non-doctor user",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Unauthorized"}
-                }
-            }
-        },
-        404: {
-            "description": "Appointment not found",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Appointment not found"}
-                }
-            }
-        },
-        500: {
-            "description": "Server error occurred",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Internal server error message"}
-                }
-            }
-        }
+        200: {"description": "Successfully retrieved appointment details"},
+        401: {"description": "Authentication failed or non-doctor user"},
+        404: {"description": "Appointment not found"},
+        500: {"description": "Server error occurred"}
     }
 )
-async def get_appointment_details(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+async def get_appointment_details(
+    request: Request, 
+    appointment_id: str,
+    db: Session = Depends(get_db)
+):
     try:
+        # Verify doctor authentication
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("user_id") if decoded_token else None
-    
+        user_id = decoded_token.get("user_id")
+        
         user = db.query(User).filter(User.id == user_id).first()
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-        
+
+        # Get appointment with patient and doctor in single query
         result = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
@@ -975,41 +989,117 @@ async def get_appointment_details(request: Request, appointment_id: str, db: Ses
             return JSONResponse(status_code=404, content={"message": "Appointment not found"})
             
         appointment, patient, doctor = result
-        
+
+        # Get related records in parallel queries
+        clinical_notes = db.query(ClinicalNote).filter(ClinicalNote.appointment_id == appointment_id).all()
+        treatments = db.query(Treatment).filter(Treatment.appointment_id == appointment_id).all()
+        treatment_plans = db.query(TreatmentPlan).filter(TreatmentPlan.appointment_id == appointment_id).all()
+        payments = db.query(Payment).filter(Payment.appointment_id == appointment_id).all()
+
+        # Format response data
         appointment_data = {
-                "id": appointment.id,
-                "patient_id": appointment.patient_id,
-                "clinic_id": appointment.clinic_id,
-                "patient_number": appointment.patient_number,
-                "patient_name": appointment.patient_name,
-                "doctor_id": appointment.doctor_id,
-                "doctor_name": appointment.doctor_name,
-                "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
-                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
-                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
-                "status": appointment.status.value,
-                "send_reminder": appointment.send_reminder,
-                "remind_time_before": appointment.remind_time_before,
-                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                "doctor": {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone
-                },
-                "patient": {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value
-                }
-            }
+            "id": appointment.id,
+            "patient_id": appointment.patient_id,
+            "clinic_id": appointment.clinic_id,
+            "patient_number": appointment.patient_number,
+            "patient_name": appointment.patient_name,
+            "doctor_id": appointment.doctor_id,
+            "doctor_name": appointment.doctor_name,
+            "notes": appointment.notes,
+            "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+            "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+            "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
+            "status": appointment.status.value,
+            "send_reminder": appointment.send_reminder,
+            "remind_time_before": appointment.remind_time_before,
+            "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+            "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+            "doctor": {
+                "id": doctor.id,
+                "name": doctor.name,
+                "email": doctor.email,
+                "phone": doctor.phone
+            },
+            "patient": {
+                "id": patient.id,
+                "name": patient.name,
+                "email": patient.email,
+                "mobile_number": patient.mobile_number,
+                "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                "gender": patient.gender.value
+            },
+            "clinical_notes": [{
+                "id": note.id,
+                "date": note.date.isoformat() if note.date else None,
+                "attachments": [{"id": a.id, "attachment": a.attachment} for a in note.attachments],
+                "treatments": [{"id": t.id, "name": t.name} for t in note.treatments],
+                "medicines": [{
+                    "id": m.id,
+                    "item_name": m.item_name,
+                    "price": m.price,
+                    "quantity": m.quantity,
+                    "dosage": m.dosage,
+                    "instructions": m.instructions,
+                    "amount": m.amount
+                } for m in note.medicines],
+                "complaints": [{"id": c.id, "complaint": c.complaint} for c in note.complaints],
+                "diagnoses": [{"id": d.id, "diagnosis": d.diagnosis} for d in note.diagnoses],
+                "vital_signs": [{"id": v.id, "vital_sign": v.vital_sign} for v in note.vital_signs],
+                "notes": [{"id": n.id, "note": n.note} for n in note.notes]
+            } for note in clinical_notes],
+            "treatments": [{
+                "id": t.id,
+                "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
+                "treatment_name": t.treatment_name,
+                "tooth_number": t.tooth_number,
+                "treatment_notes": t.treatment_notes,
+                "quantity": t.quantity,
+                "unit_cost": t.unit_cost,
+                "amount": t.amount,
+                "discount": t.discount,
+                "discount_type": t.discount_type,
+                "completed": t.completed
+            } for t in treatments],
+            "treatment_plans": [{
+                "id": plan.id,
+                "date": plan.date.isoformat() if plan.date else None,
+                "treatments": [{
+                    "id": t.id,
+                    "treatment_name": t.treatment_name,
+                    "tooth_number": t.tooth_number,
+                    "quantity": t.quantity,
+                    "unit_cost": t.unit_cost,
+                    "amount": t.amount,
+                    "completed": t.completed
+                } for t in plan.treatments]
+            } for plan in treatment_plans],
+            "payments": [{
+                "id": payment.id,
+                "date": payment.date.isoformat() if payment.date else None,
+                "receipt_number": payment.receipt_number,
+                "amount_paid": payment.amount_paid,
+                "payment_mode": payment.payment_mode,
+                "status": payment.status,
+                "refund": payment.refund,
+                "refunded_amount": payment.refunded_amount,
+                "cancelled": payment.cancelled,
+                "invoices": [{
+                    "id": invoice.id,
+                    "invoice_number": invoice.invoice_number,
+                    "total_amount": invoice.total_amount,
+                    "invoice_items": [{
+                        "treatment_name": item.treatment_name,
+                        "quantity": item.quantity,
+                        "unit_cost": item.unit_cost,
+                        "discount": item.discount,
+                        "tax_percent": item.tax_percent
+                    } for item in invoice.invoice_items]
+                } for invoice in db.query(Invoice).filter(Invoice.payment_id == payment.id).all()]
+            } for payment in payments]
+        }
 
         return JSONResponse(status_code=200, content={"appointment": appointment_data})
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     

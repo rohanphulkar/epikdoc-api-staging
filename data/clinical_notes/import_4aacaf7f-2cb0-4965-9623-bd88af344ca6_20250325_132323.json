@@ -1,0 +1,176 @@
+{
+  "import_id": "4aacaf7f-2cb0-4965-9623-bd88af344ca6",
+  "timestamp": "2025-03-25T13:23:23.911153",
+  "user_id": "a97aee63-78aa-42d4-a033-ddb7f951063f",
+  "patient_records": {
+    "P1107'": {
+      "2015-12-21": {
+        "complaints'": [
+          {
+            "Patient Name": "amit sharma'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Sensitive Teeth'"
+          }
+        ],
+        "observations'": [
+          {
+            "Patient Name": "amit sharma'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Swollen Gums'"
+          },
+          {
+            "Patient Name": "amit sharma'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "18mmn MB'"
+          }
+        ],
+        "diagnoses'": [
+          {
+            "Patient Name": "amit sharma'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Gingivitis'"
+          }
+        ]
+      }
+    },
+    "P1149'": {
+      "2015-12-03": {
+        "complaints'": [
+          {
+            "Patient Name": "Mr. Dipesh Kundnani'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Swelling in Gums, Swelling in Jaws'"
+          }
+        ],
+        "observations'": [
+          {
+            "Patient Name": "Anjali'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Cavity, Tooth Decay - Stage 1'"
+          }
+        ],
+        "diagnoses'": [
+          {
+            "Patient Name": "Anjali'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Root Caries'"
+          }
+        ]
+      }
+    },
+    "P1176'": {
+      "2016-01-16": {
+        "treatmentnotes'": [
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "tooth 24 working length. buccal palatal- 19 mm\nenlarged till 25#'"
+          }
+        ]
+      },
+      "2016-01-24": {
+        "complaints'": [
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "pain in upper left back toth'"
+          }
+        ],
+        "observations'": [
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "28 DDC, lower PM IDC,'"
+          }
+        ],
+        "diagnoses'": [
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Coronal Cavities'"
+          }
+        ]
+      },
+      "2016-02-21": {
+        "treatmentnotes'": [
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "27mm Sml1 35, extract 36'"
+          },
+          {
+            "Patient Name": "Amar Raghav'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "17mm 46, 3 canal, F1 protaper'"
+          }
+        ]
+      }
+    },
+    "P1213'": {
+      "2016-01-06": {
+        "complaints'": [
+          {
+            "Patient Name": "Ms. Reeta Sood'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "pain in lower right back tooth'"
+          }
+        ],
+        "observations'": [
+          {
+            "Patient Name": "Ms. Reeta Sood'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "46- Cavity, TOP, DDC, Night pain'"
+          }
+        ],
+        "diagnoses'": [
+          {
+            "Patient Name": "Ms. Reeta Sood'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Irreversible Pulpitis'"
+          }
+        ]
+      },
+      "2016-01-09": {
+        "observations'": [
+          {
+            "Patient Name": "Ms. Reeta Sood'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "4 canal on tooth no 46, F1 Protaper 17 MM , temp dressing given'"
+          }
+        ]
+      }
+    },
+    "P1218'": {
+      "2016-01-15": {
+        "complaints'": [
+          {
+            "Patient Name": "Mr. Rohit Mikesh'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "pain in upper left back tooth'"
+          }
+        ],
+        "observations'": [
+          {
+            "Patient Name": "Mr. Rohit Mikesh'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "25 TOP, needs Re-RCT'"
+          }
+        ],
+        "investigations'": [
+          {
+            "Patient Name": "Mr. Rohit Mikesh'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "Iopar suggests apical abcess'"
+          }
+        ],
+        "treatmentnotes'": [
+          {
+            "Patient Name": "Mr. Rohit Mikesh'",
+            "Doctor": "Dr. Sanjeet shanker'",
+            "Description": "19mm WL 1-2 canals f1 pro taper'"
+          }
+        ]
+      }
+    }
+  }
+}

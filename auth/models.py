@@ -135,6 +135,12 @@ class ImportLog(Base):
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     zip_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[ImportStatus] = mapped_column(SQLAlchemyEnum(ImportStatus), nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
+    current_stage: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    current_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    files_processed: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
+    total_files: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 

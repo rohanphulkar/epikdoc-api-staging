@@ -1914,7 +1914,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         if patient:
             for date_str, treatments_list in dates.items():
                 # search appointment
-                appointment = db.query(Appointment).filter(Appointment.patient_number == patient_number, Appointment.appointment_date == pd.to_datetime(date_str)).first()
+                appointment = db.query(Appointment).filter(Appointment.patient_id == patient.id, Appointment.appointment_date == pd.to_datetime(date_str)).first()
                 if appointment:
                     for treatment_detail in treatments_list:
                         treatment_name = treatment_detail["Treatment Name"]
@@ -1962,170 +1962,250 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
     print("Processing clinical note data")
     
     # Pre-process all patient numbers and get patients in bulk
-    patient_numbers = df["Patient Number"].astype(str).unique()
+    patient_numbers = df["Patient Number"].astype(str).str.strip("'").unique()
     patients = {
         p.patient_number: p for p in 
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
 
-    # Convert Date column to datetime for sorting
-    df["Date"] = pd.to_datetime(df["Date"])
-
-    # Initialize an empty defaultdict for nested grouping
-    result = defaultdict(lambda: {"Patient Name": "", "Visits": defaultdict(lambda: defaultdict(list))})
-
-    # Iterate through the DataFrame to populate the nested structure
-    for _, row in df.iterrows():
-        patient_id = row["Patient Number"]
-        patient_name = row["Patient Name"]
-        date = row["Date"].strftime("%Y-%m-%d")  # Format date as string
-        type_ = row["Type"]
-
-        # Ensure the patient's name is stored
-        result[patient_id]["Patient Name"] = patient_name
-
-        # Append the description under the correct patient, date, and type
-        result[patient_id]["Visits"][date][type_].append(row["Description"])
-
-    # Convert defaultdict to regular dict for cleaner output
-    structured_data = {k: {"Patient Name": v["Patient Name"], "Visits": dict(v["Visits"])} for k, v in result.items()}
-
+    # Clean column names and convert Date to date only (without time)
+    df.columns = df.columns.str.strip()
+    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    
+    # Create a nested dictionary structure for patient records
+    patient_records = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    
+    # Group by Patient Number and Date
+    for (patient_number, date), group in df.groupby(["Patient Number", "Date"]):
+        for _, row in group.iterrows():
+            entry = {
+                "Patient Name": row["Patient Name"],
+                "Doctor": row["Doctor"] if "Doctor" in row else user.name,
+                "Description": row["Description"]
+            }
+            # Append entry to the respective type (Complaints, Observations, etc.)
+            patient_records[patient_number][str(date)][row["Type"]].append(entry)
+    
     try:
-        for patient_id, data in structured_data.items():
-            patient = patients.get(patient_id)
-            if patient:
-                for date, visit_data in data["Visits"].items():
-                    complaints = visit_data.get("'complaints'", [])
-                    diagnoses = visit_data.get("'diagnoses'", [])
-                    vital_signs = visit_data.get("'observations'", [])
-                    notes = visit_data.get("'treatmentnotes'", [])
-                    
-                    clinical_note = ClinicalNote(
-                        patient_id=patient.id,
-                        date=pd.to_datetime(date),
-                    )
-                    db.add(clinical_note)
-                    db.commit()
-                    db.refresh(clinical_note)
-
-                    complaints_db = []
-                    complaint_suggestions_db = set()  # Use a set to avoid redundant merges
-
-                    for complaint in complaints:
-                        cleaned_complaint = complaint.strip().strip("'").strip('"')
-
-                        # Create Complaint instance
-                        complaints_db.append(Complaint(
-                            clinical_note_id=clinical_note.id,
-                            complaint=cleaned_complaint
-                        ))
-
-                        # Avoid redundant merges by using a set
-                        normalized_complaint = normalize_string(cleaned_complaint)
-                        if normalized_complaint not in complaint_suggestions_db:
-                            db.merge(ComplaintSuggestion(complaint=normalized_complaint))
-                            complaint_suggestions_db.add(normalized_complaint)
-
-                    diagnoses_db = []
-                    diagnoses_suggestion_db = set()
-
-                    for diagnosis in diagnoses:
-                        cleaned_diagnosis = diagnosis.strip().strip("'").strip('"')
-
-                        diagnoses_db.append(Diagnosis(
-                            clinical_note_id=clinical_note.id,
-                            diagnosis=cleaned_diagnosis
-                        ))
-
-                        normalized_diagnosis = normalize_string(cleaned_diagnosis)
-                        if normalized_diagnosis not in diagnoses_suggestion_db:
-                            db.merge(DiagnosisSuggestion(diagnosis=normalized_diagnosis))
-                            diagnoses_suggestion_db.add(normalized_diagnosis)
-
-                        # db.merge(DiagnosisSuggestion(diagnosis=cleaned_diagnosis))
-                    db.bulk_save_objects(diagnoses_db)
-                    db.commit()
-
-                    vital_signs_db = []
-                    vital_sign_suggestions_db = set()
-                    for vital_sign in vital_signs:
-                        cleaned_vital_sign = vital_sign.strip().strip("'").strip('"')
-
-                        vital_signs_db.append(VitalSign(
-                            clinical_note_id=clinical_note.id,
-                            vital_sign=cleaned_vital_sign
-                        ))
-                        normalized_vital_sign = normalize_string(cleaned_vital_sign)
-                        if normalized_vital_sign not in vital_sign_suggestions_db:
-                            db.merge(VitalSignSuggestion(vital_sign=normalized_vital_sign))
-                            vital_sign_suggestions_db.add(normalized_vital_sign)
-                    db.bulk_save_objects(vital_signs_db)
-                    db.commit()
-
-                    treatment_notes_db = []
-                    for treatment_note in notes:
-                        cleaned_treatment_note = treatment_note.strip().strip("'").strip('"')
-                        treatment_notes_db.append(Notes(
-                            clinical_notes_id=clinical_note.id,
-                            note=cleaned_treatment_note
-                        ))
+        clinical_notes_created = 0
+        
+        for patient_number, dates in patient_records.items():
+            patient = patients.get(patient_number)
+            if not patient:
+                continue
+                
+            for date_str, types in dates.items():
+                # Search for an appointment on this date for this patient
+                appointment = db.query(Appointment).filter(
+                    Appointment.patient_id == patient.id,
+                    Appointment.appointment_date == pd.to_datetime(date_str)
+                ).first()
+                
+                # Create clinical note and link to appointment if found
+                clinical_note = ClinicalNote(
+                    patient_id=patient.id,
+                    date=pd.to_datetime(date_str),
+                    appointment_id=appointment.id if appointment else None
+                )
+                db.add(clinical_note)
+                db.commit()
+                db.refresh(clinical_note)
+                clinical_notes_created += 1
+                
+                # Process each type of clinical note entry
+                for note_type, entries in types.items():
+                    if note_type == "'complaints'" or note_type == "complaints":
+                        complaints_db = []
+                        complaint_suggestions = set()
                         
-                    db.bulk_save_objects(treatment_notes_db)
-                    db.commit()
-
+                        for entry in entries:
+                            cleaned_complaint = entry["Description"].strip().strip("'").strip('"')
+                            complaints_db.append(Complaint(
+                                clinical_note_id=clinical_note.id,
+                                complaint=cleaned_complaint
+                            ))
+                            
+                            # Add to suggestions
+                            normalized_complaint = normalize_string(cleaned_complaint)
+                            complaint_suggestions.add(normalized_complaint)
+                        
+                        # Bulk save complaints
+                        if complaints_db:
+                            db.bulk_save_objects(complaints_db)
+                            db.commit()
+                            
+                        # Add unique suggestions
+                        for complaint in complaint_suggestions:
+                            db.merge(ComplaintSuggestion(complaint=complaint))
+                        db.commit()
+                            
+                    elif note_type == "'diagnoses'" or note_type == "diagnoses":
+                        diagnoses_db = []
+                        diagnoses_suggestions = set()
+                        
+                        for entry in entries:
+                            cleaned_diagnosis = entry["Description"].strip().strip("'").strip('"')
+                            diagnoses_db.append(Diagnosis(
+                                clinical_note_id=clinical_note.id,
+                                diagnosis=cleaned_diagnosis
+                            ))
+                            
+                            normalized_diagnosis = normalize_string(cleaned_diagnosis)
+                            diagnoses_suggestions.add(normalized_diagnosis)
+                        
+                        if diagnoses_db:
+                            db.bulk_save_objects(diagnoses_db)
+                            db.commit()
+                            
+                        for diagnosis in diagnoses_suggestions:
+                            db.merge(DiagnosisSuggestion(diagnosis=diagnosis))
+                        db.commit()
+                            
+                    elif note_type == "'observations'" or note_type == "observations":
+                        vital_signs_db = []
+                        vital_sign_suggestions = set()
+                        
+                        for entry in entries:
+                            cleaned_vital_sign = entry["Description"].strip().strip("'").strip('"')
+                            vital_signs_db.append(VitalSign(
+                                clinical_note_id=clinical_note.id,
+                                vital_sign=cleaned_vital_sign
+                            ))
+                            
+                            normalized_vital_sign = normalize_string(cleaned_vital_sign)
+                            vital_sign_suggestions.add(normalized_vital_sign)
+                        
+                        if vital_signs_db:
+                            db.bulk_save_objects(vital_signs_db)
+                            db.commit()
+                            
+                        for vital_sign in vital_sign_suggestions:
+                            db.merge(VitalSignSuggestion(vital_sign=vital_sign))
+                        db.commit()
+                            
+                    elif note_type == "'treatmentnotes'" or note_type == "treatmentnotes":
+                        notes_db = []
+                        
+                        for entry in entries:
+                            cleaned_note = entry["Description"].strip().strip("'").strip('"')
+                            notes_db.append(Notes(
+                                clinical_notes_id=clinical_note.id,
+                                note=cleaned_note
+                            ))
+                        
+                        if notes_db:
+                            db.bulk_save_objects(notes_db)
+                            db.commit()
+        
+        # Update import log status
+        import_log.status = ImportStatus.COMPLETED
+        db.commit()
+        
+        return JSONResponse(
+            status_code=200, 
+            content={"message": f"Clinical note data processed successfully. Created {clinical_notes_created} clinical notes."}
+        )
+        
     except Exception as e:
-        print(f"Error during bulk insert: {str(e)}")
+        print(f"Error during clinical notes processing: {str(e)}")
         db.rollback()
         import_log.status = ImportStatus.FAILED
         db.commit()
-        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+        return JSONResponse(status_code=400, content={"error": f"Error during clinical notes processing: {str(e)}"})
 
 async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing treatment plan data")
     
     # Pre-process all patient numbers and get patients in bulk
-    patient_numbers = df["Patient Number"].astype(str).unique()
+    patient_numbers = df["Patient Number"].astype(str).str.strip("'").unique()
     patients = {
         p.patient_number: p for p in 
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
-
-    for _, row in df.iterrows():
+    
+    # Clean and prepare data
+    df.columns = df.columns.str.strip()
+    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
+    df["UnitCost"] = pd.to_numeric(df["UnitCost"].astype(str).str.strip("'"), errors="coerce").fillna(0)
+    df["Quantity"] = pd.to_numeric(df["Quantity"].astype(str).str.strip("'"), errors="coerce").fillna(1)
+    df["Discount"] = pd.to_numeric(df["Discount"].astype(str).str.strip("'"), errors="coerce").fillna(0)
+    df["Amount"] = pd.to_numeric(df["Amount"].astype(str).str.strip("'"), errors="coerce").fillna(0)
+    
+    # Group by patient and date to create treatment plans
+    for (patient_number, date), group in df.groupby(["Patient Number", "Date"]):
         try:
-            patient_number = str(row.get("Patient Number", ""))
+            patient_number = str(patient_number)
             patient = patients.get(patient_number)
-            treatment_name = str(row.get("Treatment Name", "")).strip("'")
-            if patient:
-                treatment_plan = TreatmentPlan(
-                    patient_id=patient.id,
-                    doctor=user.id,
-                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                )
-                db.add(treatment_plan)
-                db.commit()
-                db.refresh(treatment_plan)
-
-                treatment_plan_item = TreatmentPlanItem(
+            
+            if not patient:
+                continue
+                
+            treatment_date = date.to_pydatetime() if not pd.isna(date) else datetime.now()
+            
+            # Find if there's an appointment for this patient on this date
+            appointment = db.query(Appointment).filter(
+                Appointment.patient_id == patient.id,
+                func.date(Appointment.appointment_date) == treatment_date.date()
+            ).first()
+            
+            # Create treatment plan
+            treatment_plan = TreatmentPlan(
+                patient_id=patient.id,
+                doctor_id=user.id,
+                date=treatment_date,
+                appointment_id=appointment.id if appointment else None,
+                # clinic_id=user.default_clinic_id
+            )
+            db.add(treatment_plan)
+            db.commit()
+            db.refresh(treatment_plan)
+            
+            # Process each treatment in the group
+            for _, row in group.iterrows():
+                treatment_name = str(row.get("Treatment Name", "")).strip("'")
+                
+                # Calculate final amount based on discount type
+                unit_cost = float(row.get("Treatment Cost", 0.0))
+                quantity = int(row.get("Quantity", 1))
+                discount = float(row.get("Discount", 0))
+                discount_type = str(row.get("DiscountType", "")).strip("'")
+                
+                # Calculate amount with discount applied
+                if discount_type.upper() == "PERCENT":
+                    amount = unit_cost * quantity * (1 - discount / 100)
+                else:
+                    amount = float(row.get("Amount", 0.0))
+                
+                treatment = Treatment(
                     treatment_plan_id=treatment_plan.id,
-                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
-                    unit_cost=float(str(row.get("UnitCost", 0.0)).strip("'")),
-                    quantity=int(float(str(row.get("Quantity", 1)).strip("'"))),
-                    discount=float(str(row.get("Discount", 0)).strip("'")) if row.get("Discount") else None,
-                    discount_type=str(row.get("DiscountType", ""))[:50],
-                    amount=float(str(row.get("Amount", 0.0)).strip("'")),
+                    patient_id=patient.id,
+                    doctor_id=user.id,
+                    # clinic_id=user.default_clinic_id,
+                    appointment_id=appointment.id if appointment else None,
+                    treatment_date=treatment_date,
+                    treatment_name=treatment_name[:255],
+                    unit_cost=unit_cost,
+                    quantity=quantity,
+                    discount=discount,
+                    discount_type=discount_type[:50],
+                    amount=amount,
                     treatment_description=str(row.get("Treatment Description", "")),
+                    tooth_number=str(row.get("Tooth Number", "")),
                     tooth_diagram=str(row.get("Tooth Diagram", ""))
                 )
-
-                db.add(treatment_plan_item)
+                
+                db.add(treatment)
                 db.commit()
-
-                existing_treatment_name_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == treatment_name).first()
-                if not existing_treatment_name_suggestion:
-                    db.add(TreatmentNameSuggestion(
-                        treatment_name=treatment_name,
-                    ))
+                
+                # Add treatment name to suggestions if not exists
+                existing_treatment_name_suggestion = db.query(TreatmentNameSuggestion).filter(
+                    TreatmentNameSuggestion.treatment_name == treatment_name
+                ).first()
+                
+                if not existing_treatment_name_suggestion and treatment_name:
+                    db.add(TreatmentNameSuggestion(treatment_name=treatment_name))
                     db.commit()
+                    
         except Exception as e:
             print(f"Error processing treatment plan row: {str(e)}")
             db.rollback()
@@ -2183,15 +2263,28 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             return float(cleaned)
         except (ValueError, TypeError):
             return 0.0
-
-    # Safely convert numeric columns
+    
+    def clean_string(value):
+        if pd.isna(value):
+            return ""
+        return str(value).strip("'")
+    
+    df = df.groupby(["Patient Number", "Date"]).sum().reset_index()
+    
+    # Clean and convert data types
     df["Amount Paid"] = df["Amount Paid"].apply(safe_float_convert)
-    df["Refunded amount"] = df["Refunded amount"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else None)
+    df["Refunded amount"] = df["Refunded amount"].apply(lambda x: safe_float_convert(x) if pd.notna(x) else 0.0)
     df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
-    df["Patient Number"] = df["Patient Number"].astype(str)
+    df["Patient Number"] = df["Patient Number"].apply(lambda x: clean_string(x))
+    df["Patient Name"] = df["Patient Name"].apply(lambda x: clean_string(x))
+    df["Receipt Number"] = df["Receipt Number"].apply(lambda x: clean_string(x))
+    df["Treatment name"] = df["Treatment name"].apply(lambda x: clean_string(x))
+    df["Invoice Number"] = df["Invoice Number"].apply(lambda x: clean_string(x))
+    df["Payment Mode"] = df["Payment Mode"].apply(lambda x: clean_string(x))
+    df["Cancelled"] = df["Cancelled"].apply(lambda x: True if clean_string(x) == "1" else False)
     
     # Get all unique patient numbers
-    patient_numbers = df["Patient Number"].unique()
+    patient_numbers = df["Patient Number"].str.strip("'").unique()
     
     # Bulk fetch all patients in one query
     patients = {
@@ -2199,17 +2292,29 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
     
+    payments = []
     try:
+        # Build list of payment objects
         for _, row in df.iterrows():
-            patient_number = row["Patient Number"]
+            patient_number = str(row["Patient Number"]).strip("'")
             patient = patients.get(patient_number)
             
-            if patient:            
+            # Only query for appointment if patient exists
+            appointment = None
+            if patient:
+                appointment = db.query(Appointment).filter(
+                    Appointment.patient_id == patient.id, 
+                    Appointment.appointment_date == row["Date"]
+                ).first()
+            
+            if patient:
                 payment = Payment(
                     date=row["Date"] if pd.notna(row["Date"]) else None,
                     doctor_id=user.id,
+                    # clinic_id=user.clinic_id,
                     patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
+                    appointment_id=appointment.id if appointment else None,
+                    patient_number=patient_number,
                     patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
                     receipt_number=str(row.get("Receipt Number", ""))[:255],
                     treatment_name=str(row.get("Treatment name", "")).strip("'")[:255],
@@ -2222,41 +2327,61 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     refunded_amount=row["Refunded amount"],
                     cancelled=bool(row.get("Cancelled", False))
                 )
-                
-                # Save payment first to get ID
-                db.add(payment)
-                db.flush()
-
-        db.commit()
+                payments.append(payment)
+        
+        # Bulk insert all payments
+        if payments:
+            db.bulk_save_objects(payments)
+            db.commit()
+            
+        return JSONResponse(status_code=200, content={"message": f"Successfully processed {len(payments)} payment records"})
     except Exception as e:
-        print(f"Error during bulk insert: {str(e)}")
+        print(f"Error processing payments: {str(e)}")
         db.rollback()
         import_log.status = ImportStatus.FAILED
         db.commit()
-        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+        return JSONResponse(status_code=400, content={"error": f"Error processing payments: {str(e)}"})
 
 async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing invoice data")
     
     # Get all unique patient numbers from the dataframe
-    patient_numbers = df["Patient Number"].unique()
+    patient_numbers = df["Patient Number"].str.strip("'").unique()
     
     # Bulk fetch all patients in one query
     patients = {
         p.patient_number: p for p in 
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
+
+    df = df.groupby(["Patient Number", "Date"]).sum().reset_index()
+    
+    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
     
     try:
         for _, row in df.iterrows():
             patient_number = str(row.get("Patient Number", ""))
             patient = patients.get(patient_number)
+            appointment = None
+            if patient:
+                appointment = db.query(Appointment).filter(
+                    Appointment.patient_id == patient.id,
+                    Appointment.appointment_date == row["Date"]
+                ).first()
+                payment = None
+                if appointment:
+                    payment = db.query(Payment).filter(
+                        Payment.appointment_id == appointment.id
+                    ).first()
+
             
             if patient:
                 invoice = Invoice(
                     date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
                     doctor_id=user.id,
                     patient_id=patient.id,
+                    appointment_id=appointment.id if appointment else None,
+                    payment_id=payment.id if payment else None,
                     patient_number=str(row.get("Patient Number", ""))[:255],
                     patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
                     doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
@@ -2393,19 +2518,29 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         if file_ext == '.zip':
             try:
                 print("Extracting zip file...")
+                import_log.current_stage = "Extracting ZIP file"
+                import_log.progress = 5
+                db.commit()
+                
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
                     zip_ref.extractall(f"uploads/imports/{uuid}")
                 print("Zip file extracted successfully")
+                
+                import_log.progress = 10
+                db.commit()
             except Exception as e:
                 print(f"Error extracting zip file: {str(e)}")
                 import_log.status = ImportStatus.FAILED
+                import_log.progress = 0
+                import_log.error_message = f"Failed to extract ZIP: {str(e)}"
                 db.commit()
                 return
 
         # Update status to processing
         import_log.status = ImportStatus.PROCESSING
+        import_log.current_stage = "Analyzing files"
+        import_log.progress = 15
         db.commit()
-        print("Updated import status to PROCESSING")
 
         # Process each CSV file
         csv_files = [f for f in os.listdir(f"uploads/imports/{uuid}") if f.endswith('.csv')]
@@ -2413,6 +2548,8 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         if not csv_files:
             print("No CSV files found")
             import_log.status = ImportStatus.FAILED
+            import_log.progress = 0
+            import_log.error_message = "No CSV files found in upload"
             db.commit()
             return
 
@@ -2420,41 +2557,54 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         file_types = [
             {
                 "patterns": ["patients", "patient"],
-                "processor": process_patient_data
+                "processor": process_patient_data,
+                "stage_name": "Processing Patient Data"
             },
             {
                 "patterns": ["appointments", "appointment"],
-                "processor": process_appointment_data
+                "processor": process_appointment_data,
+                "stage_name": "Processing Appointment Data"
             },
             {
                 "patterns": ["treatment.csv"],
-                "processor": process_treatment_data
+                "processor": process_treatment_data,
+                "stage_name": "Processing Treatment Data"
             },
             {
                 "patterns": ["clinicalnotes", "clinical-notes", "clinical_notes"],
-                "processor": process_clinical_note_data
+                "processor": process_clinical_note_data,
+                "stage_name": "Processing Clinical Notes"
             },
             {
                 "patterns": ["treatmentplans", "treatment-plans", "treatment_plans"],
-                "processor": process_treatment_plan_data
+                "processor": process_treatment_plan_data,
+                "stage_name": "Processing Treatment Plans"
             },
             {
                 "patterns": ["expenses", "expense"],
-                "processor": process_expense_data
+                "processor": process_expense_data,
+                "stage_name": "Processing Expense Data"
             },
             {
                 "patterns": ["payments", "payment"],
-                "processor": process_payment_data
+                "processor": process_payment_data,
+                "stage_name": "Processing Payment Data"
             },
             {
                 "patterns": ["invoices", "invoice"],
-                "processor": process_invoice_data
+                "processor": process_invoice_data,
+                "stage_name": "Processing Invoice Data"
             },
             {
                 "patterns": ["procedure catalog", "procedure-catalog", "procedure_catalog", "procedurecatalog"],
-                "processor": process_procedure_catalog_data
+                "processor": process_procedure_catalog_data,
+                "stage_name": "Processing Procedure Catalog"
             }
         ]
+
+        total_files = len(csv_files)
+        files_processed = 0
+        progress_per_file = 75 / total_files  # 75% of progress bar for file processing (15-90%)
 
         # Process files in order
         for file_type in file_types:
@@ -2466,6 +2616,10 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                 if any(pattern.replace(" ", "").lower() in normalized_filename for pattern in file_type["patterns"]):
                     print(f"\nProcessing file: {filename}")
                     try:
+                        import_log.current_stage = f"{file_type['stage_name']} ({filename})"
+                        import_log.current_file = filename
+                        db.commit()
+                        
                         print(f"Reading CSV file: {filename}")
                         df = pd.read_csv(f"uploads/imports/{uuid}/{filename}", keep_default_na=False)
                         df = df.fillna("")
@@ -2479,12 +2633,22 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         else:
                             await processor(import_log, df, db)
                             
+                        files_processed += 1
+                        progress = 15 + int(files_processed * progress_per_file)
+                        import_log.progress = min(progress, 90)  # Cap at 90%
+                        import_log.files_processed = files_processed
+                        import_log.total_files = total_files
+                        db.commit()
+                            
                     except Exception as e:
                         print(f"Error processing file {filename}: {str(e)}")
+                        import_log.error_message = f"Error in {filename}: {str(e)}"
                         continue
 
         # Update import log status to completed
         import_log.status = ImportStatus.COMPLETED
+        import_log.current_stage = "Import Completed"
+        import_log.progress = 100
         db.commit()
         print("Import completed successfully")
         
@@ -2493,6 +2657,8 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         if 'import_log' in locals():
             if import_log:
                 import_log.status = ImportStatus.FAILED
+                import_log.progress = 0
+                import_log.error_message = f"Import failed: {str(e)}"
                 db.commit()
                 print("Updated import status to FAILED")
     finally:
@@ -2507,34 +2673,56 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
     description="""
     Import data from CSV files or a ZIP archive containing CSV files.
     
-    Supported file formats:
+    **Supported file formats:**
     - Single CSV file
     - ZIP archive containing multiple CSV files
     
-    The CSV files should contain data for:
+    **Supported data types:**
     - Patients
-    - Appointments
+    - Appointments 
     - Expenses
     - Payments
     - Invoices
     - Procedure catalogs
+    - Treatments
+    - Clinical notes
+    - Treatment plans
     
-    Required headers:
-    - Authorization: Bearer {access_token}
+    **File requirements:**
+    - CSV files must have appropriate headers matching the data type
+    - Data must be properly formatted according to schema
+    - Files in ZIP archives must be organized by data type
     
-    Notes:
-    - Files will be validated before processing
-    - Data will be imported in a specific order to maintain referential integrity
-    - Existing records may be updated based on unique identifiers
-    - Import status can be tracked via the returned import_log_id
-    - Files are processed asynchronously in the background
+    **Processing details:**
+    - Files are validated before processing
+    - Data is imported in order to maintain referential integrity 
+    - Duplicate records are skipped based on unique identifiers
+    - Processing happens asynchronously in background
+    - Progress can be monitored via import_log_id
+    
+    **Progress tracking includes:**
+    - Overall progress percentage (0-100%)
+    - Current processing stage
+    - Current file being processed
+    - Files processed count
+    - Total files count
+    - Any error messages
+    
+    **Authentication:**
+    - Requires valid Bearer token
+    
+    **Request body:**
+    - file: CSV or ZIP file (form-data)
     """,
     responses={
         200: {
-            "description": "Data import started",
+            "description": "Data import started successfully",
             "content": {
                 "application/json": {
-                    "example": {"message": "Data import started", "import_log_id": 123}
+                    "example": {
+                        "message": "Data import started",
+                        "import_log_id": "550e8400-e29b-41d4-a716-446655440000"
+                    }
                 }
             }
         },
@@ -2548,13 +2736,30 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         },
                         "invalid_data": {
                             "value": {"error": "Invalid data format in CSV file"}
+                        },
+                        "missing_file": {
+                            "value": {"error": "No file provided"}
                         }
                     }
                 }
             }
         },
-        401: {"description": "Unauthorized - Invalid or missing token"},
-        404: {"description": "User not found"},
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Unauthorized - Invalid or missing token"}
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
         500: {
             "description": "Internal server error",
             "content": {
@@ -2590,7 +2795,13 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
         import_log = ImportLog(
             user_id=user.id,
             file_name=file.filename,
-            status=ImportStatus.PENDING
+            status=ImportStatus.PENDING,
+            progress=0,
+            current_stage="Initializing",
+            current_file=None,
+            files_processed=0,
+            total_files=0,
+            error_message=None
         )
         db.add(import_log)
         db.commit()
@@ -2616,6 +2827,8 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
     except Exception as e:
         if 'import_log' in locals():
             import_log.status = ImportStatus.FAILED
+            import_log.progress = 0
+            import_log.error_message = f"Failed to start import: {str(e)}"
             db.commit()
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
 
