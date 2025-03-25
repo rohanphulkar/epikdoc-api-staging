@@ -113,10 +113,10 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
+        # clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
 
-        if not clinic:
-            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
+        # if not clinic:
+        #     return JSONResponse(status_code=404, content={"message": "Clinic not found"})
 
         patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
 
@@ -128,7 +128,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 
         new_appointment = Appointment(
             patient_id=patient.id,
-            clinic_id=clinic.id,
+            # clinic_id=clinic.id,
             patient_number=patient.patient_number if patient.patient_number else None,
             patient_name=patient.name,
             doctor_id=user.id,
@@ -149,14 +149,14 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         db.commit()
         db.refresh(new_appointment)
 
-        if appointment.send_reminder:
-            if appointment.remind_time_before:
-                reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
-                scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, new_appointment.id])
-                print(f"Reminder scheduled for {reminder_time}")
+        # if appointment.send_reminder:
+        #     if appointment.remind_time_before:
+        #         reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
+        #         scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, new_appointment.id])
+        #         print(f"Reminder scheduled for {reminder_time}")
 
-        if new_appointment.share_on_email:
-            await send_appointment_email(db, new_appointment.id)
+        # if new_appointment.share_on_email:
+        #     await send_appointment_email(db, new_appointment.id)
 
         return JSONResponse(status_code=201, content={"message": "Appointment created successfully"})
     except Exception as e:

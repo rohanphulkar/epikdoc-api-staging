@@ -7,7 +7,7 @@ from db.db import get_db
 from auth.models import User
 from fastapi.responses import JSONResponse
 from utils.auth import verify_token
-from sqlalchemy import func, asc, desc
+from sqlalchemy import func, asc, desc, case
 import os
 from sqlalchemy.exc import SQLAlchemyError
 from PIL import Image
@@ -112,18 +112,23 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
 
         # Create treatment record
         new_treatment = Treatment(
-            doctor=user.id,
+            doctor_id=user.id,
+            clinic_id=treatment.clinic_id,
             patient_id=treatment.patient_id,
             appointment_id=treatment.appointment_id,
+            treatment_plan_id=treatment.treatment_plan_id,
             treatment_date=treatment.treatment_date,
             treatment_name=treatment.treatment_name,
             tooth_number=treatment.tooth_number,
             treatment_notes=treatment.treatment_notes,
-            quantity=treatment.quantity or 1,
-            treatment_cost=treatment.treatment_cost,
+            quantity=treatment.quantity,
+            unit_cost=treatment.unit_cost,
             amount=treatment.amount,
             discount=treatment.discount,
-            discount_type=treatment.discount_type
+            discount_type=treatment.discount_type,
+            treatment_description=treatment.treatment_description,
+            tooth_diagram=treatment.tooth_diagram,
+            completed=treatment.completed
         )
 
         db.add(new_treatment)
@@ -232,7 +237,7 @@ async def get_treatments(
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
     
         # Get total count
-        total = db.query(func.count(Treatment.id)).filter(Treatment.doctor == user.id).scalar()
+        total = db.query(func.count(Treatment.id)).filter(Treatment.doctor_id == user.id).scalar()
         total_pages = ceil(total / per_page)
         
         # Calculate date ranges for statistics
@@ -244,13 +249,13 @@ async def get_treatments(
         stats = db.query(
             func.count(Treatment.id).label('count'),
             func.coalesce(func.sum(Treatment.amount), 0).label('total_amount'),
-            func.sum(case([(func.date(Treatment.treatment_date) == today, 1)], else_=0)).label('today_count'),
-            func.coalesce(func.sum(case([(func.date(Treatment.treatment_date) == today, Treatment.amount)], else_=0)), 0).label('today_amount'),
-            func.sum(case([(Treatment.treatment_date >= first_day_of_month, 1)], else_=0)).label('month_count'),
-            func.coalesce(func.sum(case([(Treatment.treatment_date >= first_day_of_month, Treatment.amount)], else_=0)), 0).label('month_amount'),
-            func.sum(case([(Treatment.treatment_date >= first_day_of_year, 1)], else_=0)).label('year_count'),
-            func.coalesce(func.sum(case([(Treatment.treatment_date >= first_day_of_year, Treatment.amount)], else_=0)), 0).label('year_amount')
-        ).filter(Treatment.doctor == user.id).first()
+            func.sum(case((func.date(Treatment.treatment_date) == today, 1), else_=0)).label('today_count'),
+            func.coalesce(func.sum(case((func.date(Treatment.treatment_date) == today, Treatment.amount), else_=0)), 0).label('today_amount'),
+            func.sum(case((Treatment.treatment_date >= first_day_of_month, 1), else_=0)).label('month_count'),
+            func.coalesce(func.sum(case((Treatment.treatment_date >= first_day_of_month, Treatment.amount), else_=0)), 0).label('month_amount'),
+            func.sum(case((Treatment.treatment_date >= first_day_of_year, 1), else_=0)).label('year_count'),
+            func.coalesce(func.sum(case((Treatment.treatment_date >= first_day_of_year, Treatment.amount), else_=0)), 0).label('year_amount')
+        ).filter(Treatment.doctor_id == user.id).first()
         
         # Get paginated treatments with sorting
         sort_column = getattr(Treatment, sort_by)
@@ -258,7 +263,7 @@ async def get_treatments(
             sort_column = sort_column.desc()
             
         treatments = db.query(Treatment)\
-            .filter(Treatment.doctor == user.id)\
+            .filter(Treatment.doctor_id == user.id)\
             .order_by(sort_column)\
             .offset((page - 1) * per_page)\
             .limit(per_page)\
@@ -269,20 +274,45 @@ async def get_treatments(
                 "id": t.id,
                 "patient_id": t.patient_id,
                 "appointment_id": t.appointment_id,
+                "treatment_plan_id": t.treatment_plan_id,
+                "doctor_id": t.doctor_id,
+                "clinic_id": t.clinic_id,
                 "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
                 "treatment_name": t.treatment_name,
                 "tooth_number": t.tooth_number,
                 "treatment_notes": t.treatment_notes,
-                "quantity": t.quantity,
-                "treatment_cost": t.treatment_cost,
-                "amount": t.amount,
-                "discount": t.discount,
+                "quantity": float(t.quantity) if t.quantity else 0.0,
+                "unit_cost": float(t.unit_cost) if t.unit_cost else 0.0,
+                "amount": float(t.amount) if t.amount else 0.0,
+                "discount": float(t.discount) if t.discount else 0.0,
                 "discount_type": t.discount_type,
-                "doctor": t.doctor,
+                "treatment_description": t.treatment_description,
+                "tooth_diagram": t.tooth_diagram,
+                "completed": t.completed,
                 "created_at": t.created_at.isoformat() if t.created_at else None
             }
             for t in treatments
         ]
+
+        # Convert Decimal values to float for JSON serialization
+        stats_dict = {
+            "today": {
+                "count": int(stats.today_count or 0),
+                "total_amount": float(stats.today_amount or 0)
+            },
+            "this_month": {
+                "count": int(stats.month_count or 0),
+                "total_amount": float(stats.month_amount or 0)
+            },
+            "this_year": {
+                "count": int(stats.year_count or 0),
+                "total_amount": float(stats.year_amount or 0)
+            },
+            "overall": {
+                "count": int(stats.count or 0),
+                "total_amount": float(stats.total_amount or 0)
+            }
+        }
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatments retrieved successfully", 
@@ -293,24 +323,7 @@ async def get_treatments(
                 "current_page": page,
                 "per_page": per_page
             },
-            "statistics": {
-                "today": {
-                    "count": stats.today_count or 0,
-                    "total_amount": float(stats.today_amount) or 0.0
-                },
-                "this_month": {
-                    "count": stats.month_count or 0,
-                    "total_amount": float(stats.month_amount) or 0.0
-                },
-                "this_year": {
-                    "count": stats.year_count or 0,
-                    "total_amount": float(stats.year_amount) or 0.0
-                },
-                "overall": {
-                    "count": stats.count or 0,
-                    "total_amount": float(stats.total_amount) or 0.0
-                }
-            }
+            "statistics": stats_dict
         })
     except SQLAlchemyError as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
@@ -364,7 +377,7 @@ async def search_treatments(
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
         # Build base query
-        query = db.query(Treatment).filter(Treatment.doctor == user.id)
+        query = db.query(Treatment).filter(Treatment.doctor_id == user.id)
         
         # Apply filters
         if treatment_name:
@@ -400,16 +413,21 @@ async def search_treatments(
                 "id": t.id,
                 "patient_id": t.patient_id,
                 "appointment_id": t.appointment_id,
+                "treatment_plan_id": t.treatment_plan_id,
+                "doctor_id": t.doctor_id,
+                "clinic_id": t.clinic_id,
                 "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
                 "treatment_name": t.treatment_name,
                 "tooth_number": t.tooth_number,
                 "treatment_notes": t.treatment_notes,
                 "quantity": t.quantity,
-                "treatment_cost": t.treatment_cost,
+                "unit_cost": t.unit_cost,
                 "amount": t.amount,
                 "discount": t.discount,
                 "discount_type": t.discount_type,
-                "doctor": t.doctor,
+                "treatment_description": t.treatment_description,
+                "tooth_diagram": t.tooth_diagram,
+                "completed": t.completed,
                 "created_at": t.created_at.isoformat() if t.created_at else None
             }
             for t in treatments
@@ -496,7 +514,7 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
         # Get treatment
         treatment = db.query(Treatment).filter(
             Treatment.id == treatment_id,
-            Treatment.doctor == user.id
+            Treatment.doctor_id == user.id
         ).first()
         
         if not treatment:
@@ -508,16 +526,21 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
                 "id": treatment.id,
                 "patient_id": treatment.patient_id,
                 "appointment_id": treatment.appointment_id,
+                "treatment_plan_id": treatment.treatment_plan_id,
+                "doctor_id": treatment.doctor_id,
+                "clinic_id": treatment.clinic_id,
                 "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
                 "treatment_name": treatment.treatment_name,
                 "tooth_number": treatment.tooth_number,
                 "treatment_notes": treatment.treatment_notes,
                 "quantity": treatment.quantity,
-                "treatment_cost": treatment.treatment_cost,
+                "unit_cost": treatment.unit_cost,
                 "amount": treatment.amount,
                 "discount": treatment.discount,
                 "discount_type": treatment.discount_type,
-                "doctor": treatment.doctor,
+                "treatment_description": treatment.treatment_description,
+                "tooth_diagram": treatment.tooth_diagram,
+                "completed": treatment.completed,
                 "created_at": treatment.created_at.isoformat() if treatment.created_at else None
             }
         })
@@ -571,7 +594,7 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
         # Get and update treatment
         existing_treatment = db.query(Treatment).filter(
             Treatment.id == treatment_id,
-            Treatment.doctor == user.id
+            Treatment.doctor_id == user.id
         ).first()
         
         if not existing_treatment:
@@ -635,7 +658,7 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
         # Get and delete treatment
         treatment = db.query(Treatment).filter(
             Treatment.id == treatment_id,
-            Treatment.doctor == user.id
+            Treatment.doctor_id == user.id
         ).first()
         
         if not treatment:
@@ -665,7 +688,7 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
     
     Required fields:
     - patient_id: ID of the patient
-    - appoitment_id: ID of the appoitment
+    - appointment_id: ID of the appointment
     - treatment_name: Name of the treatment
     - unit_cost: Cost per unit of treatment
     - quantity: Number of units
@@ -681,6 +704,7 @@ async def delete_treatment(treatment_id: str, request: Request, db: Session = De
 )
 async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanCreate, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -689,52 +713,65 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
+        # Validate patient exists
         if treatment_plan.patient_id:
             patient = db.query(Patient).filter(Patient.id == treatment_plan.patient_id).first()
             if not patient:
-                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Invalid patient"})
+                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Patient not found"})
         
+        # Validate appointment exists
         if treatment_plan.appointment_id:
             appointment = db.query(Appointment).filter(Appointment.id == treatment_plan.appointment_id).first()
             if not appointment:
-                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Invalid appointment"})
+                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
         
+        # Create treatment plan
         new_treatment_plan = TreatmentPlan(
-            doctor=user.id,
+            doctor_id=user.id,
             patient_id=treatment_plan.patient_id,
             appointment_id=treatment_plan.appointment_id,
-            date=treatment_plan.date,
+            date=treatment_plan.date or datetime.now(),
+            created_at=datetime.now()
         )
         db.add(new_treatment_plan)
         db.commit()
         db.refresh(new_treatment_plan)
         
+        # Create treatment plan items
         for item in treatment_plan.treatment_plan_items:
             new_treatment_plan_item = Treatment(
                 treatment_plan_id=new_treatment_plan.id,
+                patient_id=treatment_plan.patient_id,
+                appointment_id=treatment_plan.appointment_id,
+                doctor_id=user.id,
+                clinic_id=treatment_plan.clinic_id,
+                treatment_date=item.treatment_date,
                 treatment_name=item.treatment_name,
-                unit_cost=item.unit_cost,
+                tooth_number=item.tooth_number,
+                treatment_notes=item.treatment_notes,
                 quantity=item.quantity,
+                unit_cost=item.unit_cost,
                 amount=item.amount,
                 discount=item.discount,
                 discount_type=item.discount_type,
                 treatment_description=item.treatment_description,
                 tooth_diagram=item.tooth_diagram,
+                completed=item.completed
             )
             db.add(new_treatment_plan_item)
-            db.commit()
-            db.refresh(new_treatment_plan_item)
+        
+        db.commit()
         
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Treatment plan created successfully",
-            "treatment_plan_id":new_treatment_plan.id
+            "treatment_plan_id": new_treatment_plan.id
         })
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/get-treatment-plans",
     status_code=status.HTTP_200_OK,
@@ -763,6 +800,7 @@ async def get_treatment_plans(
     db: Session = Depends(get_db)
 ):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -778,24 +816,24 @@ async def get_treatment_plans(
         
         stats = {
             "today": db.query(TreatmentPlan).filter(
-                TreatmentPlan.doctor == user.id,
+                TreatmentPlan.doctor_id == user.id,
                 func.date(TreatmentPlan.created_at) == today
             ).count(),
             "month": db.query(TreatmentPlan).filter(
-                TreatmentPlan.doctor == user.id,
+                TreatmentPlan.doctor_id == user.id,
                 TreatmentPlan.created_at >= month_start
             ).count(),
             "year": db.query(TreatmentPlan).filter(
-                TreatmentPlan.doctor == user.id,
+                TreatmentPlan.doctor_id == user.id,
                 TreatmentPlan.created_at >= year_start
             ).count(),
             "total": db.query(TreatmentPlan).filter(
-                TreatmentPlan.doctor == user.id
+                TreatmentPlan.doctor_id == user.id
             ).count()
         }
 
         # Build query with sorting
-        query = db.query(TreatmentPlan).filter(TreatmentPlan.doctor == user.id)
+        query = db.query(TreatmentPlan).filter(TreatmentPlan.doctor_id == user.id)
         if hasattr(TreatmentPlan, sort_by):
             sort_column = getattr(TreatmentPlan, sort_by)
             if sort_order.lower() == "desc":
@@ -811,29 +849,40 @@ async def get_treatment_plans(
         treatment_plans = query.offset(offset).limit(limit).all()
         treatment_plan_list = []
         
+        # Build response data
         for plan in treatment_plans:
             treatment_plan_items = [
-            {
-                "id": item.id,
-                "treatment_name": item.treatment_name,
-                "unit_cost": item.unit_cost,
-                "quantity": item.quantity,
-                "amount": item.amount,
-                "discount": item.discount,
-                "discount_type": item.discount_type,
-                "treatment_description": item.treatment_description,
-                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
-                "completed": item.completed
-            }
-                for item in db.query(TreatmentPlanItem)
-                .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
+                {
+                    "id": item.id,
+                    "patient_id": item.patient_id,
+                    "appointment_id": item.appointment_id,
+                    "doctor_id": item.doctor_id,
+                    "clinic_id": item.clinic_id,
+                    "treatment_date": item.treatment_date.isoformat() if item.treatment_date else None,
+                    "treatment_name": item.treatment_name,
+                    "tooth_number": item.tooth_number,
+                    "treatment_notes": item.treatment_notes,
+                    "quantity": item.quantity,
+                    "unit_cost": item.unit_cost,
+                    "amount": item.amount,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "treatment_description": item.treatment_description,
+                    "tooth_diagram": item.tooth_diagram,
+                    "completed": item.completed,
+                    "created_at": item.created_at.isoformat() if item.created_at else None
+                }
+                for item in db.query(Treatment)
+                .filter(Treatment.treatment_plan_id == plan.id)
+                .all()
             ]
+            
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
                 "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
-                "treatment_plan_items": treatment_plan_items,  # Fixed: Assigning the items to the plan
+                "treatment_plan_items": treatment_plan_items,
                 "created_at": plan.created_at.isoformat() if plan.created_at else None,
             })
         
@@ -849,9 +898,9 @@ async def get_treatment_plans(
             "statistics": stats
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/search-treatment-plans",
     status_code=status.HTTP_200_OK,
@@ -861,7 +910,9 @@ async def get_treatment_plans(
     
     Query parameters:
     - patient_id: Filter by patient ID
-    - appointment_id: Filter by appointment ID
+    - appointment_id: Filter by appointment ID 
+    - treatment_name: Filter by treatment name
+    - completed: Filter by treatment completion status (true/false)
     - start_date: Filter by start date (YYYY-MM-DD)
     - end_date: Filter by end date (YYYY-MM-DD)
     - page: Page number (default: 1)
@@ -870,15 +921,16 @@ async def get_treatment_plans(
     - sort_order: Sort order (asc/desc, default: desc)
     
     Returns:
-    - Filtered list of treatment plans
+    - Filtered list of treatment plans with all their treatments
     - Pagination metadata
-    - Search statistics
     """
 )
 async def search_treatment_plans(
     request: Request,
     patient_id: str = Query(None, description="Patient ID to filter by"),
     appointment_id: str = Query(None, description="Appointment ID to filter by"),
+    treatment_name: str = Query(None, description="Filter by treatment name"),
+    completed: bool = Query(None, description="Filter by completion status"),
     start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -888,6 +940,7 @@ async def search_treatment_plans(
     db: Session = Depends(get_db)
 ):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -896,57 +949,91 @@ async def search_treatment_plans(
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        query = db.query(TreatmentPlan).filter(TreatmentPlan.doctor == user.id)
+        # Build base query
+        query = db.query(TreatmentPlan).distinct()
+        
+        # Apply base filters
+        query = query.filter(TreatmentPlan.doctor_id == user.id)
         
         if patient_id:
             query = query.filter(TreatmentPlan.patient_id == patient_id)
         if appointment_id:
             query = query.filter(TreatmentPlan.appointment_id == appointment_id)
         if start_date:
-            query = query.filter(TreatmentPlan.date >= start_date)
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                query = query.filter(TreatmentPlan.date >= start)
+            except ValueError:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid start_date format"})
         if end_date:
-            query = query.filter(TreatmentPlan.date <= end_date)
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+                query = query.filter(TreatmentPlan.date <= end)
+            except ValueError:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid end_date format"})
+            
+        # Get treatment plans that have matching treatments if treatment filters are applied
+        if treatment_name is not None or completed is not None:
+            matching_plan_ids = db.query(Treatment.treatment_plan_id).distinct()
+            if treatment_name:
+                matching_plan_ids = matching_plan_ids.filter(Treatment.treatment_name.ilike(f"%{treatment_name}%"))
+            if completed is not None:
+                matching_plan_ids = matching_plan_ids.filter(Treatment.completed == completed)
+            query = query.filter(TreatmentPlan.id.in_(matching_plan_ids))
             
         # Apply sorting
-        if hasattr(TreatmentPlan, sort_by):
-            sort_column = getattr(TreatmentPlan, sort_by)
-            if sort_order.lower() == "desc":
-                query = query.order_by(desc(sort_column))
-            else:
-                query = query.order_by(asc(sort_column))
+        valid_sort_fields = ["created_at", "date", "patient_id", "appointment_id"]
+        if sort_by not in valid_sort_fields:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": f"Invalid sort field. Must be one of: {', '.join(valid_sort_fields)}"})
+            
+        sort_column = getattr(TreatmentPlan, sort_by)
+        if sort_order.lower() not in ["asc", "desc"]:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Sort order must be 'asc' or 'desc'"})
+            
+        query = query.order_by(desc(sort_column) if sort_order.lower() == "desc" else asc(sort_column))
 
         # Apply pagination
         total_items = query.count()
         total_pages = (total_items + limit - 1) // limit
+        
+        if page > total_pages and total_pages > 0:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": f"Page number exceeds total pages ({total_pages})"})
+            
         offset = (page - 1) * limit
-        
         treatment_plans = query.offset(offset).limit(limit).all()
-        treatment_plan_list = []
         
+        treatment_plan_list = []
         for plan in treatment_plans:
-            treatment_plan_items = [
-            {
+            # Get ALL treatments for this plan, regardless of filters
+            treatments = db.query(Treatment).filter(Treatment.treatment_plan_id == plan.id).all()
+            
+            treatment_plan_items = [{
                 "id": item.id,
                 "treatment_name": item.treatment_name,
-                "unit_cost": item.unit_cost,
+                "unit_cost": float(item.unit_cost),
                 "quantity": item.quantity,
-                "amount": item.amount,
-                "discount": item.discount,
+                "amount": float(item.amount),
+                "discount": float(item.discount) if item.discount else None,
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
-                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
-                "completed": item.completed
-            }
-                for item in db.query(TreatmentPlanItem)
-                .filter(TreatmentPlanItem.treatment_plan_id == plan.id)
-            ]
+                "tooth_diagram": item.tooth_diagram,
+                "tooth_number": item.tooth_number,
+                "treatment_notes": item.treatment_notes,
+                "completed": item.completed,
+                "treatment_date": item.treatment_date.isoformat() if item.treatment_date else None,
+                "doctor_id": item.doctor_id,
+                "clinic_id": item.clinic_id
+            } for item in treatments]
+            
             treatment_plan_list.append({
                 "id": plan.id,
                 "patient_id": plan.patient_id,
                 "appointment_id": plan.appointment_id,
                 "date": plan.date.isoformat() if plan.date else None,
-                "treatment_plan_items": treatment_plan_items,  # Fixed: Assigning the items to the plan
-                "created_at": plan.created_at.isoformat() if plan.created_at else None,
+                "doctor_id": plan.doctor_id,
+                "clinic_id": plan.clinic_id,
+                "treatment_plan_items": treatment_plan_items,
+                "created_at": plan.created_at.isoformat() if plan.created_at else None
             })
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
@@ -960,9 +1047,9 @@ async def search_treatment_plans(
             }
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/get-treatment-plan/{treatment_plan_id}",
     status_code=status.HTTP_200_OK,
@@ -980,6 +1067,7 @@ async def search_treatment_plans(
 )
 async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -988,10 +1076,16 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
+        # Get treatment plan
+        treatment_plan = db.query(TreatmentPlan).filter(
+            TreatmentPlan.id == treatment_plan_id,
+            TreatmentPlan.doctor_id == user.id
+        ).first()
+        
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
+        # Get treatment plan items
         treatment_plan_items = [
             {
                 "id": item.id,
@@ -1002,11 +1096,12 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
                 "discount": item.discount,
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
-                "tooth_diagram": item.tooth_diagram if item.tooth_diagram else None,
+                "tooth_diagram": item.tooth_diagram,
                 "completed": item.completed
             }
-                for item in db.query(TreatmentPlanItem)
-                .filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
+            for item in db.query(Treatment)
+            .filter(Treatment.treatment_plan_id == treatment_plan.id)
+            .all()
         ]
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
@@ -1021,10 +1116,9 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
             }
         })
     except SQLAlchemyError as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.patch("/update-treatment-plan/{treatment_plan_id}",
     status_code=status.HTTP_200_OK,
@@ -1042,6 +1136,7 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
 )
 async def update_treatment_plan(treatment_plan_id: str, request: Request, treatment_plan: TreatmentPlanUpdate, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -1050,47 +1145,57 @@ async def update_treatment_plan(treatment_plan_id: str, request: Request, treatm
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        existing_treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
+        # Get treatment plan
+        existing_treatment_plan = db.query(TreatmentPlan).filter(
+            TreatmentPlan.id == treatment_plan_id,
+            TreatmentPlan.doctor_id == user.id
+        ).first()
+        
         if not existing_treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
+        # Update treatment plan fields
         treatment_plan_data = treatment_plan.model_dump(exclude_unset=True)
         treatment_plan_items = treatment_plan_data.pop('treatment_plan_items', [])
 
-        # Update TreatmentPlan fields
         for field, value in treatment_plan_data.items():
             setattr(existing_treatment_plan, field, value)
 
-        # Update or add TreatmentPlanItems
+        # Update treatment plan items
         for item in treatment_plan_items:
-            existing_item = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.id == item.get('id')).first()
-            
-            if existing_item:
+            if item.get('id'):
                 # Update existing item
-                item_data = {k: v for k, v in item.items() if v is not None}
-                for field, value in item_data.items():
-                    setattr(existing_item, field, value)
+                existing_item = db.query(Treatment).filter(
+                    Treatment.id == item['id'],
+                    Treatment.treatment_plan_id == treatment_plan_id
+                ).first()
+                
+                if existing_item:
+                    for field, value in item.items():
+                        if value is not None:
+                            setattr(existing_item, field, value)
             else:
-                # Create new item if not found
-                treatment_plan_item = TreatmentPlanItem(
-                    treatment_plan_id=existing_treatment_plan.id,
-                    **item  # Unpacking dictionary to create a new object
+                # Create new item
+                new_item = Treatment(
+                    treatment_plan_id=treatment_plan_id,
+                    **item
                 )
-                db.add(treatment_plan_item)
+                db.add(new_item)
 
         db.commit()
         
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment plan updated successfully"})
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Treatment plan updated successfully",
+            "treatment_plan_id": treatment_plan_id
+        })
     
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
-
-
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.delete("/delete-treatment-plan/{treatment_plan_id}",
     status_code=status.HTTP_200_OK,
@@ -1108,6 +1213,7 @@ async def update_treatment_plan(treatment_plan_id: str, request: Request, treatm
 )
 async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Session = Depends(get_db)):
     try:
+        # Validate authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
@@ -1116,25 +1222,34 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
 
-        treatment_plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == treatment_plan_id).first()
+        # Get treatment plan
+        treatment_plan = db.query(TreatmentPlan).filter(
+            TreatmentPlan.id == treatment_plan_id,
+            TreatmentPlan.doctor_id == user.id
+        ).first()
+        
         if not treatment_plan:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan not found"})
         
-        treatment_plan_items = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.treatment_plan_id == treatment_plan.id)
-        for item in treatment_plan_items:
-            db.delete(item)
-            db.commit()
-
+        # Delete treatment plan items first
+        db.query(Treatment).filter(
+            Treatment.treatment_plan_id == treatment_plan_id
+        ).delete()
+        
+        # Delete treatment plan
         db.delete(treatment_plan)
         db.commit()
 
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Treatment plan deleted successfully"})
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Treatment plan deleted successfully",
+            "treatment_plan_id": treatment_plan_id
+        })
     except SQLAlchemyError as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         db.rollback()
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/mark-treatment-as-completed/{treatment_plan_item_id}")
 async def mark_treatment(request: Request, treatment_plan_item_id: str, db: Session = Depends(get_db)):
@@ -1147,7 +1262,7 @@ async def mark_treatment(request: Request, treatment_plan_item_id: str, db: Sess
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        treatment_plan_item = db.query(TreatmentPlanItem).filter(TreatmentPlanItem.id == treatment_plan_item_id).first()
+        treatment_plan_item = db.query(Treatment).filter(Treatment.id == treatment_plan_item_id).first()
 
         if not treatment_plan_item:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Treatment plan item not found"})

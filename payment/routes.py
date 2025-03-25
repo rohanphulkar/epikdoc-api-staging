@@ -2150,7 +2150,7 @@ async def get_invoices(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).order_by(Invoice.date.desc()).all()
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
         
         # Format response
         invoice_list = []
@@ -2649,7 +2649,7 @@ async def search_invoices(
         # Pagination
         total_count = query.count()
         offset = (page - 1) * per_page
-        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).order_by(Invoice.date.desc()).all()
+        invoices = query.order_by(Invoice.date.desc()).offset(offset).limit(per_page).all()
 
         # Format response
         invoice_list = []

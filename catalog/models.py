@@ -29,8 +29,8 @@ class TreatmentPlan(Base):
     appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id'), nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    doctor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 class Treatment(Base):
@@ -40,14 +40,14 @@ class Treatment(Base):
     appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id'), nullable=True)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=True)
     treatment_plan_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("treatment_plans.id"), nullable=True)
-    doctor: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    clinic: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     treatment_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
     tooth_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     treatment_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    treatment_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     discount_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # Percentage or Fixed

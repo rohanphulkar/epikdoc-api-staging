@@ -734,7 +734,39 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
+
+@user_router.get("/get-clinics",
+    response_model=dict,
+    status_code=200,
+    summary="Get all clinics",
+    description="""
+    Get all clinics associated with the authenticated user.
+    """
+)
+async def get_clinics(request: Request, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        clinics = user.clinics
+        clinics_data = []
+        for clinic in clinics:
+            clinics_data.append({
+                "id": str(clinic.id),
+                "name": clinic.name,
+                "speciality": clinic.speciality,
+                "address": clinic.address,
+                "city": clinic.city,
+                "country": clinic.country,
+                "phone": clinic.phone,
+                "email": clinic.email
+            })
+
+        return JSONResponse(status_code=200, content={"clinics": clinics_data})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @user_router.get("/set-default-clinic/{clinic_id}",
     response_model=dict,

@@ -24,8 +24,8 @@ class TreatmentCreate(BaseModel):
     patient_id: Optional[str] = None
     appointment_id: Optional[str] = None
     treatment_plan_id: Optional[str] = None
-    doctor: str
-    clinic: str
+    doctor_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     treatment_date: datetime
     treatment_name: str
     tooth_number: Optional[str] = None
@@ -48,7 +48,7 @@ class TreatmentUpdate(BaseModel):
     tooth_number: Optional[str] = None
     treatment_notes: Optional[str] = None
     quantity: Optional[int] = None
-    treatment_cost: Optional[float] = None
+    unit_cost: Optional[float] = None
     amount: Optional[float] = None
     discount: Optional[float] = None
     discount_type: Optional[str] = None
@@ -64,8 +64,8 @@ class TreatmentPlanCreate(BaseModel):
     patient_id: Optional[str] = None
     appointment_id: Optional[str] = None
     date: datetime
-    doctor: str
-    clinic: str
+    doctor_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     treatment_plan_items: List[TreatmentCreate]
 
     class Config:
@@ -73,8 +73,8 @@ class TreatmentPlanCreate(BaseModel):
 
 class TreatmentPlanUpdate(BaseModel):
     date: Optional[datetime] = None
-    doctor: Optional[str] = None
-    clinic: Optional[str] = None
+    doctor_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     treatment_plan_items: Optional[List[TreatmentCreate]] = None
 
     class Config:
