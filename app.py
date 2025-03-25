@@ -28,7 +28,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)  # Ensure logs are output to the console
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn")
 
 # Initialize FastAPI app with metadata
 app = FastAPI(

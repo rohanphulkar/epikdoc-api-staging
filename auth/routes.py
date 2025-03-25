@@ -1413,46 +1413,80 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
             try:
                 json_str = str(form['json'])
                 body = json.loads(json_str)
-            except:
-                body = {}
+            except json.JSONDecodeError:
+                return JSONResponse(status_code=400, content={"error": "Invalid JSON format in form data"})
         else:
             # Try to read raw JSON body
             try:
                 raw_body = await request.body()
                 if raw_body:
                     body = await request.json()
-            except:
-                pass
+            except json.JSONDecodeError:
+                return JSONResponse(status_code=400, content={"error": "Invalid JSON format in request body"})
 
         # Get values from body dict with get() method
-        name = body.get('name') if isinstance(body, dict) else None
-        phone = body.get('phone') if isinstance(body, dict) else None 
-        bio = body.get('bio') if isinstance(body, dict) else None
+        name = body.get('name')
+        phone = body.get('phone')
+        bio = body.get('bio')
 
+        # Validate phone number format if provided
+        if phone:
+            # Add phone validation logic here if needed
+            # For example: check if it matches a specific format
+            if not isinstance(phone, str) or len(phone) < 8:
+                return JSONResponse(status_code=400, content={"error": "Invalid phone number format"})
+            
+            # Check if phone number is already taken by another user
+            existing_user = db.query(User).filter(User.phone == phone, User.id != db_user.id).first()
+            if existing_user:
+                return JSONResponse(status_code=400, content={"error": "Phone number already registered"})
+
+        # Update user fields if provided
         if name:
+            if not isinstance(name, str) or len(name) < 2:
+                return JSONResponse(status_code=400, content={"error": "Invalid name format"})
             setattr(db_user, 'name', name)
+            
         if phone:
             setattr(db_user, 'phone', phone)
+            
         if bio:
+            if not isinstance(bio, str):
+                return JSONResponse(status_code=400, content={"error": "Invalid bio format"})
             setattr(db_user, 'bio', bio)
         
         if image:
+            # Validate image format
+            allowed_types = ["image/jpeg", "image/png"]
+            if image.content_type not in allowed_types:
+                return JSONResponse(status_code=400, content={"error": "Only JPG and PNG images are allowed"})
+
             # Read file contents
             file_contents = await image.read()
 
-            # Check if the uploads directory exists, create it if it doesn't
+            # Check file size (5MB limit)
+            if len(file_contents) > 5 * 1024 * 1024:  # 5MB in bytes
+                return JSONResponse(status_code=400, content={"error": "Image size must be less than 5MB"})
+
+            # Create upload directory if it doesn't exist
             upload_dir = "uploads/profile_pictures"
             os.makedirs(upload_dir, exist_ok=True)
             
-            # Save file to disk/storage
-            file_name = f"profile_{db_user.id}_{image.filename}"
-            file_path = f"{upload_dir}/{file_name}"
+            # Generate unique filename
+            file_extension = os.path.splitext(image.filename)[1]
+            file_name = f"profile_{db_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_extension}"
+            file_path = os.path.join(upload_dir, file_name)
             
+            # Delete old profile picture if it exists
+            if db_user.profile_pic and os.path.exists(db_user.profile_pic):
+                os.remove(db_user.profile_pic)
+            
+            # Save new image
             with open(file_path, "wb") as f:
                 f.write(file_contents)
                 
             # Update user profile URL in database
-            setattr(db_user, 'profile_pic', str(file_path))
+            setattr(db_user, 'profile_pic', file_path)
             
         db.commit()
         db.refresh(db_user)
