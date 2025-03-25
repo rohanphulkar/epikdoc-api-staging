@@ -3,6 +3,11 @@ from typing import Optional
 from datetime import datetime
 from fastapi import UploadFile
 
+class UserLoginSchema(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = None
+    phone: Optional[str | int] = None
+
 class UserSchema(BaseModel):
     email: str
     password: str

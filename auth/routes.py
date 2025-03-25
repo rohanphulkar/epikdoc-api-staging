@@ -172,24 +172,41 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
     description="""
     Authenticate user and get access token.
     
-    Required fields:
-    - email: Registered email address
-    - password: Account password
+    Login options:
+    1. Email + Password:
+       - email: Registered email address
+       - password: Account password
     
-    On successful login:
+    2. Phone Number:
+       - phone: Registered phone number (will trigger OTP flow)
+    
+    On successful email login:
     - Updates last_login timestamp
     - Generates JWT access token
     - Returns token and success message
+    
+    On successful phone submission:
+    - Sends OTP to the phone number
+    - Returns message to verify OTP
     """,
     responses={
         200: {
-            "description": "Login successful",
+            "description": "Login successful or OTP sent",
             "content": {
                 "application/json": {
-                    "example": {
-                        "access_token": "eyJhbGciOiJIUzI1NiIs...",
-                        "token_type": "bearer",
-                        "message": "Login successful"
+                    "examples": {
+                        "email_login": {
+                            "value": {
+                                "access_token": "eyJhbGciOiJIUzI1NiIs...",
+                                "token_type": "bearer",
+                                "message": "Login successful"
+                            }
+                        },
+                        "phone_login": {
+                            "value": {
+                                "message": "OTP sent to your phone number"
+                            }
+                        }
                     }
                 }
             }
@@ -198,7 +215,14 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
             "description": "Bad request",
             "content": {
                 "application/json": {
-                    "example": {"error": "Email and password are required"}
+                    "examples": {
+                        "missing_credentials": {
+                            "value": {"error": "Either email with password or phone number is required"}
+                        },
+                        "missing_password": {
+                            "value": {"error": "Password is required when logging in with email"}
+                        }
+                    }
                 }
             }
         },
@@ -227,126 +251,60 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
         }
     }
 )
-async def login(user: UserSchema, db: Session = Depends(get_db)):
+async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
     try:
-        if not user.email or not user.password:
-            return JSONResponse(status_code=400, content={"error": "Email and password are required"})
-         
-        db_user = db.query(User).filter(User.email == user.email).first()
-
-        if not db_user:
-            return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+        # Check if either email or phone is provided
+        if not user.email and not user.phone:
+            return JSONResponse(status_code=400, content={"error": "Either email with password or phone number is required"})
         
-        if not db_user.is_active:
-            return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
-    
-        if not db_user or not verify_password(user.password, str(db_user.password)):
-            return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
-        
-        setattr(db_user, 'last_login', datetime.now())
-        db.commit()
-        db.refresh(db_user)
-        
-        jwt_token = signJWT(str(db_user.id))
-        return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful"})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    
-@user_router.post("/login/otp",
-    response_model=dict,
-    status_code=200,
-    summary="Send OTP for phone/email login",
-    description="""
-    Send OTP to user's registered phone number or email for login.
-    
-    Required fields:
-    - phone: Registered phone number with country code (if using phone)
-    - email: Registered email address (if using email)
-    
-    Process:
-    - Generates 4-digit OTP
-    - Sends OTP via SMS and/or email
-    - OTP expires in 10 minutes
-    """,
-    responses={
-        200: {
-            "description": "OTP sent successfully",
-            "content": {
-                "application/json": {
-                    "example": {"message": "OTP sent successfully"}
-                }
-            }
-        },
-        400: {
-            "description": "Bad request", 
-            "content": {
-                "application/json": {
-                    "example": {"error": "Either phone number or email is required"}
-                }
-            }
-        },
-        404: {
-            "description": "User not found",
-            "content": {
-                "application/json": {
-                    "example": {"error": "User not found"}
-                }
-            }
-        },
-        500: {
-            "description": "Internal server error",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "sms_failed": {
-                            "value": {"error": "Failed to send OTP via SMS"}
-                        },
-                        "email_failed": {
-                            "value": {"error": "Failed to send OTP via email"}
-                        },
-                        "server_error": {
-                            "value": {"error": "Internal server error"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
-async def login_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
-    try:
-        if not user.phone:
-            return JSONResponse(status_code=400, content={"error": "Either phone number or email is required"})
-        
-        # Find user by phone or email
-        query = db.query(User)
-        if user.phone:
-            query = query.filter(User.phone == user.phone)
+        # Phone login flow - trigger OTP
+        if user.phone and not user.email:
+            db_user = db.query(User).filter(User.phone == user.phone).first()
+            if not db_user:
+                return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
             
-        db_user = query.first()
-        if not db_user:
-            return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        otp = random.randint(1000, 9999)
-        setattr(db_user, 'otp', otp)
-        setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
-        db.commit()
-        db.refresh(db_user)
-        
-        sms_sent = True
-        email_sent = True
-        
-        if user.phone:
+            if not db_user.is_active:
+                return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
+            
+            otp = random.randint(1000, 9999)
+            setattr(db_user, 'otp', otp)
+            setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
+            db.commit()
+            db.refresh(db_user)
+            
             sms_sent = send_otp(user.phone, str(otp))
             email_sent = send_otp_email(db_user.email, str(otp))
             
-        if sms_sent or email_sent:
-            return JSONResponse(status_code=200, content={"message": "OTP sent successfully"})
-        else:
-            return JSONResponse(status_code=500, content={"error": "Failed to send OTP via both SMS and email"})
+            if sms_sent or email_sent:
+                return JSONResponse(status_code=200, content={"message": "OTP sent to your phone number"})
+            else:
+                return JSONResponse(status_code=500, content={"error": "Failed to send OTP via both SMS and email"})
         
+        # Email login flow - require password
+        if user.email:
+            if not user.password:
+                return JSONResponse(status_code=400, content={"error": "Password is required when logging in with email"})
+                
+            db_user = db.query(User).filter(User.email == user.email).first()
+            
+            if not db_user:
+                return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+            
+            if not db_user.is_active:
+                return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
+        
+            if not verify_password(user.password, str(db_user.password)):
+                return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+            
+            setattr(db_user, 'last_login', datetime.now())
+            db.commit()
+            db.refresh(db_user)
+            
+            jwt_token = signJWT(str(db_user.id))
+            return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
 
 @user_router.post("/login/otp/resend",
     response_model=dict,
@@ -1768,41 +1726,40 @@ async def deactivate_account(request: Request, db: Session = Depends(get_db)):
 async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing patient data")
     
-    # Pre-process gender mapping
-    gender_map = df["Gender"].str.lower().map(lambda x: Gender.FEMALE if "f" in str(x) or "female" in str(x) else Gender.MALE)
+    # Pre-process gender mapping - fix the map function to handle pandas Series
+    def gender_mapper(x):
+        x_str = str(x).lower()
+        return Gender.FEMALE if "f" in x_str or "female" in x_str else Gender.MALE
+    
+    gender_map = df["Gender"].str.lower().apply(gender_mapper)
     
     # Convert date columns once and handle NaT values
     dob_series = pd.to_datetime(df["Date of Birth"].astype(str), errors='coerce')
     anniversary_series = pd.to_datetime(df["Anniversary Date"].astype(str), errors='coerce')
-    
-    # Get all existing patient numbers for bulk lookup
-    existing_patients = {
-        p.patient_number: p for p in 
-        db.query(Patient).filter(Patient.patient_number.in_(df["Patient Number"].astype(str).tolist())).all()
-    }
-    
+
     # Prepare bulk insert
     new_patients = []
     for idx, row in df.iterrows():
         try:
-            patient_number = str(row.get("Patient Number", ""))
+            patient_number = str(row.get("Patient Number", "")).strip("'")
             
-            if patient_number in existing_patients:
+            # Handle NaT values for dates by converting to None - use loc for proper indexing
+            dob = None if pd.isna(dob_series.loc[idx]) else dob_series.loc[idx].to_pydatetime()
+            anniversary = None if pd.isna(anniversary_series.loc[idx]) else anniversary_series.loc[idx].to_pydatetime()
+
+            existing_patient = db.query(Patient).filter(Patient.patient_number == patient_number, Patient.doctor_id == user.id).first()
+            if existing_patient:
                 continue
-            
-            # Handle NaT values for dates by converting to None
-            dob = None if pd.isna(dob_series[idx]) else dob_series[idx].to_pydatetime()
-            anniversary = None if pd.isna(anniversary_series[idx]) else anniversary_series[idx].to_pydatetime()
                 
-            new_patients = Patient(
+            new_patient = Patient(
                 doctor_id=user.id,
-                patient_number=str(row.get("Patient Number", "")),
+                patient_number=patient_number,
                 name=str(row.get("Patient Name", "")).strip("'")[:255],
                 mobile_number=str(row.get("Mobile Number", "")).strip("'")[:255],
                 contact_number=str(row.get("Contact Number", ""))[:255],
                 email=str(row.get("Email Address", "")).strip("'")[:255],
                 secondary_mobile=str(row.get("Secondary Mobile", ""))[:255],
-                gender=gender_map[idx],
+                gender=gender_mapper(row.get("Gender", "")),  # Use the mapper function directly
                 address=str(row.get("Address", "")).strip("'")[:255],
                 locality=str(row.get("Locality", ""))[:255],
                 city=str(row.get("City", ""))[:255],
@@ -1812,16 +1769,13 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 age=str(row.get("Age", ""))[:5],
                 anniversary_date=anniversary,
                 blood_group=str(row.get("Blood Group", ""))[:50],
-                remarks=str(row.get("Remarks", "")),
                 medical_history=str(row.get("Medical History", "")),
                 referred_by=str(row.get("Referred By", ""))[:255],
                 groups=str(row.get("Groups", ""))[:255],
                 patient_notes=str(row.get("Patient Notes", ""))
             )
             
-            db.add(new_patients)
-            db.commit()
-            db.refresh(new_patients)
+            new_patients.append(new_patient)
             
         except Exception as e:
             print(f"Error processing patient row {idx}: {str(e)}")
@@ -1829,46 +1783,77 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             import_log.status = ImportStatus.FAILED
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing patient row {idx}: {str(e)}"})
+    
+    # Bulk insert all patients at once
+    if new_patients:
+        try:
+            db.bulk_save_objects(new_patients)
+            db.commit()
+        except Exception as e:
+            print(f"Error during bulk insert: {str(e)}")
+            db.rollback()
+            import_log.status = ImportStatus.FAILED
+            db.commit()
+            return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
 
 async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing appointment data")
     
+    # Clean column names
+    df.columns = df.columns.str.strip()
+    
     # Pre-process all patient numbers and get patients in bulk
-    patient_numbers = df["Patient Number"].astype(str).unique()
+    patient_numbers = df["Patient Number"].astype(str).str.strip("'").unique()
     patients = {
         p.patient_number: p for p in 
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
     
-    appointments = []
+    # Convert 'Date' to datetime if it's not already
+    if 'Date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['Date']):
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    
+    # Group appointments by patient number and date
+    appointments_dict = defaultdict(lambda: defaultdict(list))
     for _, row in df.iterrows():
-        try:
-            status_str = str(row.get("Status", "SCHEDULED")).upper()
-            status = AppointmentStatus.SCHEDULED if status_str == "SCHEDULED" else AppointmentStatus.CANCELLED
-
-            patient_number = str(row.get("Patient Number", ""))
-            patient = patients.get(patient_number)
-            if patient:
-                appointments.append(Appointment(
-                    patient_id=patient.id,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
-                    doctor_id=user.id,
-                    doctor_name=str(row.get("DoctorName", "")).strip("'")[:255],
-                    notes=str(row.get("Notes", "")),
-                    appointment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    checked_in_at=pd.to_datetime(str(row.get("Checked In At"))) if row.get("Checked In At") else None,
-                    checked_out_at=pd.to_datetime(str(row.get("Checked Out At"))) if row.get("Checked Out At") else None,
-                    status=status
-                ))
+        patient_number = str(row.get("Patient Number", "")).strip("'")
+        date = row.get("Date")
+        if pd.notna(date):
+            date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
             
-        except Exception as e:
-            print(f"Error processing appointment row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
-            db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing appointment row: {str(e)}"})
-
+            appointment_details = {
+                "Patient Name": str(row.get("Patient Name", "")).strip("'")[:255],
+                "Doctor": str(row.get("DoctorName", "")).strip("'")[:255],
+                "Status": str(row.get("Status", "SCHEDULED")).upper(),
+                "Checked In At": row.get("Checked In At") if pd.notna(row.get("Checked In At")) else None,
+                "Checked Out At": row.get("Checked Out At") if pd.notna(row.get("Checked Out At")) else None,
+                "Notes": str(row.get("Notes", ""))
+            }
+            appointments_dict[patient_number][date_str].append(appointment_details)
+    
+    # Create appointment objects
+    appointments = []
+    for patient_number, dates in appointments_dict.items():
+        patient = patients.get(patient_number)
+        if patient:
+            for date_str, appts in dates.items():
+                for appt in appts:
+                    status_str = appt["Status"]
+                    status = AppointmentStatus.SCHEDULED if status_str == "SCHEDULED" else AppointmentStatus.CANCELLED
+                    
+                    appointments.append(Appointment(
+                        patient_id=patient.id,
+                        patient_number=patient_number[:255],
+                        patient_name=appt["Patient Name"],
+                        doctor_id=user.id,
+                        doctor_name=appt["Doctor"],
+                        notes=appt["Notes"],
+                        appointment_date=pd.to_datetime(date_str) if date_str else None,
+                        checked_in_at=pd.to_datetime(appt["Checked In At"]) if appt["Checked In At"] else None,
+                        checked_out_at=pd.to_datetime(appt["Checked Out At"]) if appt["Checked Out At"] else None,
+                        status=status
+                    ))
+    
     try:
         if appointments:
             db.bulk_save_objects(appointments)
@@ -1883,47 +1868,81 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
 async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing treatment data")
     
+    # Clean column names
+    df.columns = df.columns.str.strip()
+    
     # Pre-process all patient numbers and get patients in bulk
-    patient_numbers = df["Patient Number"].astype(str).unique()
+    patient_numbers = df["Patient Number"].astype(str).str.strip("'").unique()
     patients = {
         p.patient_number: p for p in 
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
-
-    treatments = []
+    
+    # Convert 'Date' to datetime if it's not already
+    if 'Date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['Date']):
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        
+    # Group treatments by patient number and date
+    treatment_dict = defaultdict(lambda: defaultdict(list))
+    
+    # Group by Patient Number and then by Date
     for _, row in df.iterrows():
-        try:
-            patient_number = str(row.get("Patient Number", ""))
-            patient = patients.get(patient_number)
-            treatment_name = str(row.get("Treatment Name", "")).strip("'")
-            if patient:
-                treatments.append(Treatment(
-                    patient_id=patient.id,
-                    treatment_date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
-                    tooth_number=str(row.get("Tooth Number", "")).strip("'")[:50],
-                    treatment_notes=str(row.get("Treatment Notes", "")).strip("'"),
-                    quantity=int(float(str(row.get("Quantity", 0)).strip("'"))),
-                    treatment_cost=float(str(row.get("Treatment Cost", 0.0)).strip("'")),
-                    amount=float(str(row.get("Amount", 0.0)).strip("'")),
-                    discount=float(str(row.get("Discount", 0)).strip("'")),
-                    discount_type=str(row.get("DiscountType", "")).strip("'")[:50],
-                    doctor=user.id
-                ))
-                if treatment_name:
-                    existing_treatment_suggestion = db.query(TreatmentNameSuggestion).filter(TreatmentNameSuggestion.treatment_name == treatment_name).first()
-                    if not existing_treatment_suggestion:
-                        treatment_suggestion = TreatmentNameSuggestion(
-                            treatment_name=treatment_name,
-                        )
-                        db.add(treatment_suggestion)
-                        
-        except Exception as e:
-            print(f"Error processing treatment row: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
-            db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error processing treatment row: {str(e)}"})
+        patient_number = str(row.get("Patient Number", "")).strip("'")
+        date = row.get("Date")
+        
+        if pd.notna(date):
+            date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
+            
+            treatment_details = {
+                "Patient Name": str(row.get("Patient Name", "")).strip("'")[:255],
+                "Treatment Name": str(row.get("Treatment Name", "")).strip("'")[:255],
+                "Tooth Number": str(row.get("Tooth Number", "")).strip("'")[:50] if pd.notna(row.get("Tooth Number")) else "Not Specified",
+                "Treatment Notes": str(row.get("Treatment Notes", "")).strip("'") if pd.notna(row.get("Treatment Notes")) else "No Notes",
+                "Quantity": int(float(str(row.get("Quantity", 0)).strip("'"))),
+                "Treatment Cost": float(str(row.get("Treatment Cost", 0.0)).strip("'")),
+                "Amount": float(str(row.get("Amount", 0.0)).strip("'")),
+                "Discount": float(str(row.get("Discount", 0)).strip("'")),
+                "DiscountType": str(row.get("DiscountType", "")).strip("'")[:50],
+                "Doctor": str(row.get("Doctor", "")).strip("'")[:255]
+            }
+            treatment_dict[patient_number][date_str].append(treatment_details)
+
+    # Create treatment objects
+    treatments = []
+    for patient_number, dates in treatment_dict.items():
+        patient = patients.get(patient_number)
+        if patient:
+            for date_str, treatments_list in dates.items():
+                # search appointment
+                appointment = db.query(Appointment).filter(Appointment.patient_number == patient_number, Appointment.appointment_date == pd.to_datetime(date_str)).first()
+                if appointment:
+                    for treatment_detail in treatments_list:
+                        treatment_name = treatment_detail["Treatment Name"]
+                    treatments.append(Treatment(
+                        patient_id=patient.id,
+                        appointment_id=appointment.id,
+                        treatment_date=pd.to_datetime(date_str) if date_str else None,
+                        treatment_name=treatment_name,
+                        tooth_number=treatment_detail["Tooth Number"],
+                        treatment_notes=treatment_detail["Treatment Notes"],
+                        quantity=treatment_detail["Quantity"],
+                        unit_cost=treatment_detail["Treatment Cost"],
+                        amount=treatment_detail["Amount"],
+                        discount=treatment_detail["Discount"],
+                        discount_type=treatment_detail["DiscountType"],
+                        doctor=user.id
+                    ))
+                    
+                    # Add treatment name to suggestions if it doesn't exist
+                    if treatment_name:
+                        existing_treatment_suggestion = db.query(TreatmentNameSuggestion).filter(
+                            TreatmentNameSuggestion.treatment_name == treatment_name
+                        ).first()
+                        if not existing_treatment_suggestion:
+                            treatment_suggestion = TreatmentNameSuggestion(
+                                treatment_name=treatment_name,
+                            )
+                            db.add(treatment_suggestion)
 
     try:
         if treatments:
@@ -2353,7 +2372,7 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog data: {str(e)}"})
 
-async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str, clinic_id: str):
+async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str):
     try:
         print(f"Starting background processing for file: {file_path}")
         import_log = db.query(ImportLog).filter(ImportLog.id == import_log_id).first()
@@ -2365,9 +2384,6 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             return
         if not user:
             print(f"User with id {user_id} not found")
-            return
-        if not clinic_id:
-            print(f"Clinic is required")
             return
 
         file_ext = os.path.splitext(file_path)[1].lower()
@@ -2459,9 +2475,9 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         processor = file_type["processor"]
                         if processor in [process_patient_data, process_appointment_data, process_expense_data, 
                                       process_payment_data, process_invoice_data, process_procedure_catalog_data, process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
-                            await processor(import_log, df, db, user, clinic_id)
+                            await processor(import_log, df, db, user)
                         else:
-                            await processor(import_log, df, db, clinic_id)
+                            await processor(import_log, df, db)
                             
                     except Exception as e:
                         print(f"Error processing file {filename}: {str(e)}")
@@ -2549,7 +2565,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         }
     }
 )
-async def import_data(background_tasks: BackgroundTasks,request: Request, clinic_id:str, file: UploadFile = File(...), db: Session = Depends(get_db) ):
+async def import_data(background_tasks: BackgroundTasks,request: Request, file: UploadFile = File(...), db: Session = Depends(get_db) ):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -2559,9 +2575,6 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, clinic
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
-        if not clinic:
-            return JSONResponse(status_code=404, content={"error": "User not found"})
 
         # Validate file extension
         allowed_extensions = ['.csv', '.zip']
@@ -2593,7 +2606,7 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, clinic
             db.commit()
 
         # Start background processing
-        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid, clinic_id)
+        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid)
 
         return JSONResponse(status_code=200, content={
             "message": "Data import started",

@@ -131,7 +131,7 @@ class ImportLog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=False)
+    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     zip_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[ImportStatus] = mapped_column(SQLAlchemyEnum(ImportStatus), nullable=False)

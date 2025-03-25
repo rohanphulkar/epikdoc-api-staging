@@ -51,6 +51,7 @@ class ClinicalNote(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
+    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True)
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     date: Mapped[datetime] = mapped_column(Date, nullable=True)
