@@ -2841,8 +2841,14 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
     
     Returns a paginated list of import logs with details including:
     - Import ID
-    - Original filename 
-    - Import status (pending/completed/failed)
+    - Original filename
+    - Import status (pending/completed/failed) 
+    - Progress percentage
+    - Current stage
+    - Current file being processed
+    - Files processed count
+    - Total files count
+    - Error message (if any)
     - Creation timestamp
     
     Results are sorted by creation date in descending order (newest first).
@@ -2863,8 +2869,14 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
                         "import_logs": [
                             {
                                 "id": "uuid",
-                                "file_name": "data.csv", 
+                                "file_name": "data.csv",
                                 "status": "completed",
+                                "progress": 100,
+                                "current_stage": "Completed",
+                                "current_file": "patients.csv", 
+                                "files_processed": 5,
+                                "total_files": 5,
+                                "error_message": None,
                                 "created_at": "2024-01-01T00:00:00"
                             }
                         ],
@@ -2887,7 +2899,7 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             }
         },
         404: {
-            "description": "User not found", 
+            "description": "User not found",
             "content": {
                 "application/json": {
                     "example": {"error": "User not found"}
@@ -2944,6 +2956,12 @@ async def get_import_logs(
                     "id": log.id,
                     "file_name": log.file_name,
                     "status": log.status.value,
+                    "progress": log.progress,
+                    "current_stage": log.current_stage,
+                    "current_file": log.current_file,
+                    "files_processed": log.files_processed,
+                    "total_files": log.total_files,
+                    "error_message": log.error_message,
                     "created_at": log.created_at.isoformat()
                 } for log in import_logs
             ],
