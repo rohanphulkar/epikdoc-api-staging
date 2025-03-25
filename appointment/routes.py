@@ -561,7 +561,7 @@ async def get_patient_appointments(
         else:
             query = query.order_by(getattr(Appointment, sort_by).desc())
 
-        appointments = query.offset(offset).limit(per_page).all()
+        appointments = query.order_by(Appointment.appointment_date.desc(), Appointment.created_at.desc()).offset(offset).limit(per_page).all()
         
         appointment_list = []
         for appointment in appointments:

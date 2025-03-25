@@ -2388,108 +2388,121 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         db.query(Patient).filter(Patient.patient_number.in_(patient_numbers)).all()
     }
 
-    df = df.groupby(["Patient Number", "Date"]).sum().reset_index()
+    # Don't group the dataframe to preserve individual invoice records
+    # df = df.groupby(["Date", "Patient Number" ]).sum().reset_index()
     
     df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
     
+    # Helper function to safely parse numeric values
+    def safe_parse_number(value, convert_func, default=None, strip_quotes=True):
+        if pd.isna(value):
+            return default
+        try:
+            val_str = str(value).strip("'") if strip_quotes else str(value)
+            return convert_func(val_str)
+        except (ValueError, TypeError):
+            return default
+    
+    invoices = []
+    invoice_items = []
+    
     try:
         for _, row in df.iterrows():
-            patient_number = str(row.get("Patient Number", ""))
+            patient_number = str(row.get("Patient Number", "")).strip("'")
             patient = patients.get(patient_number)
-            appointment = None
-            if patient:
-                appointment = db.query(Appointment).filter(
-                    Appointment.patient_id == patient.id,
-                    Appointment.appointment_date == row["Date"]
+            
+            # Skip if patient doesn't exist
+            if not patient:
+                print(f"Patient with number {patient_number} not found, skipping invoice")
+                continue
+                
+            appointment = db.query(Appointment).filter(
+                Appointment.patient_id == patient.id,
+                Appointment.appointment_date == row["Date"]
+            ).first()
+            
+            payment = None
+            if appointment:
+                payment = db.query(Payment).filter(
+                    Payment.appointment_id == appointment.id
                 ).first()
-                payment = None
-                if appointment:
-                    payment = db.query(Payment).filter(
-                        Payment.appointment_id == appointment.id
-                    ).first()
-
+        
+            invoice = Invoice(
+                date=row["Date"] if pd.notna(row["Date"]) else None,
+                doctor_id=user.id,
+                patient_id=patient.id,
+                appointment_id=appointment.id if appointment else None,
+                payment_id=payment.id if payment else None,
+                patient_number=patient_number[:255],
+                patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
+                doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
+                invoice_number=str(row.get("Invoice Number", "")).strip("'")[:255],
+                cancelled=bool(row.get("Cancelled", False)),
+                notes=str(row.get("Notes", "")),
+                description=str(row.get("Description", "")),
+                total_amount=0.0  # Initialize with zero, will update later
+            )
             
-            if patient:
-                invoice = Invoice(
-                    date=pd.to_datetime(str(row.get("Date"))) if row.get("Date") else None,
-                    doctor_id=user.id,
-                    patient_id=patient.id,
-                    appointment_id=appointment.id if appointment else None,
-                    payment_id=payment.id if payment else None,
-                    patient_number=str(row.get("Patient Number", ""))[:255],
-                    patient_name=str(row.get("Patient Name", "")).strip("'")[:255],
-                    doctor_name=str(row.get("Doctor Name", "")).strip("'")[:255],
-                    invoice_number=str(row.get("Invoice Number", ""))[:255],
-                    cancelled=bool(row.get("Cancelled", False)),
-                    notes=str(row.get("Notes", "")),
-                    description=str(row.get("Description", ""))
-                )
-                
-                # Save invoice first to get ID
-                db.add(invoice)
-                db.flush()
+            db.add(invoice)
+            db.flush()  # Flush to get the invoice ID
+            invoices.append(invoice)
 
-                # Parse discount type
-                discount_type = row.get("DiscountType", "").upper() if row.get("DiscountType") else None
+            # Parse discount type
+            discount_type = row.get("DiscountType", "").upper() if pd.notna(row.get("DiscountType")) else None
 
-                # Helper function to safely parse numeric values
-                def safe_parse_number(value, convert_func, default=None, strip_quotes=True):
-                    if pd.isna(value):
-                        return default
-                    try:
-                        val_str = str(value).strip("'") if strip_quotes else str(value)
-                        return convert_func(val_str)
-                    except (ValueError, TypeError):
-                        return default
-                
-                unit_cost = safe_parse_number(row.get("Unit Cost"), float, 0.0)
-                discount = safe_parse_number(row.get("Discount"), float)
-                quantity = safe_parse_number(row.get("Quantity"), int, 1)
-                tax_percent = safe_parse_number(row.get("Tax Percent"), float)
-                total_amount = 0.0
+            # Get values with proper defaults
+            unit_cost = safe_parse_number(row.get("Unit Cost"), float, 0.0)
+            discount = safe_parse_number(row.get("Discount"), float, 0.0)
+            quantity = safe_parse_number(row.get("Quantity"), int, 1)
+            tax_percent = safe_parse_number(row.get("Tax Percent"), float, 0.0)
 
-                invoice_item = InvoiceItem(
-                    invoice_id=invoice.id,
-                    treatment_name=str(row.get("Treatment Name", ""))[:255],
-                    unit_cost=safe_parse_number(row.get("Unit Cost"), float, 0.0),
-                    quantity=safe_parse_number(row.get("Quantity"), int, 1),
-                    discount=safe_parse_number(row.get("Discount"), float),
-                    discount_type=discount_type,
-                    type=str(row.get("Type", ""))[:255],
-                    invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float),
-                    tax_name=str(row.get("Tax name", ""))[:255],
-                    tax_percent=safe_parse_number(row.get("Tax Percent"), float)
-                )
-                db.add(invoice_item)
+            invoice_item = InvoiceItem(
+                invoice_id=invoice.id,
+                treatment_name=str(row.get("Treatment Name", "")).strip("'")[:255],
+                unit_cost=unit_cost,
+                quantity=quantity,
+                discount=discount,
+                discount_type=discount_type,
+                type=str(row.get("Type", ""))[:255],
+                invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float, 0.0),
+                tax_name=str(row.get("Tax name", ""))[:255],
+                tax_percent=tax_percent
+            )
+            db.add(invoice_item)
+            invoice_items.append(invoice_item)
 
-                item_total = unit_cost * quantity  # Base cost
+            # Calculate item total
+            item_total = unit_cost * quantity  # Base cost
+        
+            # Apply discount
+            if discount:
+                if discount_type == "PERCENTAGE":
+                    item_total -= (item_total * discount / 100)
+                elif discount_type == "FIXED":
+                    item_total -= discount
             
-                # Apply discount
-                if discount:
-                    if discount_type == "percentage":
-                        item_total -= (item_total * discount / 100)
-                    elif discount_type == "fixed":
-                        item_total -= discount
-                
-                # Apply tax
-                if tax_percent:
-                    tax_amount = (item_total * tax_percent / 100)
-                    item_total += tax_amount
-                
-                # Add to total invoice amount
-                total_amount += item_total
+            # Apply tax
+            if tax_percent:
+                tax_amount = (item_total * tax_percent / 100)
+                item_total += tax_amount
+            
+            # Update invoice total
+            invoice.total_amount = item_total
 
-                # Update invoice total
-                invoice.total_amount = total_amount
-
-
-        db.commit()
+        # Commit all changes at once
+        print(f"Number of invoices to process: {len(invoices)}")
+        if invoices:
+            db.commit()
+            return JSONResponse(status_code=200, content={"message": f"Successfully processed {len(invoices)} invoice records"})
+        else:
+            return JSONResponse(status_code=200, content={"message": "No invoices to process"})
+            
     except Exception as e:
-        print(f"Error during bulk insert: {str(e)}")
+        print(f"Error during invoice processing: {str(e)}")
         db.rollback()
         import_log.status = ImportStatus.FAILED
         db.commit()
-        return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+        return JSONResponse(status_code=400, content={"error": f"Error during invoice processing: {str(e)}"})
 
 async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing procedure catalog data")
