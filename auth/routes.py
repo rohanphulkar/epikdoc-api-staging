@@ -711,6 +711,7 @@ async def get_clinics(request: Request, db: Session = Depends(get_db)):
         clinics = user.clinics
         clinics_data = []
         for clinic in clinics:
+            is_default = clinic.id == user.default_clinic_id or False
             clinics_data.append({
                 "id": str(clinic.id),
                 "name": clinic.name,
@@ -719,7 +720,8 @@ async def get_clinics(request: Request, db: Session = Depends(get_db)):
                 "city": clinic.city,
                 "country": clinic.country,
                 "phone": clinic.phone,
-                "email": clinic.email
+                "email": clinic.email,
+                "is_default":is_default
             })
 
         return JSONResponse(status_code=200, content={"clinics": clinics_data})
