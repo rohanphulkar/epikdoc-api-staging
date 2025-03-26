@@ -688,7 +688,7 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
         user.default_clinic_id = new_clinic.id
         db.commit()
         
-        return JSONResponse(status_code=200, content={"message": "Clinic created successfully"})
+        return JSONResponse(status_code=200, content={"message": "Clinic created successfully", "new_clinic": new_clinic.id})
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
