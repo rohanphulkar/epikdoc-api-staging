@@ -1283,7 +1283,7 @@ async def delete_patient(
         )
 
 @patient_router.post(
-    "/create-clinical-note/{patient_id}",
+    "/create-clinical-note/{patient_id}/{clinic_id}",
     status_code=status.HTTP_201_CREATED,
     summary="Create clinical note with treatments, medicines and attachments",
     description="""
@@ -1414,12 +1414,20 @@ async def create_clinical_note(
     try:
         # Verify user and get patient
         decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Invalid authentication token"}
+            )
+        
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("user_id")
+                Patient.doctor_id == user.id
             )
         ).scalar_one_or_none()
+
         
         if not patient:
             return JSONResponse(
@@ -1428,7 +1436,7 @@ async def create_clinical_note(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
         if not clinic:
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
@@ -1438,30 +1446,39 @@ async def create_clinical_note(
         # Create medical record
         clinical_note_db = ClinicalNote(
             patient_id=patient.id,
-            clinic_id=clinic_id,
-            doctor_id=decoded_token.get("user_id"),
-            notes=notes
+            clinic_id=clinic.id,
+            doctor_id=user.id,
+            date=datetime.now().date()
         )
 
         db.add(clinical_note_db)
         db.commit()
         db.refresh(clinical_note_db)
 
-        for complaint in complaints:
+
+        # Parse string inputs to lists
+        complaints_list = json.loads(complaints)
+        diagnoses_list = json.loads(diagnoses)
+        vital_signs_list = json.loads(vital_signs)
+
+        for complaint in complaints_list:
+            print(f"Processing complaint: {complaint}")
             db_complaint = Complaint(
                 clinical_note_id=clinical_note_db.id,
                 complaint=complaint
             )
             db.add(db_complaint)
 
-        for diagnosis in diagnoses:
+        for diagnosis in diagnoses_list:
+            print(f"Processing diagnosis: {diagnosis}")
             db_diagnosis = Diagnosis(
                 clinical_note_id=clinical_note_db.id,
                 diagnosis=diagnosis
             )
             db.add(db_diagnosis)
         
-        for vital_sign in vital_signs:
+        for vital_sign in vital_signs_list:
+            print(f"Processing vital sign: {vital_sign}")
             db_vital_sign = VitalSign(
                 clinical_note_id=clinical_note_db.id,
                 vital_sign=vital_sign
@@ -1470,6 +1487,7 @@ async def create_clinical_note(
             
         # Handle file attachments
         if files:
+            print(f"Processing files: {files}")
             attachments = []
             os.makedirs("uploads/clinical_notes", exist_ok=True)
             
@@ -1489,11 +1507,12 @@ async def create_clinical_note(
 
         # Add treatments if provided
         if treatments:
+            print(f"Processing treatments: {treatments}")
             treatments_list = json.loads(treatments)
             treatments_db = [
                 ClinicalNoteTreatment(
                     clinical_note_id=clinical_note_db.id,
-                    name=treatment["name"]
+                    name=treatment.get("name")
                 )
                 for treatment in treatments_list
             ]
@@ -1501,14 +1520,15 @@ async def create_clinical_note(
 
         # Add medicines if provided
         if medicines:
+            print(f"Processing medicines: {medicines}")
             medicines_list = json.loads(medicines)
             medicines_db = [
                 Medicine(
                     clinical_note_id=clinical_note_db.id,
-                    item_name=medicine["name"],
+                    item_name=medicine.get("item_name"),
                     quantity=medicine.get("quantity", 1),
                     price=medicine.get("price", 0),
-                    amount=medicine.get("price", 0) * medicine.get("quantity", 1),
+                    amount=medicine.get("amount", medicine.get("price", 0) * medicine.get("quantity", 1)),
                     dosage=medicine.get("dosage"),
                     instructions=medicine.get("instructions")
                 )

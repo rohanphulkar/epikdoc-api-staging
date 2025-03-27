@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, List
 from .models import Gender
-
+from fastapi import UploadFile
 class PatientCreateSchema(BaseModel):
     clinic_id: Optional[str] = None
     name: str
@@ -61,7 +61,7 @@ class PatientUpdateSchema(BaseModel):
         from_attributes = True
 
 class ClinicalNoteAttachmentSchema(BaseModel):
-    attachment: str
+    files: List[UploadFile]
 
     class Config:
         from_attributes = True

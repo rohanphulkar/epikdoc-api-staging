@@ -1,58 +1,86 @@
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
+import requests
 from decouple import config
 from typing import Union, List, Optional
 from pathlib import Path
+import json
 
 EMAIL_SENDER = str(config('EMAIL_SENDER'))
 EMAIL_PASSWORD = str(config('EMAIL_PASSWORD')) 
 EMAIL_HOST = str(config('EMAIL_HOST'))
 EMAIL_PORT = int(config('EMAIL_PORT'))
+EMAIL_SEND_URL = str(config('EMAIL_SEND_URL'))
 
-def send_email(sender_email: str, sender_password: str, receiver_emails: Union[str, List[str]], 
+def send_email(receiver_emails: Union[str, List[str]], 
               subject: str, body: str, attachments: Optional[List[Union[str, Path]]] = None) -> bool:
     try:
         # Convert single email to list if needed
         if isinstance(receiver_emails, str):
             receiver_emails = [receiver_emails]
-            
-        # Set up the MIME
-        message = MIMEMultipart()
-        message['From'] = sender_email
-        message['To'] = ", ".join(receiver_emails)
-        message['Subject'] = subject
         
-        # Add the body to the message
-        message.attach(MIMEText(body, 'plain'))
-
-        # Add attachments if any
+        # Prepare request data
+        data = {
+            "to": receiver_emails,  # Now properly handling multiple emails
+            "subject": subject,
+            "body": body
+        }
+        
+        # Prepare files if attachments exist
+        files = []
         if attachments:
             for attachment in attachments:
-                with open(str(attachment), 'rb') as f:
-                    part = MIMEApplication(f.read(), Name=Path(attachment).name)
-                    part['Content-Disposition'] = f'attachment; filename="{Path(attachment).name}"'
-                    message.attach(part)
+                attachment_path = str(attachment)
+                filename = Path(attachment_path).name
+                files.append(
+                    ('attachments', (filename, open(attachment_path, 'rb'), 'application/octet-stream'))
+                )
         
-        # Create SMTP session for sending the mail
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
-        server.ehlo()  # Identify yourself to the server
-        server.starttls()  # Enable SSL/TLS security
-        server.ehlo()  # Re-identify yourself over TLS connection
+        # Send request to email service
+        headers = {}
+        if not files:
+            # If no attachments, use JSON content type
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(
+                EMAIL_SEND_URL,
+                json=data,
+                headers=headers
+            )
+        else:
+            # If attachments exist, use multipart/form-data
+            # Convert list of emails to comma-separated string for form data
+            form_data = {}
+            if isinstance(data["to"], list):
+                for i, email in enumerate(data["to"]):
+                    form_data[f"to[{i}]"] = email
+            else:
+                form_data["to"] = data["to"]
+                
+            form_data["subject"] = data["subject"]
+            form_data["body"] = data["body"]
+            
+            response = requests.post(
+                EMAIL_SEND_URL,
+                data=form_data,
+                files=files
+            )
         
-        # Login with the sender's email and password
-        server.login(sender_email, sender_password)
+        # Close file handles
+        if files:
+            for _, file_tuple in files:
+                file_tuple[1].close()
         
-        # Send the email
-        text = message.as_string()
-        server.sendmail(sender_email, receiver_emails, text)
-        
-        # Terminate the session
-        server.quit()
-        print("Email sent successfully!")
-        return True
-        
+        # Check response
+        if response.status_code == 200:
+            print(f"Email sent successfully to {', '.join(receiver_emails)}")
+            return True
+        else:
+            print(f"Failed to send email: Status {response.status_code}")
+            try:
+                error_details = response.json()
+                print(f"Error details: {json.dumps(error_details, indent=2)}")
+            except:
+                print(f"Response text: {response.text}")
+            return False
+
     except Exception as e:
         print(f"Failed to send email: {e}")
         return False
@@ -80,7 +108,7 @@ If you have any issues or need assistance, please don't hesitate to contact our 
 Best regards,
 Backup Doc
 """
-        return send_email(sender_email, sender_password, receiver_email, subject, body)
+        return send_email(receiver_email, subject, body)
     except Exception as e:
         print(f"Failed to send forgot password email: {e}")
         return False
@@ -107,7 +135,7 @@ Please address this query at your earliest convenience.
 Best regards,
 Your Automated Email System
 """
-        return send_email(sender_email, sender_password, EMAIL_SENDER, subject, body)
+        return send_email(EMAIL_SENDER, subject, body)
     except Exception as e:
         print(f"Failed to send contact us email: {e}")
         return False
@@ -131,7 +159,7 @@ Submitted at: {feedback.created_at.strftime('%B %d, %Y at %I:%M %p')}
         receivers = ["rohan@epikdoc.com"]  # Hardcoded receivers
         success = True
         for receiver_email in receivers:
-            if not send_email(sender_email, sender_password, receiver_email, subject, body):
+            if not send_email(receiver_email, subject, body):
                 success = False
         return success
     except Exception as e:
@@ -155,8 +183,6 @@ Epikdoc AI Team"""
 
         # Send email with attachment
         return send_email(
-            sender_email, 
-            sender_password,
             customer_email,
             subject,
             body,
@@ -186,7 +212,7 @@ Best regards,
 Epikdoc Support Team"""
 
         # Send confirmation to user
-        user_notification = send_email(sender_email, sender_password, user_email, subject, body)
+        user_notification = send_email(user_email, subject, body)
         
         # Send notification to support team
         support_subject = f"New Support Ticket: {title} - {priority} Priority"
@@ -201,7 +227,7 @@ Status: {status}
 Please review and take appropriate action."""
 
         support_email = "rohan@epikdoc.com"
-        support_notification = send_email(sender_email, sender_password, support_email, support_subject, support_body)
+        support_notification = send_email(support_email, support_subject, support_body)
         
         return user_notification and support_notification
 

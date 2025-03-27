@@ -4,7 +4,7 @@ from .schemas import *
 from .models import *
 from patient.models import Patient
 from db.db import get_db
-from auth.models import User
+from auth.models import User, Clinic
 from fastapi.responses import JSONResponse
 from utils.auth import verify_token
 from sqlalchemy import func, asc, desc, case
@@ -99,6 +99,18 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
+        clinic = db.query(Clinic).filter(Clinic.id == treatment.clinic_id).first()
+        if not clinic:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
+        
+        appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid appointment ID"})
+        
+        patient = db.query(Patient).filter(Patient.id == treatment.patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
+        
         # Validate appointment and patient
         if treatment.appointment_id:
             appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
@@ -113,10 +125,9 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         # Create treatment record
         new_treatment = Treatment(
             doctor_id=user.id,
-            clinic_id=treatment.clinic_id,
-            patient_id=treatment.patient_id,
-            appointment_id=treatment.appointment_id,
-            treatment_plan_id=treatment.treatment_plan_id,
+            clinic_id=clinic.id,
+            patient_id=patient.id,
+            appointment_id=appointment.id,
             treatment_date=treatment.treatment_date,
             treatment_name=treatment.treatment_name,
             tooth_number=treatment.tooth_number,
@@ -713,6 +724,18 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
+        clinic = db.query(Clinic).filter(Clinic.id == treatment_plan.clinic_id).first()
+        if not clinic:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
+        
+        appointment = db.query(Appointment).filter(Appointment.id == treatment_plan.appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid appointment ID"})
+        
+        patient = db.query(Patient).filter(Patient.id == treatment_plan.patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
+        
         # Validate patient exists
         if treatment_plan.patient_id:
             patient = db.query(Patient).filter(Patient.id == treatment_plan.patient_id).first()
@@ -728,8 +751,9 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         # Create treatment plan
         new_treatment_plan = TreatmentPlan(
             doctor_id=user.id,
-            patient_id=treatment_plan.patient_id,
-            appointment_id=treatment_plan.appointment_id,
+            patient_id=patient.id,
+            appointment_id=appointment.id,
+            clinic_id=clinic.id,
             date=treatment_plan.date or datetime.now(),
             created_at=datetime.now()
         )
@@ -741,10 +765,10 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         for item in treatment_plan.treatment_plan_items:
             new_treatment_plan_item = Treatment(
                 treatment_plan_id=new_treatment_plan.id,
-                patient_id=treatment_plan.patient_id,
-                appointment_id=treatment_plan.appointment_id,
+                patient_id=patient.id,
+                appointment_id=appointment.id,
                 doctor_id=user.id,
-                clinic_id=treatment_plan.clinic_id,
+                clinic_id=clinic.id,
                 treatment_date=item.treatment_date,
                 treatment_name=item.treatment_name,
                 tooth_number=item.tooth_number,

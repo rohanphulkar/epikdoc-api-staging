@@ -29,7 +29,7 @@ class UserResponse(BaseModel):
     phone: str
 
 class OtpLoginSchema(BaseModel):
-    phone: str
+    phone: str | int 
 
 class OtpSchema(BaseModel):
     otp: int = Field(ge=1000, le=9999)

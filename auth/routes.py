@@ -266,13 +266,15 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
             if not db_user.is_active:
                 return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
             
+            # Generate OTP and set expiry
             otp = random.randint(1000, 9999)
             setattr(db_user, 'otp', otp)
             setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
             db.commit()
             db.refresh(db_user)
             
-            sms_sent = send_otp(user.phone, str(otp))
+            # Send OTP via SMS and email as backup
+            sms_sent = send_otp(str(user.phone), str(otp))
             email_sent = send_otp_email(db_user.email, str(otp))
             
             if sms_sent or email_sent:
@@ -372,13 +374,15 @@ async def resend_otp(user: OtpLoginSchema, db: Session = Depends(get_db)):
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
+        # Generate new OTP and update expiry
         otp = random.randint(1000, 9999)
         setattr(db_user, 'otp', otp)
         setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
         db.commit()
         db.refresh(db_user)
         
-        if send_otp(user.phone, str(otp)):
+        # Send OTP via SMS
+        if send_otp(str(user.phone), str(otp)):
             return JSONResponse(status_code=200, content={"message": "OTP resent successfully"})
         else:
             return JSONResponse(status_code=500, content={"error": "Failed to resend OTP"})
@@ -456,28 +460,32 @@ async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
         if not user.otp:
             return JSONResponse(status_code=400, content={"error": "OTP is required"})
         
+        # Find user with matching OTP
         db_user = db.query(User).filter(User.otp == user.otp).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
+        # Check if OTP is expired
         if db_user.otp_expiry and db_user.otp_expiry < datetime.now():
             return JSONResponse(status_code=400, content={"error": "OTP expired"})
         
+        # Verify OTP matches
         if db_user.otp != user.otp:
             return JSONResponse(status_code=400, content={"error": "Invalid OTP"})
         
         # Reset OTP and expiry after successful verification
         setattr(db_user, 'otp', None)
         setattr(db_user, 'otp_expiry', None)
+        setattr(db_user, 'last_login', datetime.now())
         db.commit()
         db.refresh(db_user)
         
+        # Generate JWT token
         jwt_token = signJWT(str(db_user.id))
         return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful"})
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-        
 @user_router.get("/profile", 
     response_model=UserResponse,
     status_code=200,
@@ -685,7 +693,6 @@ async def create_clinic(request: Request, clinic: ClinicCreateSchema, db: Sessio
         # Add the relationship after clinic is created
         new_clinic.doctors.append(user)
         user.clinics.append(new_clinic)
-        user.default_clinic_id = new_clinic.id
         db.commit()
         
         return JSONResponse(status_code=200, content={"message": "Clinic created successfully", "new_clinic": new_clinic.id})
@@ -889,7 +896,7 @@ async def update_clinic(request: Request,clinic_id: str, clinic: ClinicUpdateSch
         db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
     
-@user_router.delete("/clinic/delete",
+@user_router.delete("/clinic/delete/{clinic_id}",
     response_model=dict,
     status_code=200,
     summary="Delete a clinic",
@@ -952,6 +959,23 @@ async def delete_clinic(request: Request, clinic_id: str, db: Session = Depends(
         if not clinic:
             return JSONResponse(status_code=404, content={"error": "Clinic not found"})
         
+        clinics = db.query(Clinic).filter(Clinic.doctors.any(User.id == user.id)).all()
+        if len(clinics) == 1:
+            return JSONResponse(status_code=400, content={"error": "You cannot delete your only clinic"})
+        
+        # Update default clinic before deleting if needed
+        if user.default_clinic_id == clinic_id:
+            # Find another clinic to set as default
+            new_default = next((c for c in clinics if c.id != clinic_id), None)
+            if new_default:
+                user.default_clinic_id = new_default.id
+                db.commit()
+        
+        # Remove clinic association from user
+        clinic.doctors.remove(user)
+        db.commit()
+        
+        # Now delete the clinic
         db.delete(clinic)
         db.commit()
         
@@ -1508,7 +1532,15 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
     - Requires valid Bearer token in Authorization header
     
     **Warning:**
-    This action cannot be undone. All user data including appointments, patients, payments and other records will be permanently deleted.
+    This action cannot be undone. All user data including appointments, patients, payments, treatments, invoices, 
+    clinical notes, x-rays, predictions and other associated records will be permanently deleted.
+    
+    **Process:**
+    - Deletes all patient records associated with the user
+    - Removes all clinical notes and their attachments
+    - Deletes all payment and invoice records
+    - Removes all x-rays and prediction data
+    - Finally deletes the user account itself
     
     **Response:**
     - 200: Profile successfully deleted
@@ -1536,7 +1568,7 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
             "description": "Internal server error",
             "content": {
                 "application/json": {
-                    "example": {"error": "Internal server error message"}
+                    "example": {"error": "An unexpected error occurred while deleting profile"}
                 }
             }
         }
@@ -1549,12 +1581,143 @@ async def delete_profile(request: Request, db: Session = Depends(get_db)):
         db_user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        # Use a transaction with no autoflush to prevent premature constraint checks
+        with db.no_autoflush:
+            # Get all patients for this doctor
+            patients = db.query(Patient).filter(Patient.doctor_id == db_user.id).all()
             
-        db.delete(db_user)
-        db.commit()
+            for patient in patients:
+                # Handle foreign key constraints by breaking relationships first
+                
+                # 1. Handle invoices and payments
+                # First, break the relationship between invoices and payments
+                invoices = db.query(Invoice).filter(Invoice.patient_id == patient.id).all()
+                for invoice in invoices:
+                    # Set payment_id to NULL to break the foreign key constraint
+                    if invoice.payment_id is not None:
+                        invoice.payment_id = None
+                        db.add(invoice)
+                
+                # Flush to ensure the payment_id is set to NULL in the database
+                db.flush()
+                
+                # 2. Handle payments and appointments
+                # Break the relationship between payments and appointments
+                payments = db.query(Payment).filter(Payment.patient_id == patient.id).all()
+                for payment in payments:
+                    if payment.appointment_id is not None:
+                        payment.appointment_id = None
+                        db.add(payment)
+                
+                # Flush to ensure the appointment_id is set to NULL in the database
+                db.flush()
+                
+                # 3. Delete invoice items
+                for invoice in invoices:
+                    db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).delete()
+                
+                # 4. Now it's safe to delete invoices
+                db.query(Invoice).filter(Invoice.patient_id == patient.id).delete()
+                
+                # 5. Delete payments
+                db.query(Payment).filter(Payment.patient_id == patient.id).delete()
+                
+                # 6. Delete appointments
+                db.query(Appointment).filter(Appointment.patient_id == patient.id).delete()
+                
+                # 7. Handle clinical notes and related records
+                clinical_notes = db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient.id).all()
+                for note in clinical_notes:
+                    # Delete all related records first
+                    db.query(ClinicalNoteAttachment).filter(ClinicalNoteAttachment.clinical_note_id == note.id).delete()
+                    db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_note_id == note.id).delete()
+                    db.query(Medicine).filter(Medicine.clinical_note_id == note.id).delete()
+                    db.query(Complaint).filter(Complaint.clinical_note_id == note.id).delete()
+                    db.query(Diagnosis).filter(Diagnosis.clinical_note_id == note.id).delete()
+                    db.query(VitalSign).filter(VitalSign.clinical_note_id == note.id).delete()
+                    db.query(Notes).filter(Notes.clinical_note_id == note.id).delete()
+                
+                # 8. Now delete the clinical notes
+                db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient.id).delete()
+                
+                # 9. Finally delete the patient
+                db.delete(patient)
+            
+            # Handle X-rays and predictions
+            xrays = db.query(XRay).filter(XRay.doctor == db_user.id).all()
+            for xray in xrays:
+                # Set clinic to NULL to break foreign key constraint
+                if xray.clinic is not None:
+                    xray.clinic = None
+                    db.add(xray)
+                
+                # Delete predictions and related records
+                predictions = db.query(Prediction).filter(Prediction.xray_id == xray.id).all()
+                for prediction in predictions:
+                    # Delete legends and their related records
+                    legends = db.query(Legend).filter(Legend.prediction_id == prediction.id).all()
+                    for legend in legends:
+                        db.query(DeletedLegend).filter(DeletedLegend.legend_id == legend.id).delete()
+                        db.delete(legend)
+                    db.delete(prediction)
+                
+                # Now delete the x-ray
+                db.delete(xray)
+            
+            # Delete expenses
+            db.query(Expense).filter(Expense.doctor_id == db_user.id).delete()
+            
+            # Handle import logs
+            import_logs = db.query(ImportLog).filter(ImportLog.user_id == db_user.id).all()
+            for log in import_logs:
+                # Set clinic_id to NULL to break foreign key constraint
+                if log.clinic_id is not None:
+                    # Use update method instead of direct attribute assignment
+                    db.query(ImportLog).filter(ImportLog.id == log.id).update({"clinic_id": None})
+                db.flush()
+                db.delete(log)
+            
+            # Set default_clinic_id to NULL before proceeding
+            if db_user.default_clinic_id is not None:
+                db_user.default_clinic_id = None
+                db.add(db_user)
+                db.flush()
+            
+            # Handle clinics
+            # First remove the user from the doctor_clinics association table
+            from auth.models import doctor_clinics
+            db.execute(doctor_clinics.delete().where(doctor_clinics.c.doctor_id == db_user.id))
+            
+            # Get clinics created by this user (assuming they're the only doctor)
+            user_clinics = []
+            for clinic in db_user.clinics:
+                # Check if this is the only doctor for this clinic
+                if len(clinic.doctors) <= 1:
+                    user_clinics.append(clinic)
+            
+            # Delete each clinic that only has this doctor
+            for clinic in user_clinics:
+                # Update any remaining references to this clinic
+                db.query(Patient).filter(Patient.clinic_id == clinic.id).update({"clinic_id": None})
+                db.query(XRay).filter(XRay.clinic == clinic.id).update({"clinic": None})
+                
+                # Now delete the clinic
+                db.delete(clinic)
+            
+            # Handle procedure catalog entries
+            db.query(ProcedureCatalog).filter(ProcedureCatalog.user_id == db_user.id).delete()
+            
+            # Finally delete the user
+            db.delete(db_user)
+            
+            # Commit all changes at once
+            db.commit()
+        
         return JSONResponse(status_code=200, content={"message": "Profile deleted successfully"})
         
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @user_router.post("/google-login",
@@ -4232,14 +4395,23 @@ async def get_doctor_list(
     summary="Get dashboard statistics", 
     description="""
     Get comprehensive dashboard statistics for the authenticated user including:
-    - Patient statistics (total count, recent patients)
-    - Appointment metrics (today's appointments, upcoming, total count)
-    - Clinical data (total notes, recent activity)
-    - Financial overview (monthly earnings, recent transactions)
-    - Key performance indicators
+    - Patient statistics (monthly breakdown, total count)
+    - Appointment metrics (monthly breakdown, total count)
+    - Prescription data (monthly breakdown, total count)
+    - Financial overview (monthly breakdown, total earnings)
+    - Recent transactions and patients
+    
+    Query parameters:
+    - time_range: Optional time range filter (options: "this_month", "this_year", "3_months", "6_months", "1_year", "3_years", "all_time", default: "1_year")
+    - clinic_id: Optional clinic ID to filter statistics by clinic
     """
 )
-async def get_dashboard(request: Request, clinic_id: Optional[str] = None, db: Session = Depends(get_db)):
+async def get_dashboard(
+    request: Request, 
+    time_range: str = Query("1_year", description="Time range for statistics (this_month, this_year, 3_months, 6_months, 1_year, 3_years, all_time)"),
+    clinic_id: Optional[str] = None, 
+    db: Session = Depends(get_db)
+):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -4260,90 +4432,263 @@ async def get_dashboard(request: Request, clinic_id: Optional[str] = None, db: S
             base_filters.append(Patient.clinic_id == clinic_id)
 
         today = datetime.now().date()
-        current_month_start = today.replace(day=1)
+        current_year = today.year
+        current_month = today.month
+
+        # Determine start date based on time_range
+        if time_range == "this_month":
+            start_date = datetime(current_year, current_month, 1)
+            months_to_show = 1
+        elif time_range == "this_year":
+            start_date = datetime(current_year, 1, 1)
+            months_to_show = current_month
+        elif time_range == "3_months":
+            # Calculate date 3 months ago
+            if current_month <= 3:
+                start_year = current_year - 1
+                start_month = current_month + 9  # 12 - (3 - current_month)
+            else:
+                start_year = current_year
+                start_month = current_month - 3
+            start_date = datetime(start_year, start_month, 1)
+            months_to_show = 3
+        elif time_range == "6_months":
+            # Calculate date 6 months ago
+            if current_month <= 6:
+                start_year = current_year - 1
+                start_month = current_month + 6
+            else:
+                start_year = current_year
+                start_month = current_month - 6
+            start_date = datetime(start_year, start_month, 1)
+            months_to_show = 6
+        elif time_range == "1_year":
+            start_date = datetime(current_year - 1, current_month, 1)
+            months_to_show = 12
+        elif time_range == "3_years":
+            start_date = datetime(current_year - 3, current_month, 1)
+            months_to_show = 36
+        else:  # all_time
+            # For all_time, we'll still show monthly breakdown for the past 12 months
+            start_date = datetime(current_year - 1, current_month, 1)
+            months_to_show = 12
+
+        # Generate list of months to display
+        months_list = []
+        month_names = ["January", "February", "March", "April", "May", "June", 
+                      "July", "August", "September", "October", "November", "December"]
+        
+        temp_date = start_date
+        for _ in range(months_to_show):
+            months_list.append({
+                "name": month_names[temp_date.month - 1],
+                "year": temp_date.year,
+                "month": temp_date.month,
+                "start_date": datetime(temp_date.year, temp_date.month, 1),
+                "end_date": datetime(temp_date.year + 1 if temp_date.month == 12 else temp_date.year, 
+                                    1 if temp_date.month == 12 else temp_date.month + 1, 1)
+            })
+            # Move to next month
+            if temp_date.month == 12:
+                temp_date = datetime(temp_date.year + 1, 1, 1)
+            else:
+                temp_date = datetime(temp_date.year, temp_date.month + 1, 1)
+        
+        # Reverse the months list to have the latest month first
+        months_list.reverse()
+
+        # Current month start and end dates
+        current_month_start = datetime(current_year, current_month, 1)
+        if current_month == 12:
+            current_month_end = datetime(current_year + 1, 1, 1)
+        else:
+            current_month_end = datetime(current_year, current_month + 1, 1)
 
         # Patient Statistics
-        total_patients = db.query(Patient).filter(*base_filters).count()
-        recent_patients = db.query(Patient).filter(*base_filters).order_by(Patient.created_at.desc()).limit(10).all()
-        new_patients_this_month = db.query(Patient).filter(
+        patient_query = db.query(Patient).filter(*base_filters)
+        
+        # Apply time filter for all_time option
+        if time_range != "all_time":
+            patient_query = patient_query.filter(Patient.created_at >= start_date)
+            
+        total_patients = patient_query.count()
+        recent_patients = patient_query.order_by(Patient.created_at.desc()).limit(10).all()
+        
+        # Get monthly patient counts
+        monthly_patients = {}
+        for month_data in months_list:
+            count = db.query(Patient).filter(
+                *base_filters,
+                Patient.created_at >= month_data["start_date"],
+                Patient.created_at < month_data["end_date"]
+            ).count()
+            
+            month_key = f"{month_data['name']} {month_data['year']}"
+            monthly_patients[month_key] = count
+
+        # Current month patients
+        current_month_patients = db.query(Patient).filter(
             *base_filters,
-            Patient.created_at >= current_month_start
+            Patient.created_at >= current_month_start,
+            Patient.created_at < current_month_end
         ).count()
 
         # Appointment Statistics
-        appointments_query = db.query(Appointment).filter(
+        appointment_base_filters = [
             Appointment.doctor_id == user.id,
             *([Appointment.clinic_id == clinic_id] if clinic_id else [])
-        )
+        ]
         
-        total_appointments = appointments_query.count()
-        today_appointments = appointments_query.filter(
+        appointment_query = db.query(Appointment).filter(*appointment_base_filters)
+        
+        # Apply time filter for all_time option
+        if time_range != "all_time":
+            appointment_query = appointment_query.filter(Appointment.created_at >= start_date)
+            
+        total_appointments = appointment_query.count()
+        
+        # Get monthly appointment counts
+        monthly_appointments = {}
+        for month_data in months_list:
+            count = db.query(Appointment).filter(
+                *appointment_base_filters,
+                Appointment.created_at >= month_data["start_date"],
+                Appointment.created_at < month_data["end_date"]
+            ).count()
+            
+            month_key = f"{month_data['name']} {month_data['year']}"
+            monthly_appointments[month_key] = count
+        
+        # Current month appointments
+        current_month_appointments = db.query(Appointment).filter(
+            *appointment_base_filters,
+            Appointment.created_at >= current_month_start,
+            Appointment.created_at < current_month_end
+        ).count()
+        
+        today_appointments = db.query(Appointment).filter(
+            *appointment_base_filters,
             Appointment.appointment_date >= today,
             Appointment.appointment_date < today + timedelta(days=1)
         ).order_by(Appointment.appointment_date.asc()).all()
         
-        upcoming_appointments = appointments_query.filter(
+        upcoming_appointments = db.query(Appointment).filter(
+            *appointment_base_filters,
             Appointment.appointment_date > today,
             Appointment.status == AppointmentStatus.SCHEDULED
         ).count()
 
-        # Clinical Notes Statistics
-        clinical_notes_query = db.query(ClinicalNote).filter(
+        # Prescription Statistics
+        prescription_base_filters = [
             ClinicalNote.doctor_id == user.id,
             *([ClinicalNote.clinic_id == clinic_id] if clinic_id else [])
-        )
-        total_clinical_notes = clinical_notes_query.count()
-        recent_clinical_notes = clinical_notes_query.order_by(ClinicalNote.created_at.desc()).limit(5).count()
+        ]
+        
+        prescription_query = db.query(ClinicalNote).filter(*prescription_base_filters)
+        
+        # Apply time filter for all_time option
+        if time_range != "all_time":
+            prescription_query = prescription_query.filter(ClinicalNote.created_at >= start_date)
+            
+        total_prescriptions = prescription_query.count()
+        
+        # Get monthly prescription counts
+        monthly_prescriptions = {}
+        for month_data in months_list:
+            count = db.query(ClinicalNote).filter(
+                *prescription_base_filters,
+                ClinicalNote.created_at >= month_data["start_date"],
+                ClinicalNote.created_at < month_data["end_date"]
+            ).count()
+            
+            month_key = f"{month_data['name']} {month_data['year']}"
+            monthly_prescriptions[month_key] = count
+        
+        # Current month prescriptions
+        current_month_prescriptions = db.query(ClinicalNote).filter(
+            *prescription_base_filters,
+            ClinicalNote.created_at >= current_month_start,
+            ClinicalNote.created_at < current_month_end
+        ).count()
         
         # Financial Statistics
-        payments_query = db.query(Payment).filter(
+        payment_base_filters = [
             Payment.doctor_id == user.id,
             Payment.cancelled == False,
             *([Payment.clinic_id == clinic_id] if clinic_id else [])
-        )
+        ]
         
-        monthly_payments = payments_query.filter(Payment.date >= current_month_start).all()
-        monthly_earnings = sum(payment.amount_paid or 0 for payment in monthly_payments)
+        payment_query = db.query(Payment).filter(*payment_base_filters)
         
-        recent_transactions = payments_query.order_by(Payment.created_at.desc()).limit(10).all()
+        # Apply time filter for all_time option
+        if time_range != "all_time":
+            payment_query = payment_query.filter(Payment.date >= start_date)
+            
+        total_payments = payment_query.all()
+        total_earnings = sum(payment.amount_paid or 0 for payment in total_payments)
         
-        # Calculate average daily earnings this month
-        days_in_month = (today - current_month_start).days + 1
-        avg_daily_earnings = monthly_earnings / days_in_month if days_in_month > 0 else 0
+        # Get monthly earnings
+        monthly_earnings = {}
+        for month_data in months_list:
+            month_payments = db.query(Payment).filter(
+                *payment_base_filters,
+                Payment.date >= month_data["start_date"],
+                Payment.date < month_data["end_date"]
+            ).all()
+            
+            earnings = sum(payment.amount_paid or 0 for payment in month_payments)
+            month_key = f"{month_data['name']} {month_data['year']}"
+            monthly_earnings[month_key] = round(earnings, 2)
+        
+        # Current month earnings
+        current_month_payments = db.query(Payment).filter(
+            *payment_base_filters,
+            Payment.date >= current_month_start,
+            Payment.date < current_month_end
+        ).all()
+        current_month_earnings = sum(payment.amount_paid or 0 for payment in current_month_payments)
+        
+        recent_transactions = payment_query.order_by(Payment.created_at.desc()).limit(10).all()
 
         return JSONResponse(status_code=200, content={
+            "time_range": time_range,
             "patient_statistics": {
                 "total_patients": total_patients,
-                "new_patients_this_month": new_patients_this_month,
+                "monthly_patients": monthly_patients,
+                "current_month_patients": current_month_patients,
                 "recent_patients": [{
                     "id": patient.id,
                     "name": patient.name,
                     "mobile_number": patient.mobile_number,
                     "email": patient.email,
-                    "gender": patient.gender.value,
-                    "created_at": patient.created_at.strftime("%Y-%m-%d %H:%M")
+                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else patient.gender,
+                    "created_at": patient.created_at.strftime("%Y-%m-%d %H:%M") if patient.created_at else None
                 } for patient in recent_patients]
             },
             "appointment_statistics": {
                 "total_appointments": total_appointments,
+                "monthly_appointments": monthly_appointments,
+                "current_month_appointments": current_month_appointments,
                 "upcoming_appointments": upcoming_appointments,
                 "today_appointments": [{
                     "id": appt.id,
                     "patient_name": appt.patient_name,
-                    "time": appt.appointment_date.strftime("%H:%M"),
-                    "status": appt.status.value,
+                    "time": appt.appointment_date.strftime("%H:%M") if appt.appointment_date else None,
+                    "status": appt.status.value if hasattr(appt.status, 'value') else appt.status,
                     "notes": appt.notes
                 } for appt in today_appointments]
             },
-            "clinical_statistics": {
-                "total_notes": total_clinical_notes,
-                "recent_notes_count": recent_clinical_notes
+            "prescription_statistics": {
+                "total_prescriptions": total_prescriptions,
+                "monthly_prescriptions": monthly_prescriptions,
+                "current_month_prescriptions": current_month_prescriptions
             },
             "financial_statistics": {
-                "monthly_earnings": round(monthly_earnings, 2),
-                "average_daily_earnings": round(avg_daily_earnings, 2),
+                "total_earnings": round(total_earnings, 2),
+                "monthly_earnings": monthly_earnings,
+                "current_month_earnings": round(current_month_earnings, 2),
                 "recent_transactions": [{
-                    "date": payment.date.strftime("%Y-%m-%d %H:%M"),
+                    "date": payment.date.strftime("%Y-%m-%d %H:%M") if payment.date else None,
                     "patient_name": payment.patient_name,
                     "amount": payment.amount_paid,
                     "payment_mode": payment.payment_mode,

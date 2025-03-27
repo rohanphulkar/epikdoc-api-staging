@@ -36,8 +36,6 @@ class AppointmentCreate(BaseModel):
     share_on_email: bool = False
     share_on_sms: bool = False
     share_on_whatsapp: bool = False
-    send_reminder: Optional[bool] = None
-    remind_time_before: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -51,8 +49,13 @@ class AppointmentUpdate(BaseModel):
     share_on_email: Optional[bool] = None
     share_on_sms: Optional[bool] = None
     share_on_whatsapp: Optional[bool] = None
-    send_reminder: Optional[bool] = None
-    remind_time_before: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+class AppointmentReminder(BaseModel):
+    remind_time_before: int
+    send_reminder: bool
 
     class Config:
         from_attributes = True

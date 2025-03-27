@@ -69,8 +69,6 @@ Dr. {doctor.name}
 """
         # Use the centralized email sending function
         return send_email(
-            sender_email=EMAIL_SENDER,
-            sender_password=EMAIL_PASSWORD,
             receiver_emails=patient.email if patient.email else [],
             subject=subject,
             body=message

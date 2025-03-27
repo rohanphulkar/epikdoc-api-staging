@@ -24,7 +24,6 @@ class TreatmentCreate(BaseModel):
     patient_id: Optional[str] = None
     appointment_id: Optional[str] = None
     treatment_plan_id: Optional[str] = None
-    doctor_id: Optional[str] = None
     clinic_id: Optional[str] = None
     treatment_date: datetime
     treatment_name: str
@@ -64,7 +63,6 @@ class TreatmentPlanCreate(BaseModel):
     patient_id: Optional[str] = None
     appointment_id: Optional[str] = None
     date: datetime
-    doctor_id: Optional[str] = None
     clinic_id: Optional[str] = None
     treatment_plan_items: List[TreatmentCreate]
 
@@ -73,7 +71,6 @@ class TreatmentPlanCreate(BaseModel):
 
 class TreatmentPlanUpdate(BaseModel):
     date: Optional[datetime] = None
-    doctor_id: Optional[str] = None
     clinic_id: Optional[str] = None
     treatment_plan_items: Optional[List[TreatmentCreate]] = None
 

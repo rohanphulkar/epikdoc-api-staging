@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, Request, Query
+from fastapi import APIRouter, Depends, Request, Query, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse
+from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse, AppointmentReminder
 from db.db import get_db
 
 from .models import *
@@ -51,8 +52,6 @@ appointment_router = APIRouter()
     - share_on_email (bool): Enable email notifications
     - share_on_sms (bool): Enable SMS notifications
     - share_on_whatsapp (bool): Enable WhatsApp notifications
-    - send_reminder (bool): Enable appointment reminder
-    - remind_time_before (int): Minutes before appointment to send reminder
 
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -110,21 +109,30 @@ appointment_router = APIRouter()
 async def create_appointment(request: Request, appointment: AppointmentCreate, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        user_id = decoded_token.get("user_id") if decoded_token else None
-
+        user_id = decoded_token.get("user_id")
         user = db.query(User).filter(User.id == user_id).first()
 
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-        # clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
+        # If clinic_id is not provided, use doctor's default clinic
+        if not appointment.clinic_id:
+            if not user.default_clinic_id:
+                return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
+            appointment.clinic_id = user.default_clinic_id
+            
+        clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
+        if not clinic:
+            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
 
-        # if not clinic:
-        #     return JSONResponse(status_code=404, content={"message": "Clinic not found"})
-
+        # If patient_id is not provided, return error
+        if not appointment.patient_id:
+            return JSONResponse(status_code=400, content={"message": "Patient ID is required"})
+            
         patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
-
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
 
@@ -133,8 +141,8 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
 
         new_appointment = Appointment(
             patient_id=patient.id,
-            # clinic_id=clinic.id,
-            patient_number=patient.patient_number if patient.patient_number else None,
+            clinic_id=clinic.id,
+            patient_number=patient.patient_number if hasattr(patient, 'patient_number') else None,
             patient_name=patient.name,
             doctor_id=user.id,
             doctor_name=user.name,
@@ -146,24 +154,19 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
             share_on_whatsapp=appointment.share_on_whatsapp,
-            send_reminder=appointment.send_reminder,
-            remind_time_before=appointment.remind_time_before
         )
 
         db.add(new_appointment)
         db.commit()
         db.refresh(new_appointment)
 
-        # if appointment.send_reminder:
-        #     if appointment.remind_time_before:
-        #         reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
-        #         scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, new_appointment.id])
-        #         print(f"Reminder scheduled for {reminder_time}")
-
-        # if new_appointment.share_on_email:
-        #     await send_appointment_email(db, new_appointment.id)
+        if new_appointment.share_on_email:
+            await send_appointment_email(db, new_appointment.id)
 
         return JSONResponse(status_code=201, content={"message": "Appointment created successfully"})
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
@@ -1122,8 +1125,6 @@ async def get_appointment_details(
     - share_on_email (bool): Update email sharing preference
     - share_on_sms (bool): Update SMS sharing preference
     - share_on_whatsapp (bool): Update WhatsApp sharing preference
-    - send_reminder (bool): Send appointment reminder
-    - remind_time_before (int): Reminder time in minutes before appointment
 
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -1193,24 +1194,16 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
         if appointment_update.checked_out_at is not None:
             appointment.checked_out_at = appointment_update.checked_out_at
         if appointment_update.status is not None:
-            appointment.status = appointment_update.status
+            appointment.status = AppointmentStatus(appointment_update.status.lower())
         if appointment_update.share_on_email is not None:
             appointment.share_on_email = appointment_update.share_on_email
         if appointment_update.share_on_sms is not None:
             appointment.share_on_sms = appointment_update.share_on_sms
         if appointment_update.share_on_whatsapp is not None:
             appointment.share_on_whatsapp = appointment_update.share_on_whatsapp
-        if appointment_update.send_reminder is not None:
-            appointment.send_reminder = appointment_update.send_reminder
-            if appointment_update.remind_time_before is not None:
-                appointment.reminder_time = appointment_update.remind_time_before
         
         db.commit()
         db.refresh(appointment)
-        if appointment_update.send_reminder:
-            reminder_time = appointment.appointment_date - timedelta(minutes=appointment.remind_time_before)
-            scheduler.add_job(send_email_sync, 'date', run_date=reminder_time, args=[db, appointment.id])
-            print(f"Reminder scheduled for {reminder_time}")
 
         return JSONResponse(status_code=200, content={"message": "Appointment updated successfully"})
     except Exception as e:
@@ -1291,3 +1284,544 @@ async def delete_appointment(request: Request, appointment_id: str, db: Session 
         return JSONResponse(status_code=200, content={"message": "Appointment deleted successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+    
+@appointment_router.patch("/check-in/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Check in to an appointment",
+    description="""
+    Check in to a specific appointment by its ID.
+    
+    This endpoint allows doctors to check in to an appointment.
+    The appointment must exist and must not already be in a checked-in state.
+    
+    Returns a success message upon successful check-in with the appointment ID and updated status.
+    """,
+    responses={
+        200: {
+            "description": "Appointment checked in successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Appointment checked in successfully",
+                        "appointment_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "status": "checked_in"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Appointment already checked in",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment already checked in"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized - doctor access required"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "An unexpected error occurred"}
+                }
+            }
+        }
+    }
+)
+async def check_in_appointment(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Find appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Check if already checked in
+        if appointment.status == AppointmentStatus.CHECKED_IN:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Appointment already checked in"})
+        
+        # Update appointment status and check-in time
+        appointment.status = AppointmentStatus.CHECKED_IN
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Appointment checked in successfully",
+            "appointment_id": appointment_id,
+            "status": str(appointment.status.value)
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+
+@appointment_router.patch("/check-out/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Check out from an appointment",
+    description="""
+    Check out from a specific appointment by its ID.
+    
+    This endpoint allows doctors to check out from an appointment.
+    The appointment must exist and must not already be in a completed state.
+    
+    Returns a success message upon successful check-out with the appointment ID and updated status.
+    """,
+    responses={
+        200: {
+            "description": "Appointment checked out successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Appointment checked out successfully",
+                        "appointment_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "status": "completed"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Appointment already completed",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment already completed"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized - doctor access required"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "An unexpected error occurred"}
+                }
+            }
+        }
+    }
+)
+async def check_out_appointment(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Find appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Check if already checked out
+        if appointment.status == AppointmentStatus.COMPLETED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Appointment already completed"})
+        
+        # Update appointment status and check-out time
+        appointment.status = AppointmentStatus.COMPLETED
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Appointment checked out successfully",
+            "appointment_id": appointment_id,
+            "status": str(appointment.status.value)
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+       
+@appointment_router.patch("/cancel/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel an appointment",
+    description="""
+    Cancel a specific appointment by its ID.
+    
+    This endpoint allows doctors to mark an appointment as cancelled.
+    The appointment must exist and must not already be in a cancelled state.
+    
+    Returns a success message upon successful cancellation with the appointment ID and updated status.
+    """,
+    responses={
+        200: {
+            "description": "Appointment cancelled successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Appointment cancelled successfully",
+                        "appointment_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "status": "cancelled"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Appointment already cancelled",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment already cancelled"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Authentication required or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized - doctor access required"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "An unexpected error occurred"}
+                }
+            }
+        }
+    }
+)
+async def cancel_appointment(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Find appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Check if already cancelled
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Appointment already cancelled"})
+        
+        # Update appointment status
+        appointment.status = AppointmentStatus.CANCELLED
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Appointment cancelled successfully",
+            "appointment_id": appointment_id,
+            "status": str(appointment.status.value)
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+    
+@appointment_router.post("/add-reminder/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Add appointment reminder",
+    description="""
+    Add an appointment reminder for a specific appointment.
+    
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Request body:**
+    - send_reminder (bool): Whether to send a reminder
+    - remind_time_before (int): Minutes before appointment to send reminder
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "message": "Appointment reminder added successfully",
+        "reminder_time": "2023-01-01T10:30:00"
+    }
+    ```
+    """,
+    responses={
+        200: {
+            "description": "Successfully added appointment reminder",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Appointment reminder added successfully",
+                        "reminder_time": "2023-01-01T10:30:00"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad request - invalid reminder settings",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Reminder time is in the past"}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
+    }
+)
+async def add_appointment_reminder(request: Request, appointment_id: str, appointment_reminder: AppointmentReminder, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Find appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Validate appointment date
+        current_time = datetime.now()
+        if appointment.appointment_date <= current_time:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Cannot add reminder for past appointments"})
+        
+        # Update appointment with reminder details
+        appointment.send_reminder = appointment_reminder.send_reminder
+        appointment.remind_time_before = appointment_reminder.remind_time_before
+        
+        # If not sending reminder, just save the preferences
+        if not appointment_reminder.send_reminder:
+            db.commit()
+            return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Reminder preferences updated"})
+        
+        # Calculate reminder time
+        reminder_time = appointment.appointment_date - timedelta(minutes=appointment_reminder.remind_time_before)
+        
+        # Check if reminder time is in the past
+        if reminder_time <= current_time:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                content={"message": "Reminder time is in the past. Please choose a shorter reminder time."}
+            )
+        
+        # Remove any existing scheduled reminders for this appointment
+        for job in scheduler.get_jobs():
+            if job.id and job.id.startswith(f"reminder_{appointment.id}_"):
+                scheduler.remove_job(job.id)
+        
+        # Schedule the reminder
+        job_id = f"reminder_{appointment.id}_{reminder_time.timestamp()}"
+        scheduler.add_job(
+            send_email_sync, 
+            'date', 
+            run_date=reminder_time, 
+            args=[db, appointment.id],
+            id=job_id,
+            replace_existing=True
+        )
+        
+        # Save changes to database
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK, 
+            content={
+                "message": "Appointment reminder added successfully",
+                "reminder_time": reminder_time.isoformat(),
+                "job_id": job_id
+            }
+        )
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+    
+@appointment_router.patch("/cancel-reminder/{appointment_id}",
+    response_model=dict,
+    status_code=200,
+    summary="Cancel appointment reminder",
+    description="""
+    Cancel a scheduled reminder for a specific appointment.
+    
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Response:**
+    ```json
+    {
+        "message": "Appointment reminder cancelled successfully"
+    }
+    ```
+    """,
+    responses={
+        200: {
+            "description": "Successfully cancelled reminder",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment reminder cancelled successfully"}
+                }
+            }
+        },
+        400: {
+            "description": "No reminder scheduled",
+            "content": {
+                "application/json": {
+                    "example": {"message": "No reminder scheduled for this appointment"}
+                }
+            }
+        },
+        401: {
+            "description": "Authentication failed or non-doctor user",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized - doctor access required"}
+                }
+            }
+        },
+        404: {
+            "description": "Appointment not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Appointment not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Server error occurred",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error message"}
+                }
+            }
+        }
+    }
+)
+async def cancel_appointment_reminder(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        user_id = decoded_token.get("user_id") if decoded_token else None
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Find appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Check if reminder is scheduled
+        if not appointment.send_reminder:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "No reminder scheduled for this appointment"})
+        
+        # Remove any existing scheduled reminders for this appointment
+        jobs_removed = 0
+        for job in scheduler.get_jobs():
+            if job.id and job.id.startswith(f"reminder_{appointment.id}_"):
+                scheduler.remove_job(job.id)
+                jobs_removed += 1
+        
+        # Update appointment to remove reminder
+        appointment.send_reminder = False
+        appointment.remind_time_before = 0
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Appointment reminder cancelled successfully",
+            "jobs_removed": jobs_removed
+        })
+    
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})

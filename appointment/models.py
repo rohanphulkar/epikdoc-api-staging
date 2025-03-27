@@ -11,6 +11,7 @@ def generate_uuid():
 class AppointmentStatus(enum.Enum):
     SCHEDULED = "scheduled"
     CANCELLED = "cancelled"
+    CHECKED_IN = "checked_in"
     COMPLETED = "completed"
 
 class Appointment(Base):

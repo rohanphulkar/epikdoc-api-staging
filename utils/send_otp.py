@@ -22,8 +22,6 @@ def send_otp_email(email: str, otp: str):
         body = f"Your OTP code is: {otp}\n\nThis code will expire soon. Please do not share this code with anyone."
         
         return send_email(
-            sender_email=sender_email,
-            sender_password=sender_password,
             receiver_emails=email,
             subject=subject,
             body=body

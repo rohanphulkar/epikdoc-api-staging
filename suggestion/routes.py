@@ -207,7 +207,8 @@ async def search_treatment_suggestion(request: Request, query: str, db: Session 
                         "message": "Treatment suggestion updated successfully",
                         "treatment_suggestion": {
                             "id": 1,
-                            "treatment_name": "Updated Treatment Name"
+                            "treatment_name": "Updated Treatment Name",
+                            "created_at": "2024-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -247,9 +248,15 @@ async def update_treatment_suggestion(treatment_suggestion_id: str, request: Req
         existing_treatment_suggestion.treatment_name = treatment_suggestion_update.treatment_name
         db.commit()
         db.refresh(existing_treatment_suggestion)  # Refresh the existing_treatment_suggestion with the latest data from the database
+
+        treatment_suggestion_data = {
+            "id": existing_treatment_suggestion.id,
+            "treatment_name": existing_treatment_suggestion.treatment_name,
+            "created_at": existing_treatment_suggestion.created_at.isoformat() if existing_treatment_suggestion.created_at else None
+        }
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Treatment suggestion updated successfully",
-            "treatment_suggestion": existing_treatment_suggestion
+            "treatment_suggestion": treatment_suggestion_data
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -325,7 +332,8 @@ async def delete_treatment_suggestion(treatment_suggestion_id: str, request: Req
                         "message": "Complaint suggestion added successfully",
                         "complaint_suggestion": {
                             "id": 1,
-                            "complaint": "Headache"
+                            "complaint": "Headache",
+                            "created_at": "2024-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -360,7 +368,11 @@ async def add_complaint_suggestion(complaint_suggestion: ComplaintSuggestionSche
         db.refresh(new_suggestion)  # Refresh the new_suggestion with the latest data from the database
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Complaint suggestion added successfully",
-            "complaint_suggestion": new_suggestion
+            "complaint_suggestion": {
+                "id": new_suggestion.id,
+                "complaint": new_suggestion.complaint,
+                "created_at": new_suggestion.created_at.isoformat() if new_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -408,7 +420,7 @@ async def get_complaint_suggestions(request: Request, db: Session = Depends(get_
             complaint_suggestions_list.append({
                 "id": suggestion.id,
                 "complaint": suggestion.complaint,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Complaint suggestions retrieved successfully",
@@ -458,7 +470,7 @@ async def search_complaint_suggestion(request: Request, query: str, db: Session 
             complaint_suggestions_list.append({
                 "id": suggestion.id,
                 "complaint": suggestion.complaint,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Complaint suggestions retrieved successfully",
@@ -481,7 +493,8 @@ async def search_complaint_suggestion(request: Request, query: str, db: Session 
                         "message": "Complaint suggestion updated successfully",
                         "complaint_suggestion": {
                             "id": 1,
-                            "complaint": "Updated Complaint"
+                            "complaint": "Updated Complaint",
+                            "created_at": "2024-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -516,7 +529,11 @@ async def update_complaint_suggestion(complaint_suggestion_id: str, request: Req
         db.refresh(existing_suggestion)  # Refresh the existing_suggestion with the latest data from the database
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Complaint suggestion updated successfully",
-            "complaint_suggestion": existing_suggestion
+            "complaint_suggestion": {
+                "id": existing_suggestion.id,
+                "complaint": existing_suggestion.complaint,
+                "created_at": existing_suggestion.created_at.isoformat() if existing_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -585,7 +602,8 @@ async def delete_complaint_suggestion(complaint_suggestion_id: str, request: Req
                         "message": "Diagnosis suggestion added successfully",
                         "diagnosis_suggestion": {
                             "id": 1,
-                            "diagnosis": "Migraine"
+                            "diagnosis": "Migraine",
+                            "created_at": "2024-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -620,7 +638,11 @@ async def add_diagnosis_suggestion(diagnosis_suggestion: DiagnosisSuggestionSche
         db.refresh(new_suggestion)  # Refresh the new_suggestion with the latest data from the database
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Diagnosis suggestion added successfully",
-            "diagnosis_suggestion": new_suggestion
+            "diagnosis_suggestion": {
+                "id": new_suggestion.id,
+                "diagnosis": new_suggestion.diagnosis,
+                "created_at": new_suggestion.created_at.isoformat() if new_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -644,7 +666,7 @@ async def add_diagnosis_suggestion(diagnosis_suggestion: DiagnosisSuggestionSche
                             {
                                 "id": 1,
                                 "diagnosis": "Migraine",
-                                "created_at": "2023-01-01T00:00:00"
+                                "created_at": "2023-01-01T00:00:00Z"
                             }
                         ]
                     }
@@ -668,7 +690,7 @@ async def get_diagnosis_suggestions(request: Request, db: Session = Depends(get_
             diagnosis_suggestions_list.append({
                 "id": suggestion.id,
                 "diagnosis": suggestion.diagnosis,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Diagnosis suggestions retrieved successfully",
@@ -694,7 +716,7 @@ async def get_diagnosis_suggestions(request: Request, db: Session = Depends(get_
                             {
                                 "id": 1,
                                 "diagnosis": "Migraine",
-                                "created_at": "2023-01-01T00:00:00"
+                                "created_at": "2023-01-01T00:00:00Z"
                             }
                         ]
                     }
@@ -718,7 +740,7 @@ async def search_diagnosis_suggestion(request: Request, query: str, db: Session 
             diagnosis_suggestions_list.append({
                 "id": suggestion.id,
                 "diagnosis": suggestion.diagnosis,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Diagnosis suggestions retrieved successfully",
@@ -742,7 +764,8 @@ async def search_diagnosis_suggestion(request: Request, query: str, db: Session 
                         "message": "Diagnosis suggestion updated successfully",
                         "diagnosis_suggestion": {
                             "id": 1,
-                            "diagnosis": "Updated Diagnosis"
+                            "diagnosis": "Updated Diagnosis",
+                            "created_at": "2024-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -776,7 +799,11 @@ async def update_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Req
         db.refresh(existing_suggestion)  # Refresh the existing_suggestion with the latest data from the database
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Diagnosis suggestion updated successfully",
-            "diagnosis_suggestion": existing_suggestion
+            "diagnosis_suggestion": {
+                "id": existing_suggestion.id,
+                "diagnosis": existing_suggestion.diagnosis,
+                "created_at": existing_suggestion.created_at.isoformat() if existing_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -848,7 +875,7 @@ async def delete_diagnosis_suggestion(diagnosis_suggestion_id: str, request: Req
                         "vital_sign_suggestion": {
                             "id": 1,
                             "vital_sign": "Blood Pressure",
-                            "created_at": "2023-01-01T00:00:00"
+                            "created_at": "2023-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -884,7 +911,11 @@ async def add_vital_sign_suggestion(vital_sign_suggestion: VitalSignSuggestionSc
         db.refresh(new_suggestion)
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={
             "message": "Vital sign suggestion added successfully",
-            "vital_sign_suggestion": new_suggestion
+            "vital_sign_suggestion": {
+                "id": new_suggestion.id,
+                "vital_sign": new_suggestion.vital_sign,
+                "created_at": new_suggestion.created_at.isoformat() if new_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -909,7 +940,7 @@ async def add_vital_sign_suggestion(vital_sign_suggestion: VitalSignSuggestionSc
                             {
                                 "id": 1,
                                 "vital_sign": "Blood Pressure",
-                                "created_at": "2023-01-01T00:00:00"
+                                "created_at": "2023-01-01T00:00:00Z"
                             }
                         ]
                     }
@@ -934,7 +965,7 @@ async def get_vital_sign_suggestions(request: Request, db: Session = Depends(get
             vital_sign_suggestions_list.append({
                 "id": suggestion.id,
                 "vital_sign": suggestion.vital_sign,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Vital sign suggestions retrieved successfully",
@@ -961,7 +992,7 @@ async def get_vital_sign_suggestions(request: Request, db: Session = Depends(get
                             {
                                 "id": 1,
                                 "vital_sign": "Blood Pressure",
-                                "created_at": "2023-01-01T00:00:00"
+                                "created_at": "2023-01-01T00:00:00Z"
                             }
                         ]
                     }
@@ -986,7 +1017,7 @@ async def search_vital_sign_suggestion(request: Request, query: str, db: Session
             vital_sign_suggestions_list.append({
                 "id": suggestion.id,
                 "vital_sign": suggestion.vital_sign,
-                "created_at": suggestion.created_at
+                "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None
             })
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Vital sign suggestions retrieved successfully",
@@ -1012,7 +1043,7 @@ async def search_vital_sign_suggestion(request: Request, query: str, db: Session
                         "vital_sign_suggestion": {
                             "id": 1,
                             "vital_sign": "Updated Blood Pressure",
-                            "created_at": "2023-01-01T00:00:00"
+                            "created_at": "2023-01-01T00:00:00Z"
                         }
                     }
                 }
@@ -1047,7 +1078,11 @@ async def update_vital_sign_suggestion(vital_sign_suggestion_id: str, request: R
         db.refresh(existing_suggestion)
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Vital sign suggestion updated successfully",
-            "vital_sign_suggestion": existing_suggestion
+            "vital_sign_suggestion": {
+                "id": existing_suggestion.id,
+                "vital_sign": existing_suggestion.vital_sign,
+                "created_at": existing_suggestion.created_at.isoformat() if existing_suggestion.created_at else None
+            }
         })
     except SQLAlchemyError as e:
         db.rollback()

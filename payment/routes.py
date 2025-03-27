@@ -1866,12 +1866,30 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         current_time = datetime.now()
         invoice_number = invoice.invoice_number or str(generate_invoice_number())
         
-        # Create invoice record
+        # Create payment record first
+        new_payment = Payment(
+            id=str(uuid.uuid4()),
+            patient_id=patient.id,
+            doctor_id=user.id,
+            amount_paid=0,  # Will update after calculating total
+            payment_mode="invoice",
+            status="pending",
+            patient_number=patient.patient_number,
+            patient_name=patient.name,
+            invoice_number=invoice_number,
+            date=current_time
+        )
+        
+        db.add(new_payment)
+        db.flush()  # Get ID without committing
+        
+        # Create invoice record with payment_id
         new_invoice = Invoice(
             id=str(uuid.uuid4()),
             date=invoice.date or current_time,
             patient_id=patient.id,
             doctor_id=user.id,
+            payment_id=new_payment.id,  # Set payment_id from the start
             patient_name=patient.name,
             patient_number=patient.patient_number,
             doctor_name=user.name,
@@ -1934,6 +1952,10 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         # Update invoice total
         new_invoice.total_amount = total_amount
         
+        # Update payment amount
+        new_payment.amount_paid = total_amount
+        new_payment.invoice_id = new_invoice.id
+        
         # Generate PDF with contact details
         invoice_data = {
             **new_invoice.__dict__,
@@ -1952,24 +1974,6 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         except Exception as e:
             print(f"Failed to generate PDF invoice: {str(e)}")
             # Continue without PDF
-            
-        # Create pending payment record
-        new_payment = Payment(
-            id=str(uuid.uuid4()),
-            patient_id=patient.id,
-            doctor_id=user.id,
-            invoice_id=new_invoice.id,
-            amount_paid=total_amount,
-            payment_mode="invoice",
-            status="pending",
-            patient_number=patient.patient_number,
-            patient_name=patient.name,
-            invoice_number=invoice_number,
-            date=current_time
-        )
-        
-        db.add(new_payment)
-        new_invoice.payment_id = new_payment.id
         
         # Commit all changes
         db.commit()
@@ -3157,9 +3161,20 @@ async def delete_invoice(request: Request, invoice_id: str, db: Session = Depend
         invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if not invoice:
             return JSONResponse(status_code=404, content={"message": "Invoice not found"})
-            
-        # Delete invoice items first due to foreign key constraint
-        db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete()
+        
+        # Handle circular reference between Invoice and Payment
+        # First, set payment_id to NULL in the invoice
+        if invoice.payment_id:
+            invoice.payment_id = None
+            db.flush()
+        
+        # Delete invoice items due to foreign key constraint
+        db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice_id).delete(synchronize_session=False)
+        db.flush()
+        
+        # Delete payments associated with this invoice
+        db.query(Payment).filter(Payment.invoice_id == invoice_id).delete(synchronize_session=False)
+        db.flush()
         
         # Delete PDF file if it exists
         if invoice.file_path:
@@ -3170,12 +3185,13 @@ async def delete_invoice(request: Request, invoice_id: str, db: Session = Depend
             except OSError:
                 # Log error but continue with deletion
                 print(f"Failed to delete PDF file: {invoice.file_path}")
-                
-        # Delete the invoice
-        db.query(Invoice).filter(Invoice.id == invoice_id).delete()
+        
+        # Finally delete the invoice
+        db.delete(invoice)
         db.commit()
         
         return JSONResponse(status_code=200, content={"message": "Invoice deleted successfully"})
     except Exception as e:
         db.rollback()
+        print(f"Error deleting invoice: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Failed to delete invoice: {str(e)}"})
