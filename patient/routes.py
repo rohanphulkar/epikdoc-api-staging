@@ -238,14 +238,29 @@ async def create_patient(
                     "example": {
                         "patients": [{
                             "id": "uuid",
+                            "patient_number": "P12345",
                             "name": "John Doe",
                             "mobile_number": "+1234567890", 
+                            "contact_number": "+1987654321",
                             "email": "john@example.com",
+                            "secondary_mobile": "+1122334455",
                             "gender": "male",
-                            "age": "35",
-                            "blood_group": "O+",
                             "address": "123 Main St",
+                            "locality": "Downtown",
                             "city": "New York",
+                            "pincode": "10001",
+                            "national_id": "ABC123456",
+                            "abha_id": "ABHA12345",
+                            "date_of_birth": "1988-01-15",
+                            "age": "35",
+                            "anniversary_date": "2015-06-20",
+                            "blood_group": "O+",
+                            "occupation": "Engineer",
+                            "relationship": "Single",
+                            "medical_history": "No major issues",
+                            "referred_by": "Dr. Smith",
+                            "groups": "Regular",
+                            "patient_notes": "Regular checkup needed",
                             "created_at": "2023-01-01T00:00:00"
                         }],
                         "statistics": {
@@ -276,7 +291,25 @@ async def create_patient(
             "description": "Unauthorized - Invalid or missing authentication token",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized"}
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Invalid authentication token"}
+                        },
+                        "expired_token": {
+                            "value": {"message": "Authentication token has expired"}
+                        },
+                        "missing_token": {
+                            "value": {"message": "Authentication token is missing"}
+                        }
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad request",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Invalid query parameters"}
                 }
             }
         },

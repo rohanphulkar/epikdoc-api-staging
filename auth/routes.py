@@ -307,7 +307,6 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
-
 @user_router.post("/login/otp/resend",
     response_model=dict,
     status_code=200,
