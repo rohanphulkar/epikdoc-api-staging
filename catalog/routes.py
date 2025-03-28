@@ -99,9 +99,10 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        clinic = db.query(Clinic).filter(Clinic.id == treatment.clinic_id).first()
-        if not clinic:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
+        if treatment.clinic_id:
+            clinic = db.query(Clinic).filter(Clinic.id == treatment.clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
         
         appointment = db.query(Appointment).filter(Appointment.id == treatment.appointment_id).first()
         if not appointment:
@@ -125,7 +126,6 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
         # Create treatment record
         new_treatment = Treatment(
             doctor_id=user.id,
-            clinic_id=clinic.id,
             patient_id=patient.id,
             appointment_id=appointment.id,
             treatment_date=treatment.treatment_date,
@@ -142,6 +142,8 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
             completed=treatment.completed
         )
 
+        if treatment.clinic_id:
+            new_treatment.clinic_id = treatment.clinic_id
         db.add(new_treatment)
         db.commit()
         db.refresh(new_treatment)
@@ -724,9 +726,10 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        clinic = db.query(Clinic).filter(Clinic.id == treatment_plan.clinic_id).first()
-        if not clinic:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
+        if treatment_plan.clinic_id:
+            clinic = db.query(Clinic).filter(Clinic.id == treatment_plan.clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid clinic ID"})
         
         appointment = db.query(Appointment).filter(Appointment.id == treatment_plan.appointment_id).first()
         if not appointment:
@@ -753,10 +756,13 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
             doctor_id=user.id,
             patient_id=patient.id,
             appointment_id=appointment.id,
-            clinic_id=clinic.id,
             date=treatment_plan.date or datetime.now(),
             created_at=datetime.now()
         )
+
+        if treatment_plan.clinic_id:
+            new_treatment_plan.clinic_id = treatment_plan.clinic_id
+            
         db.add(new_treatment_plan)
         db.commit()
         db.refresh(new_treatment_plan)
@@ -768,7 +774,6 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
                 patient_id=patient.id,
                 appointment_id=appointment.id,
                 doctor_id=user.id,
-                clinic_id=clinic.id,
                 treatment_date=item.treatment_date,
                 treatment_name=item.treatment_name,
                 tooth_number=item.tooth_number,
@@ -782,6 +787,8 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
                 tooth_diagram=item.tooth_diagram,
                 completed=item.completed
             )
+            if treatment_plan.clinic_id:
+                new_treatment_plan_item.clinic_id = treatment_plan.clinic_id
             db.add(new_treatment_plan_item)
         
         db.commit()

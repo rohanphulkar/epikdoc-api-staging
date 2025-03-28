@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, Query, status
+from fastapi import APIRouter, Depends, Request, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -42,16 +42,18 @@ appointment_router = APIRouter()
 
     **Required fields:**
     - patient_id (UUID): Patient's unique identifier
-    - doctor_id (str): Doctor's unique identifier
-    - clinic_id (str): Clinic's unique identifier
-    - notes (str): Appointment notes/description
     - appointment_date (datetime): Scheduled date and time
+    
+    **Optional fields:**
+    - doctor_id (str): Doctor's unique identifier (defaults to authenticated doctor)
+    - clinic_id (str): Clinic's unique identifier (defaults to doctor's default clinic)
+    - notes (str): Appointment notes/description
     - checked_in_at (datetime): Patient check-in time
     - checked_out_at (datetime): Patient check-out time
-    - status (str): One of [scheduled, cancelled, completed]
-    - share_on_email (bool): Enable email notifications
-    - share_on_sms (bool): Enable SMS notifications
-    - share_on_whatsapp (bool): Enable WhatsApp notifications
+    - status (str): One of [SCHEDULED, CANCELLED, COMPLETED] (default: SCHEDULED)
+    - share_on_email (bool): Enable email notifications (default: False)
+    - share_on_sms (bool): Enable SMS notifications (default: False)
+    - share_on_whatsapp (bool): Enable WhatsApp notifications (default: False)
 
     **Authentication:**
     - Requires valid doctor Bearer token
@@ -76,7 +78,7 @@ appointment_router = APIRouter()
             "description": "Invalid input",
             "content": {
                 "application/json": {
-                    "example": {"message": "Invalid status. Must be either 'scheduled' or 'cancelled' or 'completed'"}
+                    "example": {"message": "Invalid status. Must be either 'SCHEDULED', 'CANCELLED' or 'COMPLETED'"}
                 }
             }
         },
@@ -89,10 +91,10 @@ appointment_router = APIRouter()
             }
         },
         404: {
-            "description": "Referenced patient not found",
+            "description": "Referenced entity not found",
             "content": {
                 "application/json": {
-                    "example": {"message": "Patient not found"}
+                    "example": {"message": "Patient/Doctor/Clinic not found"}
                 }
             }
         },
@@ -106,8 +108,9 @@ appointment_router = APIRouter()
         }
     }
 )
-async def create_appointment(request: Request, appointment: AppointmentCreate, db: Session = Depends(get_db)):
+async def create_appointment(request: Request, appointment: AppointmentCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
+        # Verify doctor authentication
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
@@ -116,19 +119,9 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         user = db.query(User).filter(User.id == user_id).first()
 
         if not user or str(user.user_type) != "doctor":
-            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+            return JSONResponse(status_code=401, content={"message": "Unauthorized - doctor access required"})
         
-        # If clinic_id is not provided, use doctor's default clinic
-        if not appointment.clinic_id:
-            if not user.default_clinic_id:
-                return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
-            appointment.clinic_id = user.default_clinic_id
-            
-        clinic = db.query(Clinic).filter(Clinic.id == appointment.clinic_id).first()
-        if not clinic:
-            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
-
-        # If patient_id is not provided, return error
+        # Validate patient
         if not appointment.patient_id:
             return JSONResponse(status_code=400, content={"message": "Patient ID is required"})
             
@@ -136,21 +129,39 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
 
-        if appointment.status.lower() not in ["scheduled", "cancelled", "completed"]:
-            return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'scheduled' or 'cancelled' or 'completed'"})
+        # Validate/set doctor
+        doctor = user
+        if appointment.doctor_id:
+            doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+            if not doctor or str(doctor.user_type) != "doctor":
+                return JSONResponse(status_code=404, content={"message": "Doctor not found"})
+
+        # Validate/set clinic
+        clinic_id = appointment.clinic_id or user.default_clinic_id
+        if not clinic_id:
+            return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
+            
+        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+        if not clinic:
+            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
+
+        # Validate status
+        status = appointment.status.upper()
+        if status not in ["SCHEDULED", "CANCELLED", "COMPLETED"]:
+            return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'SCHEDULED', 'CANCELLED' or 'COMPLETED'"})
 
         new_appointment = Appointment(
             patient_id=patient.id,
             clinic_id=clinic.id,
             patient_number=patient.patient_number if hasattr(patient, 'patient_number') else None,
             patient_name=patient.name,
-            doctor_id=user.id,
-            doctor_name=user.name,
+            doctor_id=doctor.id,
+            doctor_name=doctor.name,
             notes=appointment.notes,
             appointment_date=appointment.appointment_date,
             checked_in_at=appointment.checked_in_at,
             checked_out_at=appointment.checked_out_at,
-            status=AppointmentStatus(appointment.status.lower()),
+            status=AppointmentStatus(status),
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
             share_on_whatsapp=appointment.share_on_whatsapp,
@@ -161,7 +172,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, d
         db.refresh(new_appointment)
 
         if new_appointment.share_on_email:
-            await send_appointment_email(db, new_appointment.id)
+            background_tasks.add_task(send_appointment_email, db, new_appointment.id)
 
         return JSONResponse(status_code=201, content={"message": "Appointment created successfully"})
     except SQLAlchemyError as e:
@@ -904,55 +915,92 @@ async def search_appointments(
             "appointment_date": "2023-01-01T10:00:00",
             "checked_in_at": "2023-01-01T10:00:00",
             "checked_out_at": "2023-01-01T10:30:00",
-            "status": "COMPLETED",
+            "status": "completed",
             "send_reminder": true,
             "remind_time_before": 30,
             "created_at": "2023-01-01T09:00:00",
             "updated_at": "2023-01-01T10:30:00",
             "doctor": {
                 "id": "uuid",
-                "name": "Dr. Smith",
+                "name": "Dr. Smith", 
                 "email": "dr.smith@example.com",
                 "phone": "1234567890"
             },
             "patient": {
-                "id": "uuid", 
+                "id": "uuid",
                 "name": "John Doe",
-                "email": "john@example.com",
+                "email": "john@example.com", 
                 "mobile_number": "9876543210",
                 "date_of_birth": "1990-01-01",
-                "gender": "MALE"
+                "gender": "male"
             },
             "clinical_notes": [{
                 "id": "uuid",
-                "date": "2023-01-01T10:00:00",
-                "attachments": [],
-                "treatments": [],
-                "medicines": [],
-                "complaints": [],
-                "diagnoses": [],
-                "vital_signs": [],
-                "notes": []
+                "date": "2023-01-01",
+                "attachments": [{"id": "uuid", "attachment": "path/to/file"}],
+                "treatments": [{"id": "uuid", "name": "Cleaning"}],
+                "medicines": [{
+                    "id": "uuid",
+                    "item_name": "Medicine",
+                    "price": 10.00,
+                    "quantity": 1,
+                    "dosage": "1x daily",
+                    "instructions": "After meals",
+                    "amount": 10.00
+                }],
+                "complaints": [{"id": "uuid", "complaint": "Pain"}],
+                "diagnoses": [{"id": "uuid", "diagnosis": "Cavity"}],
+                "vital_signs": [{"id": "uuid", "vital_sign": "BP: 120/80"}],
+                "notes": [{"id": "uuid", "note": "Patient notes"}]
             }],
             "treatments": [{
                 "id": "uuid",
-                "treatment_name": "Cleaning",
                 "treatment_date": "2023-01-01T10:00:00",
+                "treatment_name": "Cleaning",
+                "tooth_number": "18",
+                "treatment_notes": "Deep cleaning performed",
+                "quantity": 1,
+                "unit_cost": 100.00,
                 "amount": 100.00,
+                "discount": 0,
+                "discount_type": "percentage",
                 "completed": true
             }],
             "treatment_plans": [{
                 "id": "uuid",
                 "date": "2023-01-01T10:00:00",
-                "treatments": []
+                "treatments": [{
+                    "id": "uuid",
+                    "treatment_name": "Root Canal",
+                    "tooth_number": "16",
+                    "quantity": 1,
+                    "unit_cost": 500.00,
+                    "amount": 500.00,
+                    "completed": false
+                }]
             }],
             "payments": [{
                 "id": "uuid",
                 "date": "2023-01-01T10:30:00",
+                "receipt_number": "R001",
                 "amount_paid": 100.00,
-                "payment_mode": "CASH",
-                "status": "COMPLETED",
-                "invoices": []
+                "payment_mode": "cash",
+                "status": "completed",
+                "refund": false,
+                "refunded_amount": null,
+                "cancelled": false,
+                "invoices": [{
+                    "id": "uuid",
+                    "invoice_number": "INV001",
+                    "total_amount": 100.00,
+                    "invoice_items": [{
+                        "treatment_name": "Cleaning",
+                        "quantity": 1,
+                        "unit_cost": 100.00,
+                        "discount": 0,
+                        "tax_percent": 0
+                    }]
+                }]
             }]
         }
     }
@@ -993,11 +1041,51 @@ async def get_appointment_details(
             
         appointment, patient, doctor = result
 
-        # Get related records in parallel queries
-        clinical_notes = db.query(ClinicalNote).filter(ClinicalNote.appointment_id == appointment_id).all()
-        treatments = db.query(Treatment).filter(Treatment.appointment_id == appointment_id).all()
-        treatment_plans = db.query(TreatmentPlan).filter(TreatmentPlan.appointment_id == appointment_id).all()
-        payments = db.query(Payment).filter(Payment.appointment_id == appointment_id).all()
+        # Get related records with optimized queries
+        clinical_notes = (
+            db.query(ClinicalNote)
+            .options(
+                joinedload(ClinicalNote.attachments),
+                joinedload(ClinicalNote.treatments),
+                joinedload(ClinicalNote.medicines),
+                joinedload(ClinicalNote.complaints),
+                joinedload(ClinicalNote.diagnoses),
+                joinedload(ClinicalNote.vital_signs),
+                joinedload(ClinicalNote.notes)
+            )
+            .filter(ClinicalNote.appointment_id == appointment_id)
+            .all()
+        )
+
+        # Get treatment plans first
+        treatment_plans = (
+            db.query(TreatmentPlan)
+            .options(joinedload(TreatmentPlan.treatments))
+            .filter(TreatmentPlan.appointment_id == appointment_id)
+            .all()
+        )
+
+        # Get all treatments
+        treatments = (
+            db.query(Treatment)
+            .filter(Treatment.appointment_id == appointment_id)
+            .all()
+        )
+
+        # Create a set of treatment IDs that are in plans
+        planned_treatment_ids = set()
+        for plan in treatment_plans:
+            for treatment in plan.treatments:
+                planned_treatment_ids.add(str(treatment.id))
+
+        # Filter out treatments that are already in treatment plans
+        standalone_treatments = [t for t in treatments if str(t.id) not in planned_treatment_ids]
+
+        payments = (
+            db.query(Payment)
+            .filter(Payment.appointment_id == appointment_id)
+            .all()
+        )
 
         # Format response data
         appointment_data = {
@@ -1062,17 +1150,21 @@ async def get_appointment_details(
                 "discount": t.discount,
                 "discount_type": t.discount_type,
                 "completed": t.completed
-            } for t in treatments],
+            } for t in standalone_treatments],
             "treatment_plans": [{
                 "id": plan.id,
                 "date": plan.date.isoformat() if plan.date else None,
                 "treatments": [{
                     "id": t.id,
+                    "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
                     "treatment_name": t.treatment_name,
                     "tooth_number": t.tooth_number,
+                    "treatment_notes": t.treatment_notes,
                     "quantity": t.quantity,
                     "unit_cost": t.unit_cost,
                     "amount": t.amount,
+                    "discount": t.discount,
+                    "discount_type": t.discount_type,
                     "completed": t.completed
                 } for t in plan.treatments]
             } for plan in treatment_plans],
@@ -1105,7 +1197,6 @@ async def get_appointment_details(
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
 @appointment_router.patch("/update/{appointment_id}",
     response_model=dict,
     status_code=200,
@@ -1132,7 +1223,8 @@ async def get_appointment_details(
     **Response:**
     ```json
     {
-        "message": "Appointment updated successfully"
+        "message": "Appointment updated successfully",
+        "appointment_id": "uuid"
     }
     ```
     """,
@@ -1141,7 +1233,18 @@ async def get_appointment_details(
             "description": "Successfully updated appointment",
             "content": {
                 "application/json": {
-                    "example": {"message": "Appointment updated successfully"}
+                    "example": {
+                        "message": "Appointment updated successfully",
+                        "appointment_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Invalid input",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Invalid status value"}
                 }
             }
         },
@@ -1171,20 +1274,33 @@ async def get_appointment_details(
         }
     }
 )
-async def update_appointment(request: Request, appointment_id: str, appointment_update: AppointmentUpdate, db: Session = Depends(get_db)):
+async def update_appointment(request: Request, appointment_id: str, appointment_update: AppointmentUpdate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
+        # Verify authentication
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("user_id") if decoded_token else None
-
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user or str(user.user_type) != "doctor":
+        if not decoded_token:
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=401, content={"message": "Unauthorized - doctor access required"})
 
+        # Get appointment
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
         if not appointment:
             return JSONResponse(status_code=404, content={"message": "Appointment not found"})
 
+        # Validate status if provided
+        if appointment_update.status:
+            status = appointment_update.status.upper()
+            if status not in ["SCHEDULED", "CONFIRMED", "CANCELLED", "COMPLETED"]:
+                return JSONResponse(status_code=400, content={
+                    "message": "Invalid status. Must be either 'SCHEDULED', 'CONFIRMED', 'CANCELLED' or 'COMPLETED'"
+                })
+            appointment.status = AppointmentStatus(status.lower())
+
+        # Update fields if provided
         if appointment_update.notes is not None:
             appointment.notes = appointment_update.notes
         if appointment_update.appointment_date is not None:
@@ -1193,8 +1309,6 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
             appointment.checked_in_at = appointment_update.checked_in_at
         if appointment_update.checked_out_at is not None:
             appointment.checked_out_at = appointment_update.checked_out_at
-        if appointment_update.status is not None:
-            appointment.status = AppointmentStatus(appointment_update.status.lower())
         if appointment_update.share_on_email is not None:
             appointment.share_on_email = appointment_update.share_on_email
         if appointment_update.share_on_sms is not None:
@@ -1205,7 +1319,18 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
         db.commit()
         db.refresh(appointment)
 
-        return JSONResponse(status_code=200, content={"message": "Appointment updated successfully"})
+        # Send email notification if enabled
+        if appointment.share_on_email:
+            background_tasks.add_task(send_appointment_email, db, appointment.id)
+
+        return JSONResponse(status_code=200, content={
+            "message": "Appointment updated successfully",
+            "appointment_id": appointment.id
+        })
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     

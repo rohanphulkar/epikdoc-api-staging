@@ -1164,7 +1164,7 @@ async def update_patient(
         )
 
 @patient_router.delete(
-    "/delete/{patient_id}/{clinic_id}",
+    "/delete/{patient_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete patient record",
     description="""

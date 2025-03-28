@@ -1,7 +1,7 @@
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, DateTime, Text, ForeignKey, Integer, Float, Boolean, Enum as SQLAlchemyEnum
 from db.db import Base
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import uuid, enum
 
@@ -33,6 +33,8 @@ class TreatmentPlan(Base):
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+    treatments: Mapped[List["Treatment"]] = relationship("Treatment", back_populates="treatment_plan")
+
 class Treatment(Base):
     __tablename__ = "treatments"
 
@@ -44,7 +46,7 @@ class Treatment(Base):
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
     treatment_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     treatment_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    tooth_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    tooth_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     treatment_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
@@ -55,3 +57,4 @@ class Treatment(Base):
     tooth_diagram: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     completed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    treatment_plan: Mapped["TreatmentPlan"] = relationship("TreatmentPlan", back_populates="treatments")
