@@ -1358,7 +1358,7 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Sess
 @user_router.patch("/update-profile",
     response_model=dict,
     status_code=200,
-    summary="Update user profile",
+    summary="Update user profile", 
     description="""
     Update authenticated user's profile information.
     
@@ -1430,22 +1430,27 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
             return JSONResponse(status_code=404, content={"error": "User not found"})
 
         # Get form data and body separately
-        form = await request.form()
+        form = {}
         body = {}
         
-        # Extract JSON data from form if present
-        if 'json' in form:
-            try:
-                json_str = str(form['json'])
-                body = json.loads(json_str)
-            except json.JSONDecodeError:
-                return JSONResponse(status_code=400, content={"error": "Invalid JSON format in form data"})
+        # Check content type to determine how to read the request
+        content_type = request.headers.get("content-type", "")
+        
+        if "multipart/form-data" in content_type:
+            # Handle multipart form data
+            form = await request.form()
+            if 'json' in form:
+                try:
+                    json_str = str(form['json'])
+                    body = json.loads(json_str)
+                except json.JSONDecodeError:
+                    return JSONResponse(status_code=400, content={"error": "Invalid JSON format in form data"})
         else:
-            # Try to read raw JSON body
+            # Handle raw JSON body
             try:
-                raw_body = await request.body()
-                if raw_body:
-                    body = await request.json()
+                body_bytes = await request.body()
+                if body_bytes:
+                    body = json.loads(body_bytes)
             except json.JSONDecodeError:
                 return JSONResponse(status_code=400, content={"error": "Invalid JSON format in request body"})
 
@@ -1498,7 +1503,7 @@ async def update_profile(request: Request, image: UploadFile = File(None), db: S
             os.makedirs(upload_dir, exist_ok=True)
             
             # Generate unique filename
-            file_extension = os.path.splitext(image.filename)[1]
+            file_extension = os.path.splitext(image.filename)[1] if image.filename else ".jpg"
             file_name = f"profile_{db_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_extension}"
             file_path = os.path.join(upload_dir, file_name)
             

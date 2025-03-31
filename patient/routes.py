@@ -605,11 +605,11 @@ async def get_patient_by_id(
                 "tooth_number": treatment.tooth_number,
                 "treatment_notes": treatment.treatment_notes,
                 "quantity": treatment.quantity,
-                "treatment_cost": treatment.treatment_cost,
+                "unit_cost": treatment.unit_cost,
                 "amount": treatment.amount,
                 "discount": treatment.discount,
                 "discount_type": treatment.discount_type,
-                "doctor": treatment.doctor,
+                "doctor_id": treatment.doctor_id,
                 "created_at": treatment.created_at.isoformat() if treatment.created_at else None
             }
             treatments.append(treatment_data)
@@ -643,9 +643,21 @@ async def get_patient_by_id(
         for clinical_note in db_clinical_notes:
             clinical_note_data = {
                 "id": clinical_note.id,
-                "complaint": clinical_note.complaint,
-                "diagnosis": clinical_note.diagnosis,
-                "vital_signs": clinical_note.vital_signs,
+                "complaints": [{
+                    "id": complaint.id,
+                    "complaint": complaint.complaint,
+                    "created_at": complaint.created_at.isoformat() if complaint.created_at else None
+                } for complaint in clinical_note.complaints],
+                "diagnosis": [{ 
+                    "id": diagnosis.id,
+                    "diagnosis": diagnosis.diagnosis,
+                    "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None
+                } for diagnosis in clinical_note.diagnoses],
+                "vital_signs": [{
+                    "id": vital_sign.id,
+                    "vital_sign": vital_sign.vital_sign,
+                    "created_at": vital_sign.created_at.isoformat() if vital_sign.created_at else None
+                } for vital_sign in clinical_note.vital_signs],
                 "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None,
                 "attachments": [
                     {

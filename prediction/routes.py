@@ -123,6 +123,7 @@ async def upload_xray(
         xray = XRay(
             patient=patient_id,
             original_image=file_path,
+            doctor=user.id,
         )
         db.add(xray)
         db.commit()
@@ -135,6 +136,7 @@ async def upload_xray(
         )
     
     except Exception as e:
+        print(str(e))
         db.rollback()
         return JSONResponse(status_code=500, content={"message": f"Server error: {str(e)}"})
 
@@ -269,6 +271,7 @@ async def get_xrays(
                 "id": xray.id,
                 "patient": xray.patient,
                 "original_image": update_image_url(xray.original_image, request),
+                "prediction_id": xray.prediction_id if xray.prediction_id else None,
                 "predicted_image": update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None,
                 "is_annotated": xray.is_annotated,
                 "created_at": xray.created_at.isoformat() if xray.created_at else None,
@@ -655,6 +658,8 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             class_percentages = calculate_class_percentage(prediction_json)
             prediction = save_prediction_results(db, xray, prediction_str, output_path, class_percentages, hex_codes, user)
             annotated_image_url = update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None
+
+            xray.is_annotated = True
             
             return JSONResponse(status_code=200, content={
                 "message": "Prediction created successfully",
