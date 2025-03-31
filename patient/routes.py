@@ -1266,21 +1266,33 @@ async def delete_patient(
                     content={"message": "You are not authorized to access this clinic"}
                 )
 
-        # Delete all appointments for the patient
-        db.query(Appointment).filter(Appointment.patient_id == patient_id).delete()
+        
 
         # Delete all payments and invoices
-        db.query(Payment).filter(Payment.patient_id == patient_id).delete()
-        
+        # First update invoice foreign keys to null
+        # invoices = db.query(Invoice).filter(Invoice.patient_id == patient_id).all()
+        # for invoice in invoices:
+        #     invoice.payment_id = None
+        # db.commit()
+
         # Get all invoice IDs for this patient
-        invoice_ids = [row[0] for row in db.query(Invoice.id).filter(Invoice.patient_id == patient_id).all()]
+        # invoice_ids = [row[0] for row in db.query(Invoice.id).filter(Invoice.patient_id == patient_id).all()]
         
-        # Delete invoice items for all patient's invoices
-        if invoice_ids:
-            db.query(InvoiceItem).filter(InvoiceItem.invoice_id.in_(invoice_ids)).delete()
+        # # Delete invoice items for all patient's invoices
+        # if invoice_ids:
+        #     db.query(InvoiceItem).filter(InvoiceItem.invoice_id.in_(invoice_ids)).delete()
         
-        # Delete invoices
-        db.query(Invoice).filter(Invoice.patient_id == patient_id).delete()
+        # # Delete invoices
+        # db.query(Invoice).filter(Invoice.patient_id == patient_id).delete()
+        # db.commit()
+
+        # # Now delete payments
+        # payments = db.query(Payment).filter(Payment.patient_id == patient_id).all()
+        # for payment in payments:
+        #     payment.invoice_id = None
+        #     db.commit()
+        #     # db.delete(payment)
+        #     print(payment)
 
         # Delete all treatments
         db.query(Treatment).filter(Treatment.patient_id == patient_id).delete()
@@ -1307,10 +1319,13 @@ async def delete_patient(
             db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_notes_id.in_(clinical_note_ids)).delete()
         db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete()
 
+        # Delete all appointments
+        db.query(Appointment).filter(Appointment.patient_id == patient_id).delete()
+
         # Finally delete the patient
         db.delete(patient)
-        db.commit()
         
+        db.commit()
         return {
             "message": "Patient deleted successfully"
         }

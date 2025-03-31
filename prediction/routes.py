@@ -691,10 +691,10 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
     Returns:
     - Complete prediction details including:
         - Original and annotated images
-        - Detection legends with percentages
-        - Color coding information
-        - Timestamps and metadata
-        - Associated notes and annotations
+        - Detection legends with percentages and colors
+        - Patient information
+        - Notes and annotations
+        - Previous predictions for the same patient
         
     Images are returned as fully qualified URLs based on the server's base URL.
     """,
@@ -711,6 +711,12 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
                             "notes": "Patient shows signs of...",
                             "original_image": "http://server.com/uploads/xrays/original.jpg",
                             "predicted_image": "http://server.com/uploads/analyzed/prediction.jpg",
+                            "patient": {
+                                "name": "John Doe",
+                                "phone": "+1234567890",
+                                "email": "john@example.com",
+                                "gender": "male"
+                            },
                             "legends": [
                                 {
                                     "id": "789e4567-e89b-12d3-a456-426614174000",
@@ -718,6 +724,13 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
                                     "percentage": 85.5,
                                     "include": True,
                                     "color_hex": "#FF0000"
+                                }
+                            ],
+                            "previous_predictions": [
+                                {
+                                    "id": "789e4567-e89b-12d3-a456-426614174111",
+                                    "predicted_image": "http://server.com/uploads/analyzed/prev1.jpg",
+                                    "created_at": "2023-01-01T00:00:00"
                                 }
                             ],
                             "created_at": "2023-01-01T00:00:00",
@@ -731,14 +744,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             "description": "Invalid request parameters",
             "content": {
                 "application/json": {
-                    "examples": {
-                        "missing_id": {
-                            "value": {"error": "Prediction ID is required"}
-                        },
-                        "not_found": {
-                            "value": {"error": "Prediction not found"}
-                        }
-                    }
+                    "example": {"error": "Prediction ID is required or prediction not found"}
                 }
             }
         },
@@ -754,7 +760,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             "description": "Server error during data retrieval",
             "content": {
                 "application/json": {
-                    "example": {"error": "Internal server error: {detailed error message}"}
+                    "example": {"error": "Internal server error"}
                 }
             }
         }
@@ -779,6 +785,11 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
         xray = db.query(XRay).filter(XRay.id == prediction.xray_id).first()
         if not xray:
             return JSONResponse(status_code=400, content={"error": "X-ray not found"})
+        
+        patient = db.query(Patient).filter(Patient.id == xray.patient).first()
+        if not patient:
+            return JSONResponse(status_code=400, content={"error": "Patient not found"})
+        
         # Load legends
         legends = db.query(Legend).filter(Legend.prediction_id == prediction_id).all()
         legend_details = [
@@ -792,6 +803,22 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
             for legend in legends
         ]
 
+        # Get previous predictions for this patient
+        previous_xrays = db.query(XRay).filter(
+            XRay.patient == patient.id,
+            XRay.id != prediction.xray_id
+        ).all()
+        
+        previous_predictions = []
+        for prev_xray in previous_xrays:
+            prev_prediction = db.query(Prediction).filter(Prediction.xray_id == prev_xray.id).first()
+            if prev_prediction:
+                previous_predictions.append({
+                    "id": prev_prediction.id,
+                    "predicted_image": update_image_url(str(prev_xray.predicted_image), request) if prev_xray.predicted_image else None,
+                    "created_at": prev_prediction.created_at.isoformat() if prev_prediction.created_at else None
+                })
+
         prediction_details = {
             "id": prediction.id,
             "xray_id": prediction.xray_id,
@@ -799,6 +826,13 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
             "original_image": update_image_url(str(xray.original_image), request),
             "predicted_image": update_image_url(str(xray.predicted_image), request) if xray.predicted_image else None,
             "legends": legend_details,
+            "patient":{
+                "name": patient.name,
+                "gender": patient.gender.value,
+                "phone": patient.mobile_number,
+                "email": patient.email,
+            },
+            "previous_predictions": previous_predictions,
             "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
             "updated_at": prediction.updated_at.isoformat() if prediction.updated_at else None
         }
@@ -1203,7 +1237,7 @@ async def exclude_legend(request: Request, legend_id: str, db: Session = Depends
                 "application/json": {
                     "example": {
                         "id": "uuid",
-                        "name": "Updated Name",
+                        "name": "Updated Name", 
                         "percentage": 0.75,
                         "prediction_id": "uuid",
                         "include": True,
@@ -1238,11 +1272,6 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
         if not existing_legend:
             return JSONResponse(status_code=404, content={"error": "Legend not found"})
 
-        # Update legend fields
-        if legend.name is not None:
-            existing_legend.name = legend.name
-            existing_legend.color_hex = legend.color_hex
-
         # Get prediction and xray to update annotation
         prediction = db.query(Prediction).filter(Prediction.id == existing_legend.prediction_id).first()
         if not prediction:
@@ -1251,6 +1280,12 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
         xray = db.query(XRay).filter(XRay.id == prediction.xray_id).first()
         if not xray:
             return JSONResponse(status_code=404, content={"error": "X-ray not found"})
+
+        # Update legend fields
+        old_name = existing_legend.name
+        existing_legend.name = legend.name
+        existing_legend.color_hex = legend.color_hex
+        existing_legend.updated_at = datetime.datetime.now()
 
         # Update annotation with updated legend
         try:
@@ -1262,7 +1297,7 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
             
             # Update legend name in predictions
             for pred in prediction_json["predictions"]:
-                if pred["class"] == existing_legend.name:
+                if pred["class"] == old_name:
                     pred["class"] = legend.name
                     
             # Update prediction JSON in database
@@ -1293,34 +1328,30 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
             
             xray.predicted_image = output_path
             xray.is_annotated = True
+
+            # Commit all changes together
             db.commit()
+
+            annotated_image_url = update_image_url(xray.predicted_image, request) if xray.predicted_image else None
+
+            # Convert to response dict
+            response_dict = {
+                "id": existing_legend.id,
+                "name": existing_legend.name,
+                "percentage": existing_legend.percentage,
+                "prediction_id": existing_legend.prediction_id,
+                "include": existing_legend.include,
+                "color_hex": existing_legend.color_hex,
+                "created_at": existing_legend.created_at.isoformat(),
+                "updated_at": existing_legend.updated_at.isoformat(),
+                "annotated_image": annotated_image_url
+            }
+
+            return JSONResponse(status_code=200, content=response_dict)
 
         except Exception as e:
             db.rollback()
             return JSONResponse(status_code=500, content={"error": f"Error processing image: {str(e)}"})
-
-        db.commit()
-        db.refresh(existing_legend)
-
-        annotated_image_url = update_image_url(xray.predicted_image, request) if xray.predicted_image else None
-
-        # Convert to response dict
-        response_dict = {
-            "id": existing_legend.id,
-            "name": existing_legend.name,
-            "percentage": existing_legend.percentage,
-            "prediction_id": existing_legend.prediction_id,
-            "include": existing_legend.include,
-            "color_hex": existing_legend.color_hex,
-            "created_at": existing_legend.created_at.isoformat(),
-            "updated_at": existing_legend.updated_at.isoformat(),
-            "annotated_image": annotated_image_url
-        }
-
-        return JSONResponse(
-            status_code=200,
-            content=response_dict
-        )
 
     except Exception as e:
         db.rollback()
@@ -1384,7 +1415,7 @@ async def update_legend(request: Request, legend_id: str, legend: LabelCreateAnd
 async def add_missing_legends(
     request: Request,
     prediction_id: str,
-    annotations: List[NewImageAnnotation] = Body(...),
+    annotations: List[NewImageAnnotation],
     db: Session = Depends(get_db)
 ):
     try:
@@ -1407,6 +1438,8 @@ async def add_missing_legends(
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+        
+        print(annotations)
 
         # Create new label only for the new annotation
         new_label = Legend(
