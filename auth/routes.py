@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Query
-from db.db import get_db
+from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Query, WebSocket
+from db.db import get_db, SessionLocal
 from sqlalchemy.orm import Session
 from .models import User, ImportLog, ImportStatus, Clinic
 from .schemas import *
-from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from typing import AsyncGenerator 
 from datetime import datetime, timedelta
 from utils.auth import (
     validate_email, validate_phone, validate_password, signJWT, decodeJWT,
-    verify_password, get_password_hash, generate_reset_token, verify_token
+    verify_password, get_password_hash, generate_reset_token, verify_token, decode_token
 )
 from utils.email import send_forgot_password_email
 from utils.send_otp import send_otp, send_otp_email
@@ -25,6 +26,7 @@ from math import ceil
 from sqlalchemy import func
 from suggestion.models import *
 import random
+import asyncio
 
 user_router = APIRouter()
 
@@ -3538,6 +3540,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
 
         # Update import log status to completed
         import_log.status = ImportStatus.COMPLETED
+        import_log.current_file = None
         import_log.current_stage = f"Import Completed - Processed {total_rows} total rows"
         import_log.progress = 100
         db.commit()
@@ -3844,8 +3847,7 @@ async def get_import_logs(
             .limit(per_page)\
             .all()
 
-        return JSONResponse(status_code=200, content={
-            "import_logs": [
+        return JSONResponse(status_code=200, content=[
                 {
                     "id": log.id,
                     "file_name": log.file_name,
@@ -3858,17 +3860,70 @@ async def get_import_logs(
                     "error_message": log.error_message,
                     "created_at": log.created_at.isoformat()
                 } for log in import_logs
-            ],
-            "pagination": {
-                "total": total,
-                "page": page,
-                "per_page": per_page,
-                "total_pages": total_pages
-            }
-        })
+            ])
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+
+@user_router.websocket("/ws/import-logs")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    
+    try:
+        # Get auth token from first message
+        auth_message = await websocket.receive_json()
+        token = auth_message.get("authorization", "")
+        
+        if not token or not token.startswith("Bearer "):
+            await websocket.send_json({"error": "Invalid or missing authorization"})
+            await websocket.close()
+            return
+            
+        # Verify token
+        try:
+            decoded_token = decode_token(token.split(" ")[1])
+            user_id = decoded_token["user_id"]
+        except:
+            await websocket.send_json({"error": "Invalid token"})
+            await websocket.close()
+            return
+            
+        # Start sending log updates
+        while True:
+            db = SessionLocal()
+            try:
+                logs = db.query(ImportLog)\
+                    .filter(ImportLog.user_id == user_id)\
+                    .order_by(ImportLog.created_at.desc())\
+                    .all()
+                    
+                log_list = [{
+                    "id": log.id,
+                    "file_name": log.file_name, 
+                    "status": log.status.value,
+                    "progress": log.progress,
+                    "current_stage": log.current_stage,
+                    "current_file": log.current_file,
+                    "files_processed": log.files_processed,
+                    "total_files": log.total_files,
+                    "error_message": log.error_message,
+                    "created_at": log.created_at.isoformat()
+                } for log in logs]
+                
+                await websocket.send_json(log_list)
+                await asyncio.sleep(1)
+                
+            finally:
+                db.close()
+                
+    except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+        
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 @user_router.post("/add-procedure-catalog",
     response_model=ProcedureCatalogResponse,

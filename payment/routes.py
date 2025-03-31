@@ -606,6 +606,8 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     - refund_receipt_number (string, optional): Receipt number of original payment being refunded
     - refunded_amount (float, optional): Amount being refunded
     - cancelled (boolean, optional): Whether payment is cancelled
+    - clinic_id (string, optional): ID of the clinic where payment was made
+    - appointment_id (string, optional): ID of associated appointment
     
     Notes:
     - Receipt numbers must be unique
@@ -614,6 +616,7 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
     - Refund payments require original receipt number
     - Patient details are auto-populated from patient_id
     - Doctor details are auto-populated from authentication token
+    - Clinic details are auto-populated from doctor's default clinic
     
     Required headers:
     - Authorization: Bearer token from doctor login
@@ -636,10 +639,11 @@ async def delete_expense(request: Request, expense_id: str, db: Session = Depend
                             "id": "123e4567-e89b-12d3-a456-426614174000",
                             "date": "2023-01-01",
                             "patient_id": "123e4567-e89b-12d3-a456-426614174111",
-                            "doctor_id": "123e4567-e89b-12d3-a456-426614174222", 
+                            "doctor_id": "123e4567-e89b-12d3-a456-426614174222",
+                            "clinic_id": "123e4567-e89b-12d3-a456-426614174333",
                             "receipt_number": "REC-2023-001",
                             "patient_name": "John Doe",
-                            "patient_number": "P001",
+                            "patient_number": "P001", 
                             "treatment_name": "Dental Consultation",
                             "amount_paid": 1000.00,
                             "payment_mode": "card",
@@ -720,58 +724,106 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
         db.commit()
         db.refresh(new_payment)
 
-        if new_payment.status == "paid":
+        # Generate invoice if not already linked
+        if not new_payment.invoice_id:
+            invoice_data = {
+                "date": new_payment.date,
+                "patient_id": patient_id,
+                "doctor_id": user.id,
+                "patient_number": patient.patient_number,
+                "patient_name": patient.name,
+                "doctor_name": f"{user.name}",
+                "invoice_number": f"INV-{datetime.now().strftime('%Y%m%d')}-{new_payment.receipt_number}",
+                "notes": new_payment.notes,
+                "description": new_payment.treatment_name,
+                "total_amount": new_payment.amount_paid
+            }
+
+            invoice_items = [{
+                "treatment_name": new_payment.treatment_name,
+                "unit_cost": new_payment.amount_paid,
+                "quantity": 1,
+                "discount": 0,
+                "discount_type": "fixed",
+                "type": "treatment",
+                "invoice_level_tax_discount": 0,
+                "tax_name": None,
+                "tax_percent": 0
+            }]
+
+            # Create invoice record
+            new_invoice = Invoice(**invoice_data)
+            db.add(new_invoice)
+            db.flush()
+
+            # Create invoice item
+            new_invoice_item = InvoiceItem(
+                invoice_id=new_invoice.id,
+                **invoice_items[0]
+            )
+            db.add(new_invoice_item)
+            db.flush()
+
+            # Generate PDF
+            pdf_path = create_professional_invoice(
+                invoice_data=invoice_data,
+                invoice_items=invoice_items
+            )
+
+            new_invoice.file_path = update_url(pdf_path, request)
+            new_invoice.payment_id = new_payment.id
+            new_payment.invoice_id = new_invoice.id
+            
+            db.commit()
+
+        # Handle existing invoice
+        elif new_payment.invoice_id:
             invoice = db.query(Invoice).filter(Invoice.id == new_payment.invoice_id).first()
             if invoice:
-                if new_payment.status == "paid":
-                    items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
-                    invoice_data = {
-                        "id": invoice.id,
-                        "date": invoice.date or datetime.now(),
-                        "patient_id": invoice.patient_id,
-                        "doctor_id": invoice.doctor_id,
-                        "patient_number": invoice.patient_number,
-                        "patient_name": invoice.patient_name,
-                        "doctor_name": invoice.doctor_name,
-                        "invoice_number": invoice.invoice_number,
-                        "notes": invoice.notes,
-                        "description": invoice.description,
-                        "doctor_phone": user.phone,
-                        "doctor_email": user.email,
+                items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+                invoice_data = {
+                    "id": invoice.id,
+                    "date": invoice.date or datetime.now(),
+                    "patient_id": invoice.patient_id,
+                    "doctor_id": invoice.doctor_id,
+                    "patient_number": invoice.patient_number,
+                    "patient_name": invoice.patient_name,
+                    "doctor_name": invoice.doctor_name,
+                    "invoice_number": invoice.invoice_number,
+                    "notes": invoice.notes,
+                    "description": invoice.description,
+                    "total_amount": invoice.total_amount
+                }
 
-                    }
+                invoice_items = [{
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type or "fixed",
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent
+                } for item in items]
 
-                    invoice_items = [{
-                        "treatment_name": item.treatment_name,
-                        "unit_cost": item.unit_cost,
-                        "quantity": item.quantity,
-                        "discount": item.discount,
-                        "discount_type": item.discount_type or "fixed",
-                        "type": item.type,
-                        "invoice_level_tax_discount": item.invoice_level_tax_discount,
-                        "tax_name": item.tax_name,
-                        "tax_percent": item.tax_percent
-                    } for item in items]
+                pdf_path = create_professional_invoice(
+                    invoice_data=invoice_data,
+                    invoice_items=invoice_items
+                )
 
-                    pdf_path = create_professional_invoice(
-                        invoice_data=invoice_data,
-                        invoice_items=invoice_items
-                    )
-
-                    # Remove old pdf file
-                    if invoice.file_path:
-                        try:
-                            os.remove(invoice.file_path)
-                        except OSError:
-                            pass
-                    invoice.file_path = update_url(pdf_path, request)
+                # Remove old pdf file
+                if invoice.file_path:
+                    try:
+                        os.remove(invoice.file_path)
+                    except OSError:
+                        pass
+                        
+                invoice.file_path = update_url(pdf_path, request)
                 invoice.payment_id = new_payment.id
                 new_payment.invoice_id = invoice.id
-
-                print(new_payment.invoice_id)
-                print(invoice.payment_id)
+                
                 db.commit()
-
 
         return JSONResponse(status_code=201, content={"message": "Payment created successfully", "payment_id": new_payment.id})
     except Exception as e:
