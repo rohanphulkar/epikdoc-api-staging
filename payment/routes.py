@@ -1952,8 +1952,6 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
         # Update invoice total
         new_invoice.total_amount = total_amount
         
-        # Update payment amount
-        new_payment.amount_paid = total_amount
         new_payment.invoice_id = new_invoice.id
         
         # Generate PDF with contact details
@@ -2185,6 +2183,7 @@ async def get_invoices(
                     "treatment_name": item.treatment_name,
                     "unit_cost": item.unit_cost,
                     "quantity": item.quantity,
+                    "amount": item.unit_cost * item.quantity if item.unit_cost and item.quantity else 0,
                     "discount": item.discount,
                     "discount_type": item.discount_type,
                     "type": item.type,

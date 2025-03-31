@@ -146,9 +146,9 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
             return JSONResponse(status_code=404, content={"message": "Clinic not found"})
 
         # Validate status
-        status = appointment.status.upper()
-        if status not in ["SCHEDULED", "CANCELLED", "COMPLETED"]:
-            return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'SCHEDULED', 'CANCELLED' or 'COMPLETED'"})
+        status = appointment.status
+        if status.upper() not in ["SCHEDULED", "CANCELLED", "CHECKED_IN", "COMPLETED"]:
+            return JSONResponse(status_code=400, content={"message": "Invalid status. Must be either 'SCHEDULED', 'CANCELLED', 'CHECKED_IN' or 'COMPLETED'"})
 
         new_appointment = Appointment(
             patient_id=patient.id,
