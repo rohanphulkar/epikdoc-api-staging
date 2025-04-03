@@ -726,6 +726,7 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
 
         # Generate invoice if not already linked
         if not new_payment.invoice_id:
+            
             invoice_data = {
                 "date": new_payment.date,
                 "patient_id": patient_id,
@@ -748,7 +749,7 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                 "type": "treatment",
                 "invoice_level_tax_discount": 0,
                 "tax_name": None,
-                "tax_percent": 0
+                "tax_percent": 0,
             }]
 
             # Create invoice record
@@ -975,11 +976,16 @@ async def get_payments(
         # Convert payments to dict for JSON serialization
         payments_list = []
         for payment in payments:
+            doctor_name = None
+            doctor = db.query(User).filter(User.id == payment.doctor_id).first()
+            if doctor:
+                doctor_name = doctor.name
             payment_dict = {
                 "id": payment.id,
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "doctor_name": doctor_name,
                 "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,
@@ -1170,11 +1176,16 @@ async def get_payments_by_patient_id(
         # Convert payments to dict for JSON serialization
         payments_list = []
         for payment in payments:
+            doctor_name = None
+            doctor = db.query(User).filter(User.id == payment.doctor_id).first()
+            if doctor:
+                doctor_name = doctor.name
             payment_dict = {
                 "id": payment.id,
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "doctor_name": doctor_name,
                 "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,
@@ -1267,12 +1278,18 @@ async def get_payment(request: Request, payment_id: str, db: Session = Depends(g
         if not payment:
             return JSONResponse(status_code=404, content={"message": "Payment not found"})
         
+        doctor_name = None
+        doctor = db.query(User).filter(User.id == payment.doctor_id).first()
+        if doctor:
+            doctor_name = doctor.name
+        
         # Convert payment to dict for JSON serialization
         payment_dict = {
             "id": payment.id,
             "date": payment.date.isoformat() if payment.date else None,
             "patient_id": payment.patient_id,
             "doctor_id": payment.doctor_id,
+            "doctor_name": doctor_name,
             "invoice_id": payment.invoice_id,
             "patient_number": payment.patient_number,
             "patient_name": payment.patient_name,
@@ -1592,11 +1609,16 @@ async def search_payments(
         # Format response
         payments_list = []
         for payment in payments:
+            doctor_name = None
+            doctor = db.query(User).filter(User.id == payment.doctor_id).first()
+            if doctor:
+                doctor_name = doctor.name
             payment_dict = {
                 "id": payment.id,
                 "date": payment.date.isoformat() if payment.date else None,
                 "patient_id": payment.patient_id,
                 "doctor_id": payment.doctor_id,
+                "doctor_name": doctor_name,
                 "invoice_id": payment.invoice_id,
                 "patient_number": payment.patient_number,
                 "patient_name": payment.patient_name,

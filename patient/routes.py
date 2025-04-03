@@ -18,7 +18,7 @@ from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
 from catalog.models import Treatment, TreatmentPlan
-from sqlalchemy import case
+from sqlalchemy import case, cast, Integer
 from payment.models import Payment, Invoice, InvoiceItem
 from appointment.models import Appointment
 from catalog.models import *
@@ -576,6 +576,8 @@ async def get_patient_by_id(
         clinical_notes = []
         treatment_plans = []
         appointments = []
+        payments = []
+        invoices = []
 
 
         db_treatments = db.execute(
@@ -715,11 +717,93 @@ async def get_patient_by_id(
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None
             }
             appointments.append(appointment_data)
+
+        db_payments = db.execute(
+            select(Payment).filter(
+                Payment.patient_id == patient_id
+            )
+        ).scalars().all()
+        
+        for payment in db_payments:
+            payment_data = {
+                "id": payment.id,
+                "date": payment.date.isoformat() if payment.date else None,
+                "patient_id": payment.patient_id,
+                "doctor_id": payment.doctor_id,
+                "clinic_id": payment.clinic_id,
+                "invoice_id": payment.invoice_id,
+                "appointment_id": payment.appointment_id,
+                "patient_number": payment.patient_number,
+                "patient_name": payment.patient_name,
+                "receipt_number": payment.receipt_number,
+                "treatment_name": payment.treatment_name,
+                "amount_paid": payment.amount_paid,
+                "invoice_number": payment.invoice_number,
+                "notes": payment.notes,
+                "payment_mode": payment.payment_mode,
+                "status": payment.status,
+                "refund": payment.refund,
+                "refund_receipt_number": payment.refund_receipt_number,
+                "refunded_amount": payment.refunded_amount,
+                "cancelled": payment.cancelled,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+            }
+            payments.append(payment_data)
+        
+        db_invoices = db.execute(
+            select(Invoice).filter(
+                Invoice.patient_id == patient_id
+            )
+        ).scalars().all()
+
+        for invoice in db_invoices:
+            invoice_items = [
+                {
+                    "id": item.id,
+                    "invoice_id": item.invoice_id,
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type,
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "updated_at": item.updated_at.isoformat() if item.updated_at else None
+                } for item in invoice.invoice_items
+            ]
+            invoice_data = {
+                "id": invoice.id,
+                "date": invoice.date.isoformat() if invoice.date else None,
+                "patient_id": invoice.patient_id,
+                "doctor_id": invoice.doctor_id,
+                "clinic_id": invoice.clinic_id,
+                "payment_id": invoice.payment_id,
+                "appointment_id": invoice.appointment_id,
+                "patient_number": invoice.patient_number,
+                "patient_name": invoice.patient_name,
+                "doctor_name": invoice.doctor_name,
+                "invoice_number": invoice.invoice_number,
+                "cancelled": invoice.cancelled,
+                "notes": invoice.notes,
+                "description": invoice.description,
+                "file_path": invoice.file_path,
+                "total_amount": invoice.total_amount,
+                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+                "items": invoice_items
+            }
+            invoices.append(invoice_data)
             
         patient_data["treatments"] = treatments
         patient_data["clinical_notes"] = clinical_notes
         patient_data["treatment_plans"] = treatment_plans
         patient_data["appointments"] = appointments
+        patient_data["payments"] = payments
+        patient_data["invoices"] = invoices
         return JSONResponse(status_code=200, content=patient_data)
         
     except SQLAlchemyError as e:
@@ -736,37 +820,22 @@ async def get_patient_by_id(
 @patient_router.get(
     "/search",
     status_code=status.HTTP_200_OK,
-    summary="Search patients by multiple criteria with statistics",
+    summary="Search patients by name, mobile number, age, gender and other criteria",
     description="""
-    Search and filter patients using any combination of fields.
+    Search and filter patients using various criteria.
     
-    Search fields:
-    - Patient details: name, patient_number
-    - Contact info: mobile_number, contact_number, email, secondary_mobile
-    - IDs: national_id, abha_id
-    - Location: address, locality, city, pincode
-    - Demographics: gender, age, blood_group
-    - Dates: date_of_birth, anniversary_date, created_at
-    - Other: occupation, relationship, medical_history, referred_by, groups, patient_notes
+    Available search filters:
+    - name: Partial match on patient name
+    - mobile_number: Partial match on mobile number 
+    - age: Range filter with min_age and max_age
+    - date_of_birth: Exact date or range with date_of_birth_after/before
+    - gender: Exact match (male/female/other)
+    - abha_id: Partial match on ABHA ID
     
-    Search behavior:
-    - Text fields use partial matching (contains)
-    - Dates support range filtering (before/after)
-    - Exact matching for: gender, blood_group, relationship
-    - Numeric range for age (min/max)
-    - All filters are optional and can be combined
-    
-    Statistics returned:
-    - Today: Number of patients added today
-    - This Month: Number of patients added in current month
-    - This Year: Number of patients added in current year
-    - Overall: Total number of patients
-    
-    Query parameters:
-    - All patient fields support filtering
-    - page: Page number for pagination (default: 1)
-    - per_page: Number of items per page (default: 10, max: 100)
-    - sort_by: Sort field (default: created_at)
+    Pagination parameters:
+    - page: Page number (default: 1)
+    - per_page: Results per page (default: 10, max: 100)
+    - sort_by: Field to sort by (default: created_at)
     - sort_order: Sort direction (asc/desc, default: desc)
     
     Required headers:
@@ -774,34 +843,25 @@ async def get_patient_by_id(
     """,
     responses={
         200: {
-            "description": "List of matching patients with pagination and statistics",
+            "description": "List of matching patients with pagination",
             "content": {
                 "application/json": {
                     "example": {
                         "items": [{
                             "id": "uuid",
-                            "name": "John Doe", 
-                            "mobile_number": "+1234567890",
+                            "name": "John Doe",
+                            "mobile_number": "+1234567890", 
                             "gender": "male",
                             "age": "35",
-                            "created_at": "2023-01-01T10:00:00",
-                            "patient_number": "P123",
-                            "email": "john@example.com",
-                            "address": "123 Main St",
-                            "blood_group": "O+",
-                            "medical_history": "None"
+                            "date_of_birth": "1988-01-01",
+                            "abha_id": "1234567890",
+                            "created_at": "2023-01-01T10:00:00"
                         }],
                         "pagination": {
                             "total": 100,
                             "page": 1,
                             "per_page": 10,
                             "pages": 10
-                        },
-                        "stats": {
-                            "today": 5,
-                            "this_month": 45,
-                            "this_year": 250,
-                            "overall": 1000
                         }
                     }
                 }
@@ -828,33 +888,14 @@ async def get_patient_by_id(
 async def search_patients(
     request: Request,
     name: Optional[str] = None,
-    patient_number: Optional[str] = None,
     mobile_number: Optional[str] = None,
-    contact_number: Optional[str] = None,
-    email: Optional[str] = None,
-    secondary_mobile: Optional[str] = None,
-    national_id: Optional[str] = None,
-    abha_id: Optional[str] = None,
-    address: Optional[str] = None,
-    locality: Optional[str] = None,
-    city: Optional[str] = None,
-    pincode: Optional[str] = None,
-    gender: Optional[Gender] = None,
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
-    blood_group: Optional[str] = None,
+    date_of_birth: Optional[datetime] = None,
     date_of_birth_after: Optional[datetime] = None,
     date_of_birth_before: Optional[datetime] = None,
-    anniversary_date_after: Optional[datetime] = None,
-    anniversary_date_before: Optional[datetime] = None,
-    created_at_after: Optional[datetime] = None,
-    created_at_before: Optional[datetime] = None,
-    occupation: Optional[str] = None,
-    relationship: Optional[str] = None,
-    medical_history: Optional[str] = None,
-    referred_by: Optional[str] = None,
-    groups: Optional[str] = None,
-    patient_notes: Optional[str] = None,
+    gender: Optional[Gender] = None,
+    abha_id: Optional[str] = None,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="created_at", description="Field to sort by"),
@@ -872,66 +913,26 @@ async def search_patients(
         # Add filters for each field if provided
         if name:
             query = query.filter(Patient.name.ilike(f"%{name}%"))
-        if patient_number:
-            query = query.filter(Patient.patient_number.ilike(f"%{patient_number}%"))
         if mobile_number:
             query = query.filter(Patient.mobile_number.ilike(f"%{mobile_number}%"))
-        if contact_number:
-            query = query.filter(Patient.contact_number.ilike(f"%{contact_number}%"))
-        if email:
-            query = query.filter(Patient.email.ilike(f"%{email}%"))
-        if secondary_mobile:
-            query = query.filter(Patient.secondary_mobile.ilike(f"%{secondary_mobile}%"))
-        if national_id:
-            query = query.filter(Patient.national_id.ilike(f"%{national_id}%"))
-        if abha_id:
-            query = query.filter(Patient.abha_id.ilike(f"%{abha_id}%"))
-        if address:
-            query = query.filter(Patient.address.ilike(f"%{address}%"))
-        if locality:
-            query = query.filter(Patient.locality.ilike(f"%{locality}%"))
-        if city:
-            query = query.filter(Patient.city.ilike(f"%{city}%"))
-        if pincode:
-            query = query.filter(Patient.pincode.ilike(f"%{pincode}%"))
         if gender:
             query = query.filter(Patient.gender == gender)
-        if blood_group:
-            query = query.filter(Patient.blood_group == blood_group)
-        if occupation:
-            query = query.filter(Patient.occupation.ilike(f"%{occupation}%"))
-        if relationship:
-            query = query.filter(Patient.relationship == relationship)
-        if medical_history:
-            query = query.filter(Patient.medical_history.ilike(f"%{medical_history}%"))
-        if referred_by:
-            query = query.filter(Patient.referred_by.ilike(f"%{referred_by}%"))
-        if groups:
-            query = query.filter(Patient.groups.ilike(f"%{groups}%"))
-        if patient_notes:
-            query = query.filter(Patient.patient_notes.ilike(f"%{patient_notes}%"))
+        if abha_id:
+            query = query.filter(Patient.abha_id.ilike(f"%{abha_id}%"))
 
         # Add age range filter
-        if min_age:
-            from sqlalchemy import cast, Integer
+        if min_age is not None:
             query = query.filter(cast(Patient.age, Integer) >= min_age)
-        if max_age:
-            from sqlalchemy import cast, Integer
+        if max_age is not None:
             query = query.filter(cast(Patient.age, Integer) <= max_age)
 
-        # Add date range filters
+        # Add date of birth filters
+        if date_of_birth:
+            query = query.filter(Patient.date_of_birth == date_of_birth)
         if date_of_birth_after:
             query = query.filter(Patient.date_of_birth >= date_of_birth_after)
         if date_of_birth_before:
             query = query.filter(Patient.date_of_birth <= date_of_birth_before)
-        if anniversary_date_after:
-            query = query.filter(Patient.anniversary_date >= anniversary_date_after)
-        if anniversary_date_before:
-            query = query.filter(Patient.anniversary_date <= anniversary_date_before)
-        if created_at_after:
-            query = query.filter(Patient.created_at >= created_at_after)
-        if created_at_before:
-            query = query.filter(Patient.created_at <= created_at_before)
 
         # Add sorting
         sort_column = getattr(Patient, sort_by)
@@ -1242,12 +1243,13 @@ async def delete_patient(
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
+        user_id = decoded_token.get("user_id")
         
         # Get patient
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("user_id")
+                Patient.doctor_id == user_id
             )
         ).scalar_one_or_none()
         
@@ -1259,68 +1261,55 @@ async def delete_patient(
         
         # check if clinic is associated with the doctor
         if clinic_id:
-            clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == decoded_token.get("user_id")))).scalar_one_or_none()
+            clinic = db.execute(
+                select(Clinic).filter(
+                    Clinic.id == clinic_id,
+                    Clinic.doctors.any(User.id == user_id)
+                )
+            ).scalar_one_or_none()
+            
             if not clinic:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED, 
                     content={"message": "You are not authorized to access this clinic"}
                 )
 
-        
-
         # Delete all payments and invoices
-        # First update invoice foreign keys to null
-        # invoices = db.query(Invoice).filter(Invoice.patient_id == patient_id).all()
-        # for invoice in invoices:
-        #     invoice.payment_id = None
-        # db.commit()
-
-        # Get all invoice IDs for this patient
-        # invoice_ids = [row[0] for row in db.query(Invoice.id).filter(Invoice.patient_id == patient_id).all()]
+        # First get all invoice IDs for this patient
+        invoice_ids = [row[0] for row in db.query(Invoice.id).filter(Invoice.patient_id == patient_id).all()]
         
-        # # Delete invoice items for all patient's invoices
-        # if invoice_ids:
-        #     db.query(InvoiceItem).filter(InvoiceItem.invoice_id.in_(invoice_ids)).delete()
+        # Delete invoice items for all patient's invoices
+        if invoice_ids:
+            db.query(InvoiceItem).filter(InvoiceItem.invoice_id.in_(invoice_ids)).delete(synchronize_session=False)
+            
+        # Delete payments
+        db.query(Payment).filter(Payment.patient_id == patient_id).delete(synchronize_session=False)
         
-        # # Delete invoices
-        # db.query(Invoice).filter(Invoice.patient_id == patient_id).delete()
-        # db.commit()
+        # Delete invoices
+        db.query(Invoice).filter(Invoice.patient_id == patient_id).delete(synchronize_session=False)
 
-        # # Now delete payments
-        # payments = db.query(Payment).filter(Payment.patient_id == patient_id).all()
-        # for payment in payments:
-        #     payment.invoice_id = None
-        #     db.commit()
-        #     # db.delete(payment)
-        #     print(payment)
-
-        # Delete all treatments
-        db.query(Treatment).filter(Treatment.patient_id == patient_id).delete()
-        db.query(TreatmentPlan).filter(TreatmentPlan.patient_id == patient_id).delete()
+        # Delete all treatments and treatment plans
+        db.query(Treatment).filter(Treatment.patient_id == patient_id).delete(synchronize_session=False)
+        db.query(TreatmentPlan).filter(TreatmentPlan.patient_id == patient_id).delete(synchronize_session=False)
 
         # Delete all X-rays and predictions
         xray_ids = [row[0] for row in db.query(XRay.id).filter(XRay.patient == patient_id).all()]
         if xray_ids:
-            db.query(Prediction).filter(Prediction.xray_id.in_(xray_ids)).delete()
-            db.query(Legend).filter(Legend.prediction_id.in_(
-                db.query(Prediction.id).filter(Prediction.xray_id.in_(xray_ids))
-            )).delete()
-        db.query(XRay).filter(XRay.patient == patient_id).delete()
+            prediction_ids = [row[0] for row in db.query(Prediction.id).filter(Prediction.xray_id.in_(xray_ids)).all()]
+            if prediction_ids:
+                db.query(Legend).filter(Legend.prediction_id.in_(prediction_ids)).delete(synchronize_session=False)
+            db.query(Prediction).filter(Prediction.xray_id.in_(xray_ids)).delete(synchronize_session=False)
+        db.query(XRay).filter(XRay.patient == patient_id).delete(synchronize_session=False)
 
         # Delete all clinical notes and related data
         clinical_note_ids = [row[0] for row in db.query(ClinicalNote.id).filter(ClinicalNote.patient_id == patient_id).all()]
         if clinical_note_ids:
-            db.query(Medicine).filter(Medicine.clinical_notes_id.in_(clinical_note_ids)).delete()
-            db.query(Complaint).filter(Complaint.clinical_note_id.in_(clinical_note_ids)).delete()
-            db.query(Diagnosis).filter(Diagnosis.clinical_note_id.in_(clinical_note_ids)).delete()
-            db.query(VitalSign).filter(VitalSign.clinical_note_id.in_(clinical_note_ids)).delete()
-            db.query(Notes).filter(Notes.clinical_notes_id.in_(clinical_note_ids)).delete()
-            db.query(ClinicalNoteAttachment).filter(ClinicalNoteAttachment.clinical_notes_id.in_(clinical_note_ids)).delete()
-            db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_notes_id.in_(clinical_note_ids)).delete()
-        db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete()
+            db.query(Medicine).filter(Medicine.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+        db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete(synchronize_session=False)
 
         # Delete all appointments
-        db.query(Appointment).filter(Appointment.patient_id == patient_id).delete()
+        db.query(Appointment).filter(Appointment.patient_id == patient_id).delete(synchronize_session=False)
 
         # Finally delete the patient
         db.delete(patient)
@@ -1620,7 +1609,77 @@ async def create_clinical_note(
             content={"message": f"Internal server error: {str(e)}"}
         )
     
-@patient_router.get("/get-clinical-notes")
+@patient_router.get("/get-clinical-notes",
+    response_model=dict,
+    status_code=200,
+    summary="Get clinical notes for a patient",
+    description="""
+    Retrieve all clinical notes for a specific patient.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Query parameters:
+    - patient_id: UUID of the patient
+    """,
+    responses={
+        200: {
+            "description": "Clinical notes retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": [{
+                        "id": "uuid",
+                        "patient_id": "uuid",
+                        "doctor_id": "uuid",
+                        "notes": "Patient examination notes",
+                        "treatments": [{
+                            "id": "uuid",
+                            "name": "Treatment name"
+                        }],
+                        "medicines": [{
+                            "id": "uuid",
+                            "item_name": "Medicine name",
+                            "quantity": 1,
+                            "price": 100,
+                            "amount": 100,
+                            "dosage": "1-0-1",
+                            "instructions": "After food"
+                        }],
+                        "attachments": [],
+                        "vital_signs": [],
+                        "complaints": [],
+                        "diagnoses": [],
+                        "created_at": "2023-01-01T00:00:00"
+                    }]
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
 async def get_clinical_notes(
     request: Request,
     patient_id: str,

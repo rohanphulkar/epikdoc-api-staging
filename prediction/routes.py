@@ -1193,14 +1193,64 @@ async def exclude_legend(request: Request, legend_id: str, db: Session = Depends
         legend = db.query(Legend).filter(Legend.id == legend_id).first()
         if not legend:
             return JSONResponse(status_code=400, content={"error": "Legend not found"})
+
+        # Get prediction and xray to update annotation
+        prediction = db.query(Prediction).filter(Prediction.id == legend.prediction_id).first()
+        if not prediction:
+            return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+            
+        xray = db.query(XRay).filter(XRay.id == prediction.xray_id).first()
+        if not xray:
+            return JSONResponse(status_code=404, content={"error": "X-ray not found"})
         
         # Update legend inclusion
         legend.include = False
-        db.commit()
 
-        return JSONResponse(status_code=200, content={"message": "Legend excluded successfully"})
+        # Reannotate image
+        try:
+            image = cv2.imread(str(xray.original_image))
+            if image is None:
+                return JSONResponse(status_code=400, content={"error": "Failed to load image"})
+
+            prediction_json = json.loads(prediction.prediction)
+            labels = [item["class"] for item in prediction_json["predictions"]]
+            _, hex_codes = colormap(labels)
+
+            annotated_image = generate_annotated_image(image, prediction_json, hex_codes)
+            
+            # Save annotated image
+            annotated_image_pil = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+            if annotated_image_pil.mode == 'RGBA':
+                annotated_image_pil = annotated_image_pil.convert('RGB')
+                
+            current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            random_number = random.randint(1000, 9999)
+            random_filename = f"{current_datetime}-{random_number}.jpeg"
+
+            output_dir = os.path.join("uploads", "analyzed")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, random_filename)
+            
+            annotated_image_pil.save(output_path, optimize=True, quality=98, subsampling=0)
+            
+            xray.predicted_image = output_path
+            xray.is_annotated = True
+
+            # Commit all changes together
+            db.commit()
+
+            annotated_image_url = update_image_url(xray.predicted_image, request) if xray.predicted_image else None
+            return JSONResponse(status_code=200, content={
+                "message": "Legend excluded successfully",
+                "annotated_image": annotated_image_url
+            })
+
+        except Exception as e:
+            db.rollback()
+            return JSONResponse(status_code=500, content={"error": f"Error processing image: {str(e)}"})
 
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @prediction_router.post("/update-legend/{legend_id}",

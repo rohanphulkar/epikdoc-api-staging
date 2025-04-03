@@ -6,28 +6,34 @@ import uuid
 from typing import Optional, List
 import enum
 
+import random
+
+def generate_unique_color():
+    # Generate a random hex color code
+    return "#{:06x}".format(random.randint(0, 0xFFFFFF))
+
 # Association table for self-referential many-to-many relationship
 doctors_created = Table(
     'doctors_created',
     Base.metadata,
-    Column('creator_id', String(36), ForeignKey('users.id'), primary_key=True),
-    Column('doctor_id', String(36), ForeignKey('users.id'), primary_key=True)
+    Column('creator_id', String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('doctor_id', String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
 )
 
 # Association table for user permissions
 user_permissions = Table(
     'user_permissions',
     Base.metadata,
-    Column('user_id', String(36), ForeignKey('users.id'), primary_key=True),
-    Column('permission_id', String(36), ForeignKey('permissions.id'), primary_key=True)
+    Column('user_id', String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('permission_id', String(36), ForeignKey('permissions.id', ondelete='CASCADE'), primary_key=True)
 )
 
 # Association table for doctors and clinics
 doctor_clinics = Table(
     'doctor_clinics',
     Base.metadata,
-    Column('doctor_id', String(36), ForeignKey('users.id'), primary_key=True),
-    Column('clinic_id', String(36), ForeignKey('clinics.id'), primary_key=True)
+    Column('doctor_id', String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('clinic_id', String(36), ForeignKey('clinics.id', ondelete='CASCADE'), primary_key=True)
 )
 
 def generate_uuid():
@@ -61,7 +67,8 @@ class User(Base):
     otp: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     otp_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    default_clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    default_clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
+    color_code: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, default=generate_unique_color)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -130,8 +137,8 @@ class ImportLog(Base):
     __tablename__ = "import_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=False)
+    clinic_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     zip_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[ImportStatus] = mapped_column(SQLAlchemyEnum(ImportStatus), nullable=False)

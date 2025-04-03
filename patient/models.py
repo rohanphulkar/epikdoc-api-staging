@@ -18,8 +18,8 @@ class Patient(Base):
     __tablename__ = "patients"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
+    doctor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
     patient_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     mobile_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -50,10 +50,10 @@ class ClinicalNote(Base):
     __tablename__ = "clinical_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id"), nullable=False)
-    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True)
-    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id"), nullable=True)
-    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id", ondelete='CASCADE'), nullable=False)
+    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id", ondelete='CASCADE'), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=True)
     date: Mapped[datetime] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     attachments: Mapped[List["ClinicalNoteAttachment"]] = relationship("ClinicalNoteAttachment", back_populates="clinical_note")
@@ -68,7 +68,7 @@ class ClinicalNote(Base):
 class Complaint(Base):
     __tablename__ = "complaints"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     complaint: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
@@ -78,7 +78,7 @@ class Complaint(Base):
 class Diagnosis(Base):
     __tablename__ = "diagnoses"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="diagnoses")
@@ -87,7 +87,7 @@ class Diagnosis(Base):
 class VitalSign(Base):
     __tablename__ = "vital_signs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     vital_sign: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
@@ -96,7 +96,7 @@ class VitalSign(Base):
 class Notes(Base):
     __tablename__ = "notes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     note: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="notes")
@@ -106,7 +106,7 @@ class ClinicalNoteAttachment(Base):
     __tablename__ = "clinical_note_attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     attachment: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="attachments")
@@ -117,7 +117,7 @@ class ClinicalNoteTreatment(Base):
     __tablename__ = "clinical_note_treatments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="treatments")
@@ -127,7 +127,7 @@ class Medicine(Base):
     __tablename__ = "medicines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id"), nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
     item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

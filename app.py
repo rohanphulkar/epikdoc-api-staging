@@ -19,6 +19,7 @@ from appointment.routes import appointment_router
 from staff.routes import staff_router
 from catalog.routes import catalog_router
 from suggestion.routes import suggestion_router
+from lookup.routes import lookup_router
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +59,7 @@ app = FastAPI(
         {"name": "catalog", "description": "Catalog of treatments, procedures and services"},
         {"name": "suggestion", "description": "Personalized recommendations based on user preferences"},
         {"name": "staff", "description": "Staff management, roles and access control"},
+        {"name": "lookup", "description": "Lookup for medical specialities and countries"},
     ],
     terms_of_service="https://www.epikdoc.com/terms",
     license_info={
@@ -136,3 +138,6 @@ app.include_router(catalog_router, prefix=f"/catalog", tags=["catalog"])
 
 # Include personalized recommendation routes
 app.include_router(suggestion_router, prefix=f"/suggestion", tags=["suggestion"])
+
+# Include lookup routes
+app.include_router(lookup_router, prefix=f"/lookup", tags=["lookup"])

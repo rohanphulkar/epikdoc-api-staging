@@ -36,7 +36,7 @@ async def send_appointment_email(
             return False, "Doctor not found"
 
         # Format email subject
-        subject = f"Appointment {appointment.status.value.capitalize()} - {appointment.checked_in_at.strftime('%B %d, %Y')}"
+        subject = f"Appointment {appointment.status.value.capitalize()} - {appointment.start_time.strftime('%B %d, %Y')}"
 
         # Format email message with better structure
         message = f"""
@@ -48,7 +48,7 @@ Appointment Details:
 ------------------
 Notes: {appointment.notes}
 Date: {appointment.appointment_date.strftime('%B %d, %Y')}
-Time: {appointment.checked_in_at.strftime('%I:%M %p')} - {appointment.checked_out_at.strftime('%I:%M %p')}
+Time: {appointment.start_time.strftime('%I:%M %p')} - {appointment.end_time.strftime('%I:%M %p')}
 
 Doctor Details:
 -------------

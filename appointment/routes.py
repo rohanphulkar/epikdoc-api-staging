@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, Request, Query, status, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, Query, status, BackgroundTasks, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse, AppointmentReminder
+from .schemas import AppointmentCreate, AppointmentUpdate, AppointmentResponse, AppointmentReminder, AppointmentFileCreate, AppointmentFile, AppointmentFileUpdate
 from db.db import get_db
 
 from .models import *
@@ -19,6 +19,7 @@ from sqlalchemy import or_, and_, func, select
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
+from prediction.routes import update_image_url
 
 
 scheduler = BackgroundScheduler()
@@ -137,13 +138,16 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
                 return JSONResponse(status_code=404, content={"message": "Doctor not found"})
 
         # Validate/set clinic
-        clinic_id = appointment.clinic_id or user.default_clinic_id
-        if not clinic_id:
-            return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
-            
-        clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
-        if not clinic:
-            return JSONResponse(status_code=404, content={"message": "Clinic not found"})
+        if appointment.clinic_id:
+            clinic_id = appointment.clinic_id or user.default_clinic_id
+            if not clinic_id:
+                return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
+                
+            clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=404, content={"message": "Clinic not found"})
+        else:
+            clinic = None
 
         # Validate status
         status = appointment.status
@@ -152,20 +156,21 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
 
         new_appointment = Appointment(
             patient_id=patient.id,
-            clinic_id=clinic.id,
             patient_number=patient.patient_number if hasattr(patient, 'patient_number') else None,
             patient_name=patient.name,
             doctor_id=doctor.id,
             doctor_name=doctor.name,
             notes=appointment.notes,
             appointment_date=appointment.appointment_date,
-            checked_in_at=appointment.checked_in_at,
-            checked_out_at=appointment.checked_out_at,
+            start_time=appointment.start_time,
+            end_time=appointment.end_time,
             status=AppointmentStatus(status),
             share_on_email=appointment.share_on_email,
             share_on_sms=appointment.share_on_sms,
             share_on_whatsapp=appointment.share_on_whatsapp,
         )
+        if clinic:
+            new_appointment.clinic_id = clinic.id
 
         db.add(new_appointment)
         db.commit()
@@ -174,7 +179,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
         if new_appointment.share_on_email:
             background_tasks.add_task(send_appointment_email, db, new_appointment.id)
 
-        return JSONResponse(status_code=201, content={"message": "Appointment created successfully"})
+        return JSONResponse(status_code=201, content={"message": "Appointment created successfully", "appointment_id": new_appointment.id})
     except SQLAlchemyError as e:
         db.rollback()
         return JSONResponse(status_code=500, content={"message": f"Database error: {str(e)}"})
@@ -365,6 +370,53 @@ async def get_all_appointments(
         # Format response
         appointment_list = []
         for appointment, patient, doctor in appointments:
+            # Get related records with optimized queries
+            clinical_notes = (
+                db.query(ClinicalNote)
+                .options(
+                    joinedload(ClinicalNote.attachments),
+                    joinedload(ClinicalNote.treatments),
+                    joinedload(ClinicalNote.medicines),
+                    joinedload(ClinicalNote.complaints),
+                    joinedload(ClinicalNote.diagnoses),
+                    joinedload(ClinicalNote.vital_signs),
+                    joinedload(ClinicalNote.notes)
+                )
+                .filter(ClinicalNote.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Get treatment plans first
+            treatment_plans = (
+                db.query(TreatmentPlan)
+                .options(joinedload(TreatmentPlan.treatments))
+                .filter(TreatmentPlan.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Get all treatments
+            treatments = (
+                db.query(Treatment)
+                .filter(Treatment.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Create a set of treatment IDs that are in plans
+            planned_treatment_ids = set()
+            for plan in treatment_plans:
+                for treatment in plan.treatments:
+                    planned_treatment_ids.add(str(treatment.id))
+
+            # Filter out treatments that are already in treatment plans
+            standalone_treatments = [t for t in treatments if str(t.id) not in planned_treatment_ids]
+
+            payments = (
+                db.query(Payment)
+                .filter(Payment.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Format response data
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
@@ -375,9 +427,13 @@ async def get_all_appointments(
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
                 "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
+                "send_reminder": appointment.send_reminder,
+                "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
                 "doctor": {
@@ -395,6 +451,7 @@ async def get_all_appointments(
                     "gender": patient.gender.value
                 }
             }
+
             appointment_list.append(appointment_data)
         
         return JSONResponse(status_code=200, content={
@@ -576,9 +633,81 @@ async def get_patient_appointments(
             query = query.order_by(getattr(Appointment, sort_by).desc())
 
         appointments = query.order_by(Appointment.appointment_date.desc(), Appointment.created_at.desc()).offset(offset).limit(per_page).all()
-        
+
         appointment_list = []
+        
         for appointment in appointments:
+            # Get related records with optimized queries
+            clinical_notes = (
+                db.query(ClinicalNote)
+                .options(
+                    joinedload(ClinicalNote.attachments),
+                    joinedload(ClinicalNote.treatments),
+                    joinedload(ClinicalNote.medicines),
+                    joinedload(ClinicalNote.complaints),
+                    joinedload(ClinicalNote.diagnoses),
+                    joinedload(ClinicalNote.vital_signs),
+                    joinedload(ClinicalNote.notes)
+                )
+                .filter(ClinicalNote.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Get treatment plans first
+            treatment_plans = (
+                db.query(TreatmentPlan)
+                .options(joinedload(TreatmentPlan.treatments))
+                .filter(TreatmentPlan.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Get all treatments
+            treatments = (
+                db.query(Treatment)
+                .filter(Treatment.appointment_id == appointment.id)
+                .all()
+            )
+
+            # Create a set of treatment IDs that are in plans
+            planned_treatment_ids = set()
+            for plan in treatment_plans:
+                for treatment in plan.treatments:
+                    planned_treatment_ids.add(str(treatment.id))
+
+            # Filter out treatments that are already in treatment plans
+            standalone_treatments = [t for t in treatments if str(t.id) not in planned_treatment_ids]
+
+            payments = (
+                db.query(Payment)
+                .filter(Payment.appointment_id == appointment.id)
+                .all()
+            )
+
+            doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+            patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
+
+            doctor_data = None
+            patient_data = None
+
+            if doctor:
+                doctor_data = {
+                    "id": doctor.id,
+                    "name": doctor.name,
+                    "email": doctor.email,
+                    "phone": doctor.phone,
+                    "color_code": doctor.color_code
+                }
+
+            if patient:
+                patient_data = {
+                    "id": patient.id,
+                    "name": patient.name,
+                    "email": patient.email,
+                    "mobile_number": patient.mobile_number,
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                    "gender": patient.gender.value
+                }
+            # Format response data
             appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
@@ -589,12 +718,91 @@ async def get_patient_appointments(
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
                 "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
+                "send_reminder": appointment.send_reminder,
+                "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None
+                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+                "doctor": doctor_data,
+                "patient": patient_data,
+                "clinical_notes": [{
+                    "id": note.id,
+                    "date": note.date.isoformat() if note.date else None,
+                    "attachments": [{"id": a.id, "attachment": a.attachment} for a in note.attachments],
+                    "treatments": [{"id": t.id, "name": t.name} for t in note.treatments],
+                    "medicines": [{
+                        "id": m.id,
+                        "item_name": m.item_name,
+                        "price": m.price,
+                        "quantity": m.quantity,
+                        "dosage": m.dosage,
+                        "instructions": m.instructions,
+                        "amount": m.amount
+                    } for m in note.medicines],
+                    "complaints": [{"id": c.id, "complaint": c.complaint} for c in note.complaints],
+                    "diagnoses": [{"id": d.id, "diagnosis": d.diagnosis} for d in note.diagnoses],
+                    "vital_signs": [{"id": v.id, "vital_sign": v.vital_sign} for v in note.vital_signs],
+                    "notes": [{"id": n.id, "note": n.note} for n in note.notes]
+                } for note in clinical_notes],
+                "treatments": [{
+                    "id": t.id,
+                    "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
+                    "treatment_name": t.treatment_name,
+                    "tooth_number": t.tooth_number,
+                    "treatment_notes": t.treatment_notes,
+                    "quantity": t.quantity,
+                    "unit_cost": t.unit_cost,
+                    "amount": t.amount,
+                    "discount": t.discount,
+                    "discount_type": t.discount_type,
+                    "completed": t.completed
+                } for t in standalone_treatments],
+                "treatment_plans": [{
+                    "id": plan.id,
+                    "date": plan.date.isoformat() if plan.date else None,
+                    "treatments": [{
+                        "id": t.id,
+                        "treatment_date": t.treatment_date.isoformat() if t.treatment_date else None,
+                        "treatment_name": t.treatment_name,
+                        "tooth_number": t.tooth_number,
+                        "treatment_notes": t.treatment_notes,
+                        "quantity": t.quantity,
+                        "unit_cost": t.unit_cost,
+                        "amount": t.amount,
+                        "discount": t.discount,
+                        "discount_type": t.discount_type,
+                        "completed": t.completed
+                    } for t in plan.treatments]
+                } for plan in treatment_plans],
+                "payments": [{
+                    "id": payment.id,
+                    "date": payment.date.isoformat() if payment.date else None,
+                    "receipt_number": payment.receipt_number,
+                    "amount_paid": payment.amount_paid,
+                    "payment_mode": payment.payment_mode,
+                    "status": payment.status,
+                    "refund": payment.refund,
+                    "refunded_amount": payment.refunded_amount,
+                    "cancelled": payment.cancelled,
+                    "invoices": [{
+                        "id": invoice.id,
+                        "invoice_number": invoice.invoice_number,
+                        "total_amount": invoice.total_amount,
+                        "invoice_items": [{
+                            "treatment_name": item.treatment_name,
+                            "quantity": item.quantity,
+                            "unit_cost": item.unit_cost,
+                            "discount": item.discount,
+                            "tax_percent": item.tax_percent
+                        } for item in invoice.invoice_items]
+                    } for invoice in db.query(Invoice).filter(Invoice.payment_id == payment.id).all()]
+                } for payment in payments]
             }
+
             appointment_list.append(appointment_data)
 
         return JSONResponse(status_code=200, content={
@@ -847,6 +1055,8 @@ async def search_appointments(
                 "doctor_name": appointment.doctor_name,
                 "notes": appointment.notes,
                 "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
                 "status": appointment.status.value,
@@ -1044,31 +1254,31 @@ async def get_appointment_details(
         # Get related records with optimized queries
         clinical_notes = (
             db.query(ClinicalNote)
-            .options(
-                joinedload(ClinicalNote.attachments),
-                joinedload(ClinicalNote.treatments),
-                joinedload(ClinicalNote.medicines),
-                joinedload(ClinicalNote.complaints),
-                joinedload(ClinicalNote.diagnoses),
-                joinedload(ClinicalNote.vital_signs),
-                joinedload(ClinicalNote.notes)
+                .options(
+                    joinedload(ClinicalNote.attachments),
+                    joinedload(ClinicalNote.treatments),
+                    joinedload(ClinicalNote.medicines),
+                    joinedload(ClinicalNote.complaints),
+                    joinedload(ClinicalNote.diagnoses),
+                    joinedload(ClinicalNote.vital_signs),
+                    joinedload(ClinicalNote.notes)
+                )
+                .filter(ClinicalNote.appointment_id == appointment.id)
+                .all()
             )
-            .filter(ClinicalNote.appointment_id == appointment_id)
-            .all()
-        )
 
         # Get treatment plans first
         treatment_plans = (
             db.query(TreatmentPlan)
             .options(joinedload(TreatmentPlan.treatments))
-            .filter(TreatmentPlan.appointment_id == appointment_id)
+            .filter(TreatmentPlan.appointment_id == appointment.id)
             .all()
         )
 
         # Get all treatments
         treatments = (
             db.query(Treatment)
-            .filter(Treatment.appointment_id == appointment_id)
+            .filter(Treatment.appointment_id == appointment.id)
             .all()
         )
 
@@ -1083,10 +1293,31 @@ async def get_appointment_details(
 
         payments = (
             db.query(Payment)
-            .filter(Payment.appointment_id == appointment_id)
+            .filter(Payment.appointment_id == appointment.id)
             .all()
         )
 
+        doctor_data = None
+        patient_data = None
+
+        if doctor:
+            doctor_data = {
+                "id": doctor.id,
+                "name": doctor.name,
+                "email": doctor.email,
+                "phone": doctor.phone,
+                "color_code": doctor.color_code
+            }
+
+        if patient:
+            patient_data = {
+                "id": patient.id,
+                "name": patient.name,
+                "email": patient.email,
+                "mobile_number": patient.mobile_number,
+                "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                "gender": patient.gender.value
+            }
         # Format response data
         appointment_data = {
             "id": appointment.id,
@@ -1098,6 +1329,8 @@ async def get_appointment_details(
             "doctor_name": appointment.doctor_name,
             "notes": appointment.notes,
             "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+            "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+            "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
             "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
             "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
             "status": appointment.status.value,
@@ -1105,20 +1338,8 @@ async def get_appointment_details(
             "remind_time_before": appointment.remind_time_before,
             "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
             "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-            "doctor": {
-                "id": doctor.id,
-                "name": doctor.name,
-                "email": doctor.email,
-                "phone": doctor.phone
-            },
-            "patient": {
-                "id": patient.id,
-                "name": patient.name,
-                "email": patient.email,
-                "mobile_number": patient.mobile_number,
-                "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                "gender": patient.gender.value
-            },
+            "doctor": doctor_data,
+            "patient": patient_data,
             "clinical_notes": [{
                 "id": note.id,
                 "date": note.date.isoformat() if note.date else None,
@@ -1192,11 +1413,11 @@ async def get_appointment_details(
                 } for invoice in db.query(Invoice).filter(Invoice.payment_id == payment.id).all()]
             } for payment in payments]
         }
-
         return JSONResponse(status_code=200, content={"appointment": appointment_data})
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+    
 @appointment_router.patch("/update/{appointment_id}",
     response_model=dict,
     status_code=200,
@@ -1305,6 +1526,10 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
             appointment.notes = appointment_update.notes
         if appointment_update.appointment_date is not None:
             appointment.appointment_date = appointment_update.appointment_date
+        if appointment_update.start_time is not None:
+            appointment.start_time = appointment_update.start_time
+        if appointment_update.end_time is not None:
+            appointment.end_time = appointment_update.end_time
         if appointment_update.checked_in_at is not None:
             appointment.checked_in_at = appointment_update.checked_in_at
         if appointment_update.checked_out_at is not None:
@@ -1486,11 +1711,15 @@ async def check_in_appointment(request: Request, appointment_id: str, db: Sessio
         if not appointment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
         
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Cannot check in to cancelled appointments"})
+        
         # Check if already checked in
         if appointment.status == AppointmentStatus.CHECKED_IN:
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Appointment already checked in"})
         
         # Update appointment status and check-in time
+        appointment.checked_in_at = datetime.now()
         appointment.status = AppointmentStatus.CHECKED_IN
         db.commit()
         db.refresh(appointment)
@@ -1582,11 +1811,15 @@ async def check_out_appointment(request: Request, appointment_id: str, db: Sessi
         if not appointment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
         
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Cannot check out from cancelled appointments"})
+        
         # Check if already checked out
         if appointment.status == AppointmentStatus.COMPLETED:
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Appointment already completed"})
         
         # Update appointment status and check-out time
+        appointment.checked_out_at = datetime.now()
         appointment.status = AppointmentStatus.COMPLETED
         db.commit()
         db.refresh(appointment)
@@ -1786,6 +2019,9 @@ async def add_appointment_reminder(request: Request, appointment_id: str, appoin
         if not appointment:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
         
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Cannot add reminder for cancelled appointments"})
+        
         # Validate appointment date
         current_time = datetime.now()
         if appointment.appointment_date <= current_time:
@@ -1945,6 +2181,396 @@ async def cancel_appointment_reminder(request: Request, appointment_id: str, db:
             "jobs_removed": jobs_removed
         })
     
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+
+async def save_file(file: UploadFile):
+    """Helper function to save uploaded file to disk"""
+    import os
+    save_dir = "uploads/appointment_files"
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Generate unique filename to prevent overwrites
+    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+    file_path = os.path.join(save_dir, filename)
+    
+    with open(file_path, "wb") as f:
+        contents = await file.read()
+        f.write(contents)
+    return file_path
+
+@appointment_router.post("/add-files/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add file to appointment", 
+    description="""
+    Upload and attach a file to an existing appointment.
+    
+    **Path Parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Request Body:**
+    - files (List[File]): List of files to upload (max 10MB each)
+    - remark (str, optional): Notes about the uploaded files
+    
+    **Authentication:**
+    - Requires valid doctor Bearer token
+    
+    **Returns:**
+    - File metadata including generated ID and path
+    
+    **Errors:**
+    - 401: Authentication required or unauthorized access
+    - 404: Appointment not found
+    - 413: File too large
+    - 500: Server error
+    """,
+    responses={
+        201: {
+            "description": "File successfully uploaded",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "File uploaded successfully"
+                    }
+                }
+            }
+        }
+    }
+)
+async def add_file_to_appointment(
+    request: Request,
+    appointment_id: str,
+    remark: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Authentication required"}
+            )
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized - doctor access required"}
+            )
+        
+        # Check appointment exists
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Appointment not found"}
+            )
+
+        form = await request.form()
+        files = form.getlist("files")
+        remark = form.get("remark")
+
+        if not files:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "No files provided"}
+            )
+            
+        # Save files and create DB records
+        for file in files:
+            file_path = await save_file(file)
+            new_file = AppointmentFile(
+                remark=remark,
+                file_path=file_path,
+                appointment_id=appointment_id
+            )
+            
+            db.add(new_file)
+            db.commit()
+            db.refresh(new_file)
+
+        return {
+            "message": "Files uploaded successfully"
+        }
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Database error: {str(e)}"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"An unexpected error occurred: {str(e)}"}
+        )
+    
+@appointment_router.get("/get-files/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Get files for an appointment",
+    description="""
+    Retrieve all files associated with a specific appointment.
+
+    **Path Parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+
+    **Authentication:**
+    - Requires valid doctor Bearer token
+
+    **Response:**
+    ```json
+    {
+        "message": "Files retrieved successfully",
+        "data": [
+            {
+                "id": "uuid",
+                "remark": "Optional note about the file",
+                "file_path": "path/to/file.pdf",
+                "appointment_id": "uuid",
+                "created_at": "2023-01-01T10:00:00",
+                "updated_at": "2023-01-01T10:00:00"
+            }
+        ]
+    }
+    ```
+    """)
+async def get_files_for_appointment(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Check appointment exists
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        # Get files for appointment
+        files = db.query(AppointmentFile).filter(AppointmentFile.appointment_id == appointment_id).order_by(AppointmentFile.created_at.desc()).all()
+
+        files_data = []
+        for file in files:
+            file_data = {
+                "id": file.id,
+                "remark": file.remark,
+                "file_path": update_image_url(file.file_path, request),
+                "appointment_id": file.appointment_id,
+                "created_at": file.created_at.isoformat() if file.created_at else None,
+                "updated_at": file.updated_at.isoformat() if file.updated_at else None
+            }
+            files_data.append(file_data)
+        
+        return {
+            "message": "Files retrieved successfully",
+            "data": files_data
+        }
+
+    except SQLAlchemyError as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+    
+@appointment_router.get("/search-files",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Search appointment files",
+    description="""
+    Search for appointment files by remark text.
+
+    **Query Parameter:**
+    - remark (str): Search text to match against file remarks
+
+    **Authentication:**
+    - Requires valid doctor Bearer token
+
+    **Returns:**
+    - List of matching appointment files
+    """,
+    responses={
+        401: {
+            "description": "Authentication required or unauthorized access",
+            "content": {"application/json": {"example": {"message": "Authentication required"}}}
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Database error details"}}}
+        }
+    }
+)
+async def search_files(request: Request, remark: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        # Search files by remark
+        files = db.query(AppointmentFile).filter(AppointmentFile.remark.ilike(f"%{remark}%")).order_by(AppointmentFile.created_at.desc()).all()
+
+        files_data = []
+        for file in files:
+            file_data = {
+                "id": file.id,
+                "remark": file.remark,
+                "file_path": update_image_url(file.file_path, request),
+                "appointment_id": file.appointment_id,
+                "created_at": file.created_at.isoformat() if file.created_at else None,
+                "updated_at": file.updated_at.isoformat() if file.updated_at else None
+            }
+            files_data.append(file_data)
+        
+
+        return {
+            "message": "Files found successfully",
+            "data": files_data
+        }
+
+    except SQLAlchemyError as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+    
+@appointment_router.patch("/update-file/{appointment_file_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Update appointment file details",
+    description="""
+    Update details of an existing appointment file.
+
+    **Path Parameter:**
+    - appointment_file_id (UUID): File's unique identifier
+
+    **Request Body:**
+    - remark (str, optional): Updated remark text
+
+    **Authentication:**
+    - Requires valid doctor Bearer token
+
+    **Returns:**
+    - Updated appointment file details
+    """,
+    responses={
+        401: {
+            "description": "Authentication required or unauthorized access",
+            "content": {"application/json": {"example": {"message": "Authentication required"}}}
+        },
+        404: {
+            "description": "File not found",
+            "content": {"application/json": {"example": {"message": "Appointment file not found"}}}
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Database error details"}}}
+        }
+    }
+)
+async def update_file(request: Request, appointment_file_id: str, file_update: AppointmentFileUpdate, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        file = db.query(AppointmentFile).filter(AppointmentFile.id == appointment_file_id).first()
+        if not file:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment file not found"})
+        
+        update_data = file_update.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(file, key, value)
+        
+        db.commit()
+        db.refresh(file)
+
+        file_data = {
+            "id": file.id,
+            "remark": file.remark,
+            "file_path": update_image_url(file.file_path, request),
+            "appointment_id": file.appointment_id,
+            "created_at": file.created_at.isoformat() if file.created_at else None,
+            "updated_at": file.updated_at.isoformat() if file.updated_at else None
+        }
+        return {
+            "message": "File updated successfully",
+            "data": file_data
+        }
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+    
+@appointment_router.delete("/delete-file/{appointment_file_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete appointment file",
+    description="""
+    Permanently delete an appointment file.
+
+    **Path Parameter:**
+    - appointment_file_id (UUID): File's unique identifier
+
+    **Authentication:**
+    - Requires valid doctor Bearer token
+
+    **Returns:**
+    - Success message
+    """,
+    responses={
+        200: {
+            "description": "File deleted successfully",
+            "content": {"application/json": {"example": {"message": "Appointment file deleted successfully"}}}
+        },
+        401: {
+            "description": "Authentication required or unauthorized access", 
+            "content": {"application/json": {"example": {"message": "Authentication required"}}}
+        },
+        404: {
+            "description": "File not found",
+            "content": {"application/json": {"example": {"message": "Appointment file not found"}}}
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Database error details"}}}
+        }
+    }
+)
+async def delete_file(request: Request, appointment_file_id: str, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        appointment_file = db.query(AppointmentFile).filter(AppointmentFile.id == appointment_file_id).first()
+        if not appointment_file:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment file not found"})
+        
+        db.delete(appointment_file)
+        db.commit()
+
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Appointment file deleted successfully"})
     except SQLAlchemyError as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})

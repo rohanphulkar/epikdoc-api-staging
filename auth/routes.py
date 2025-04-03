@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, File, UploadFile, BackgroundTasks, Query, WebSocket
 from db.db import get_db, SessionLocal
 from sqlalchemy.orm import Session
-from .models import User, ImportLog, ImportStatus, Clinic
+from .models import User, ImportLog, ImportStatus, Clinic, generate_unique_color
 from .schemas import *
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import AsyncGenerator 
@@ -178,14 +178,17 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
     
     2. Phone Number:
        - phone: Registered phone number (will trigger OTP flow)
+       
+    3. Email OTP:
+       - email: Registered email address (will trigger OTP flow)
     
-    On successful email login:
+    On successful email+password login:
     - Updates last_login timestamp
     - Generates JWT access token
     - Returns token and success message
     
-    On successful phone submission:
-    - Sends OTP to the phone number
+    On successful phone/email submission for OTP:
+    - Sends OTP to the phone number/email
     - Returns message to verify OTP
     """,
     responses={
@@ -201,9 +204,9 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
                                 "message": "Login successful"
                             }
                         },
-                        "phone_login": {
+                        "otp_login": {
                             "value": {
-                                "message": "OTP sent to your phone number"
+                                "message": "OTP sent successfully"
                             }
                         }
                     }
@@ -211,15 +214,12 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
             }
         },
         400: {
-            "description": "Bad request",
+            "description": "Bad request", 
             "content": {
                 "application/json": {
                     "examples": {
                         "missing_credentials": {
-                            "value": {"error": "Either email with password or phone number is required"}
-                        },
-                        "missing_password": {
-                            "value": {"error": "Password is required when logging in with email"}
+                            "value": {"error": "Either email (with/without password) or phone number is required"}
                         }
                     }
                 }
@@ -254,10 +254,10 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
     try:
         # Check if either email or phone is provided
         if not user.email and not user.phone:
-            return JSONResponse(status_code=400, content={"error": "Either email with password or phone number is required"})
+            return JSONResponse(status_code=400, content={"error": "Either email (with/without password) or phone number is required"})
         
         # Phone login flow - trigger OTP
-        if user.phone and not user.email:
+        if user.phone:
             db_user = db.query(User).filter(User.phone == user.phone).first()
             if not db_user:
                 return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
@@ -269,23 +269,19 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
             otp = random.randint(1000, 9999)
             setattr(db_user, 'otp', otp)
             setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
+            if not db_user.color_code:
+                setattr(db_user, 'color_code', generate_unique_color())
             db.commit()
             db.refresh(db_user)
             
-            # Send OTP via SMS and email as backup
-            sms_sent = send_otp(str(user.phone), str(otp))
-            email_sent = send_otp_email(db_user.email, str(otp))
-            
-            if sms_sent or email_sent:
+            # Send OTP via SMS
+            if send_otp(str(user.phone), str(otp)):
                 return JSONResponse(status_code=200, content={"message": "OTP sent to your phone number"})
             else:
-                return JSONResponse(status_code=500, content={"error": "Failed to send OTP via both SMS and email"})
+                return JSONResponse(status_code=500, content={"error": "Failed to send OTP"})
         
-        # Email login flow - require password
+        # Email login flow
         if user.email:
-            if not user.password:
-                return JSONResponse(status_code=400, content={"error": "Password is required when logging in with email"})
-                
             db_user = db.query(User).filter(User.email == user.email).first()
             
             if not db_user:
@@ -293,16 +289,41 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
             
             if not db_user.is_active:
                 return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
-        
-            if not verify_password(user.password, str(db_user.password)):
-                return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+
+            # Password login
+            if user.password:
+                if not verify_password(user.password, str(db_user.password)):
+                    return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+                
+                setattr(db_user, 'last_login', datetime.now())
+                if not db_user.color_code:
+                    setattr(db_user, 'color_code', generate_unique_color())
+                db.commit()
+                db.refresh(db_user)
+                
+                jwt_token = signJWT(str(db_user.id))
+                return JSONResponse(status_code=200, content={
+                    "access_token": jwt_token["access_token"], 
+                    "token_type": "bearer", 
+                    "message": "Login successful",
+                    "clinic_id": db_user.default_clinic_id
+                })
             
-            setattr(db_user, 'last_login', datetime.now())
-            db.commit()
-            db.refresh(db_user)
-            
-            jwt_token = signJWT(str(db_user.id))
-            return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Login successful", "clinic_id": db_user.default_clinic_id})
+            # Email OTP login
+            else:
+                otp = random.randint(1000, 9999)
+                setattr(db_user, 'otp', otp)
+                setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
+                if not db_user.color_code:
+                    setattr(db_user, 'color_code', generate_unique_color())
+                db.commit()
+                db.refresh(db_user)
+                
+                if send_otp_email(db_user.email, str(otp)):
+                    return JSONResponse(status_code=200, content={"message": "OTP sent to your email"})
+                else:
+                    return JSONResponse(status_code=500, content={"error": "Failed to send OTP"})
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
@@ -497,7 +518,7 @@ async def login_otp_verify(user: OtpSchema, db: Session = Depends(get_db)):
     
     Returns:
     - User profile details including:
-      - Basic info (name, email, phone, bio)
+      - Basic info (name, email, phone, bio, color_code)
       - Profile picture URL if exists
       - Associated clinics with default clinic marked
       - Account timestamps
@@ -561,6 +582,7 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
             "email": user.email,
             "phone": user.phone,
             "bio": user.bio,
+            "color_code": user.color_code
         }
 
         clinics = user.clinics
@@ -728,6 +750,138 @@ async def get_clinics(request: Request, db: Session = Depends(get_db)):
                 "phone": clinic.phone,
                 "email": clinic.email,
                 "is_default":is_default
+            })
+
+        return JSONResponse(status_code=200, content={"clinics": clinics_data})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@user_router.get("/search-clinic",
+    response_model=dict,
+    status_code=200,
+    summary="Search clinics",
+    description="""
+    Search and filter clinics associated with the authenticated user.
+    
+    Query parameters:
+    - query: General search term that matches against multiple fields
+    - name: Filter by clinic name
+    - speciality: Filter by clinic speciality 
+    - city: Filter by city
+    - country: Filter by country
+    - email: Filter by email
+    - phone: Filter by phone number
+    
+    Returns a list of matching clinics with their details.
+    """,
+    responses={
+        200: {
+            "description": "List of matching clinics",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "clinics": [
+                            {
+                                "id": "uuid",
+                                "name": "Clinic Name",
+                                "speciality": "Cardiology",
+                                "address": "123 Street",
+                                "city": "City",
+                                "country": "Country", 
+                                "phone": "1234567890",
+                                "email": "clinic@email.com",
+                                "is_default": True
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "User not found",
+            "content": {
+                "application/json": {
+                    "example": {"error": "User not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"error": "Internal server error"} 
+                }
+            }
+        }
+    }
+)
+async def search_clinic(
+    request: Request,
+    query: Optional[str] = None,
+    name: Optional[str] = None,
+    speciality: Optional[str] = None, 
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user token
+        decoded_token = verify_token(request)
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+
+        # Start with base query of user's clinics
+        from sqlalchemy import or_
+        from auth.models import doctor_clinics
+        
+        clinic_query = db.query(Clinic).join(doctor_clinics).filter(doctor_clinics.c.doctor_id == user.id)
+
+        # Apply search if query parameter is provided
+        if query:
+            search = f"%{query}%"
+            clinic_query = clinic_query.filter(
+                or_(
+                    Clinic.name.ilike(search),
+                    Clinic.speciality.ilike(search),
+                    Clinic.city.ilike(search),
+                    Clinic.country.ilike(search),
+                    Clinic.email.ilike(search),
+                    Clinic.phone.ilike(search)
+                )
+            )
+
+        # Apply individual filters if provided
+        if name:
+            clinic_query = clinic_query.filter(Clinic.name.ilike(f"%{name}%"))
+        if speciality:
+            clinic_query = clinic_query.filter(Clinic.speciality.ilike(f"%{speciality}%"))
+        if city:
+            clinic_query = clinic_query.filter(Clinic.city.ilike(f"%{city}%"))
+        if country:
+            clinic_query = clinic_query.filter(Clinic.country.ilike(f"%{country}%"))
+        if email:
+            clinic_query = clinic_query.filter(Clinic.email.ilike(f"%{email}%"))
+        if phone:
+            clinic_query = clinic_query.filter(Clinic.phone.ilike(f"%{phone}%"))
+
+        # Execute query and format results
+        clinics = clinic_query.all()
+        clinics_data = []
+        for clinic in clinics:
+            is_default = clinic.id == user.default_clinic_id
+            clinics_data.append({
+                "id": str(clinic.id),
+                "name": clinic.name,
+                "speciality": clinic.speciality,
+                "address": clinic.address,
+                "city": clinic.city,
+                "country": clinic.country,
+                "phone": clinic.phone,
+                "email": clinic.email,
+                "is_default": is_default
             })
 
         return JSONResponse(status_code=200, content={"clinics": clinics_data})
@@ -1136,18 +1290,30 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
         reset_token = generate_reset_token()
-        reset_link = f"{request.headers.get('origin') or request.base_url}user/reset-password?token={reset_token}"
+        # Get origin from headers or base URL string
+        origin = str(request.headers.get('origin', '') or request.base_url)
+        # Clean up trailing slash if present
+        origin = origin.rstrip('/')
+        reset_link = f"{origin}/user/reset-password?token={reset_token}"
         
         setattr(db_user, 'reset_token', reset_token)
         setattr(db_user, 'reset_token_expiry', datetime.now() + timedelta(hours=3))
         
         db.commit()
         db.refresh(db_user)
+
+        # Create background tasks instance
+        background_tasks = BackgroundTasks()
         
-        if send_forgot_password_email(user.email, reset_link):
-            return JSONResponse(status_code=200, content={"message": "Password reset email sent"})
-        else:
-            return JSONResponse(status_code=500, content={"error": "Failed to send email"})
+        # Add email sending task to background tasks
+        background_tasks.add_task(send_forgot_password_email, user.email, reset_link)
+        
+        # Return response with background tasks
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Password reset email sent, please check your email for the reset link"},
+            background=background_tasks
+        )
             
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -1230,7 +1396,7 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: Session = De
     try:
         db_user = db.query(User).filter(User.reset_token == token).first()
         if not db_user:
-            return JSONResponse(status_code=404, content={"error": "User not found"})
+            return JSONResponse(status_code=404, content={"error": "Invalid or expired reset token"})
             
         expiry = getattr(db_user, 'reset_token_expiry', None)
         if expiry and expiry < datetime.now():
@@ -3505,6 +3671,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
 
         total_files = len(csv_files)
         files_processed = 0
+        import_log.total_files = total_files
 
         # Process files in order
         for file_type in file_types:
@@ -3535,7 +3702,6 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                             
                         files_processed += 1
                         import_log.files_processed = files_processed
-                        import_log.total_files = total_files
                         db.commit()
                             
                     except Exception as e:
@@ -4738,6 +4904,7 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
     - User type
     - Bio
     - Profile picture URL
+    - Color code
     - Creation and update timestamps
     
     Also includes statistics for:
@@ -4773,6 +4940,7 @@ async def delete_procedure_catalog(request: Request, procedure_id: str, db: Sess
                             "user_type": "doctor",
                             "bio": "Experienced dentist",
                             "profile_pic": "url/to/picture.jpg",
+                            "color_code": "#000000",
                             "created_at": "2024-01-01T00:00:00",
                             "updated_at": "2024-01-01T00:00:00"
                         }],
@@ -4895,6 +5063,7 @@ async def get_all_users(
                 "user_type": user.user_type,
                 "bio": user.bio,
                 "profile_pic": user.profile_pic,
+                "color_code": user.color_code,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
                 "updated_at": user.updated_at.isoformat() if user.updated_at else None
             }
@@ -4941,6 +5110,7 @@ async def get_all_users(
     - Phone
     - Bio
     - Profile picture URL
+    - Color code
     - Creation and update timestamps
     
     Also includes statistics for:
@@ -4977,6 +5147,7 @@ async def get_all_users(
                             "user_type": "doctor",
                             "bio": "Experienced dentist",
                             "profile_pic": "url/to/picture.jpg",
+                            "color_code": "#000000",
                             "created_at": "2024-01-01T00:00:00",
                             "updated_at": "2024-01-01T00:00:00"
                         }],
@@ -5098,6 +5269,7 @@ async def get_doctor_list(
                 "phone": doctor.phone,
                 "user_type": doctor.user_type,
                 "bio": doctor.bio,
+                "color_code": doctor.color_code,
                 "profile_pic": doctor.profile_pic,
                 "created_at": doctor.created_at.isoformat() if doctor.created_at else None,
                 "updated_at": doctor.updated_at.isoformat() if doctor.updated_at else None
@@ -5177,6 +5349,14 @@ async def get_dashboard(
         current_year = today.year
         current_month = today.month
 
+        # Calculate last month
+        if current_month == 1:
+            last_month = 12
+            last_month_year = current_year - 1
+        else:
+            last_month = current_month - 1
+            last_month_year = current_year
+
         # Determine start date based on time_range
         if time_range == "this_month":
             start_date = datetime(current_year, current_month, 1)
@@ -5185,17 +5365,15 @@ async def get_dashboard(
             start_date = datetime(current_year, 1, 1)
             months_to_show = current_month
         elif time_range == "3_months":
-            # Calculate date 3 months ago
             if current_month <= 3:
                 start_year = current_year - 1
-                start_month = current_month + 9  # 12 - (3 - current_month)
+                start_month = current_month + 9
             else:
                 start_year = current_year
                 start_month = current_month - 3
             start_date = datetime(start_year, start_month, 1)
             months_to_show = 3
         elif time_range == "6_months":
-            # Calculate date 6 months ago
             if current_month <= 6:
                 start_year = current_year - 1
                 start_month = current_month + 6
@@ -5211,7 +5389,6 @@ async def get_dashboard(
             start_date = datetime(current_year - 3, current_month, 1)
             months_to_show = 36
         else:  # all_time
-            # For all_time, we'll still show monthly breakdown for the past 12 months
             start_date = datetime(current_year - 1, current_month, 1)
             months_to_show = 12
 
@@ -5230,33 +5407,45 @@ async def get_dashboard(
                 "end_date": datetime(temp_date.year + 1 if temp_date.month == 12 else temp_date.year, 
                                     1 if temp_date.month == 12 else temp_date.month + 1, 1)
             })
-            # Move to next month
             if temp_date.month == 12:
                 temp_date = datetime(temp_date.year + 1, 1, 1)
             else:
                 temp_date = datetime(temp_date.year, temp_date.month + 1, 1)
         
-        # Reverse the months list to have the latest month first
         months_list.reverse()
 
-        # Current month start and end dates
+        # Current and last month date ranges
         current_month_start = datetime(current_year, current_month, 1)
-        if current_month == 12:
-            current_month_end = datetime(current_year + 1, 1, 1)
-        else:
-            current_month_end = datetime(current_year, current_month + 1, 1)
+        current_month_end = datetime(current_year + 1, 1, 1) if current_month == 12 else datetime(current_year, current_month + 1, 1)
+        
+        last_month_start = datetime(last_month_year, last_month, 1)
+        last_month_end = datetime(current_year, current_month, 1)
 
         # Patient Statistics
         patient_query = db.query(Patient).filter(*base_filters)
-        
-        # Apply time filter for all_time option
         if time_range != "all_time":
             patient_query = patient_query.filter(Patient.created_at >= start_date)
             
         total_patients = patient_query.count()
         recent_patients = patient_query.order_by(Patient.created_at.desc()).limit(10).all()
         
-        # Get monthly patient counts
+        # Get monthly patient counts and growth
+        current_month_patients = db.query(Patient).filter(
+            *base_filters,
+            Patient.created_at >= current_month_start,
+            Patient.created_at < current_month_end
+        ).count()
+
+        last_month_patients = db.query(Patient).filter(
+            *base_filters,
+            Patient.created_at >= last_month_start,
+            Patient.created_at < last_month_end
+        ).count()
+
+        patient_growth = 0
+        if last_month_patients > 0:
+            patient_growth = ((current_month_patients - last_month_patients) / last_month_patients) * 100
+
         monthly_patients = {}
         for month_data in months_list:
             count = db.query(Patient).filter(
@@ -5268,13 +5457,6 @@ async def get_dashboard(
             month_key = f"{month_data['name']} {month_data['year']}"
             monthly_patients[month_key] = count
 
-        # Current month patients
-        current_month_patients = db.query(Patient).filter(
-            *base_filters,
-            Patient.created_at >= current_month_start,
-            Patient.created_at < current_month_end
-        ).count()
-
         # Appointment Statistics
         appointment_base_filters = [
             Appointment.doctor_id == user.id,
@@ -5282,14 +5464,28 @@ async def get_dashboard(
         ]
         
         appointment_query = db.query(Appointment).filter(*appointment_base_filters)
-        
-        # Apply time filter for all_time option
         if time_range != "all_time":
             appointment_query = appointment_query.filter(Appointment.created_at >= start_date)
             
         total_appointments = appointment_query.count()
+
+        # Get appointment counts and growth
+        current_month_appointments = db.query(Appointment).filter(
+            *appointment_base_filters,
+            Appointment.created_at >= current_month_start,
+            Appointment.created_at < current_month_end
+        ).count()
+
+        last_month_appointments = db.query(Appointment).filter(
+            *appointment_base_filters,
+            Appointment.created_at >= last_month_start,
+            Appointment.created_at < last_month_end
+        ).count()
+
+        appointment_growth = 0
+        if last_month_appointments > 0:
+            appointment_growth = ((current_month_appointments - last_month_appointments) / last_month_appointments) * 100
         
-        # Get monthly appointment counts
         monthly_appointments = {}
         for month_data in months_list:
             count = db.query(Appointment).filter(
@@ -5300,13 +5496,6 @@ async def get_dashboard(
             
             month_key = f"{month_data['name']} {month_data['year']}"
             monthly_appointments[month_key] = count
-        
-        # Current month appointments
-        current_month_appointments = db.query(Appointment).filter(
-            *appointment_base_filters,
-            Appointment.created_at >= current_month_start,
-            Appointment.created_at < current_month_end
-        ).count()
         
         today_appointments = db.query(Appointment).filter(
             *appointment_base_filters,
@@ -5327,14 +5516,28 @@ async def get_dashboard(
         ]
         
         prescription_query = db.query(ClinicalNote).filter(*prescription_base_filters)
-        
-        # Apply time filter for all_time option
         if time_range != "all_time":
             prescription_query = prescription_query.filter(ClinicalNote.created_at >= start_date)
             
         total_prescriptions = prescription_query.count()
+
+        # Get prescription counts and growth
+        current_month_prescriptions = db.query(ClinicalNote).filter(
+            *prescription_base_filters,
+            ClinicalNote.created_at >= current_month_start,
+            ClinicalNote.created_at < current_month_end
+        ).count()
+
+        last_month_prescriptions = db.query(ClinicalNote).filter(
+            *prescription_base_filters,
+            ClinicalNote.created_at >= last_month_start,
+            ClinicalNote.created_at < last_month_end
+        ).count()
+
+        prescription_growth = 0
+        if last_month_prescriptions > 0:
+            prescription_growth = ((current_month_prescriptions - last_month_prescriptions) / last_month_prescriptions) * 100
         
-        # Get monthly prescription counts
         monthly_prescriptions = {}
         for month_data in months_list:
             count = db.query(ClinicalNote).filter(
@@ -5345,14 +5548,7 @@ async def get_dashboard(
             
             month_key = f"{month_data['name']} {month_data['year']}"
             monthly_prescriptions[month_key] = count
-        
-        # Current month prescriptions
-        current_month_prescriptions = db.query(ClinicalNote).filter(
-            *prescription_base_filters,
-            ClinicalNote.created_at >= current_month_start,
-            ClinicalNote.created_at < current_month_end
-        ).count()
-        
+
         # Financial Statistics
         payment_base_filters = [
             Payment.doctor_id == user.id,
@@ -5361,15 +5557,31 @@ async def get_dashboard(
         ]
         
         payment_query = db.query(Payment).filter(*payment_base_filters)
-        
-        # Apply time filter for all_time option
         if time_range != "all_time":
             payment_query = payment_query.filter(Payment.date >= start_date)
             
         total_payments = payment_query.all()
         total_earnings = sum(payment.amount_paid or 0 for payment in total_payments)
+
+        # Get earnings and growth
+        current_month_payments = db.query(Payment).filter(
+            *payment_base_filters,
+            Payment.date >= current_month_start,
+            Payment.date < current_month_end
+        ).all()
+        current_month_earnings = sum(payment.amount_paid or 0 for payment in current_month_payments)
+
+        last_month_payments = db.query(Payment).filter(
+            *payment_base_filters,
+            Payment.date >= last_month_start,
+            Payment.date < last_month_end
+        ).all()
+        last_month_earnings = sum(payment.amount_paid or 0 for payment in last_month_payments)
+
+        earnings_growth = 0
+        if last_month_earnings > 0:
+            earnings_growth = ((current_month_earnings - last_month_earnings) / last_month_earnings) * 100
         
-        # Get monthly earnings
         monthly_earnings = {}
         for month_data in months_list:
             month_payments = db.query(Payment).filter(
@@ -5382,14 +5594,6 @@ async def get_dashboard(
             month_key = f"{month_data['name']} {month_data['year']}"
             monthly_earnings[month_key] = round(earnings, 2)
         
-        # Current month earnings
-        current_month_payments = db.query(Payment).filter(
-            *payment_base_filters,
-            Payment.date >= current_month_start,
-            Payment.date < current_month_end
-        ).all()
-        current_month_earnings = sum(payment.amount_paid or 0 for payment in current_month_payments)
-        
         recent_transactions = payment_query.order_by(Payment.created_at.desc()).limit(10).all()
 
         return JSONResponse(status_code=200, content={
@@ -5398,6 +5602,8 @@ async def get_dashboard(
                 "total_patients": total_patients,
                 "monthly_patients": monthly_patients,
                 "current_month_patients": current_month_patients,
+                "last_month_patients": last_month_patients,
+                "growth_percentage": round(patient_growth, 2),
                 "recent_patients": [{
                     "id": patient.id,
                     "name": patient.name,
@@ -5411,6 +5617,8 @@ async def get_dashboard(
                 "total_appointments": total_appointments,
                 "monthly_appointments": monthly_appointments,
                 "current_month_appointments": current_month_appointments,
+                "last_month_appointments": last_month_appointments,
+                "growth_percentage": round(appointment_growth, 2),
                 "upcoming_appointments": upcoming_appointments,
                 "today_appointments": [{
                     "id": appt.id,
@@ -5423,12 +5631,16 @@ async def get_dashboard(
             "prescription_statistics": {
                 "total_prescriptions": total_prescriptions,
                 "monthly_prescriptions": monthly_prescriptions,
-                "current_month_prescriptions": current_month_prescriptions
+                "current_month_prescriptions": current_month_prescriptions,
+                "last_month_prescriptions": last_month_prescriptions,
+                "growth_percentage": round(prescription_growth, 2)
             },
             "financial_statistics": {
                 "total_earnings": round(total_earnings, 2),
                 "monthly_earnings": monthly_earnings,
                 "current_month_earnings": round(current_month_earnings, 2),
+                "last_month_earnings": round(last_month_earnings, 2),
+                "growth_percentage": round(earnings_growth, 2),
                 "recent_transactions": [{
                     "date": payment.date.strftime("%Y-%m-%d %H:%M") if payment.date else None,
                     "patient_name": payment.patient_name,
