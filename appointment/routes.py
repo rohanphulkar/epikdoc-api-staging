@@ -440,7 +440,8 @@ async def get_all_appointments(
                     "id": doctor.id,
                     "name": doctor.name,
                     "email": doctor.email,
-                    "phone": doctor.phone
+                    "phone": doctor.phone,
+                    "color_code": doctor.color_code
                 },
                 "patient": {
                     "id": patient.id,
@@ -683,6 +684,12 @@ async def get_patient_appointments(
                 .all()
             )
 
+            completed_procedures = (
+                db.query(CompletedProcedure)
+                .filter(CompletedProcedure.appointment_id == appointment.id)
+                .all()
+            )
+
             doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
             patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
 
@@ -778,6 +785,16 @@ async def get_patient_appointments(
                         "completed": t.completed
                     } for t in plan.treatments]
                 } for plan in treatment_plans],
+                "completed_procedures": [{
+                    "id": cp.id,
+                    "procedure_name": cp.procedure_name,
+                    "unit_cost": cp.unit_cost,
+                    "quantity": cp.quantity,
+                    "amount": cp.amount,
+                    "procedure_description": cp.procedure_description,
+                    "created_at": cp.created_at.isoformat() if cp.created_at else None,
+                    "updated_at": cp.updated_at.isoformat() if cp.updated_at else None
+                } for cp in completed_procedures],
                 "payments": [{
                     "id": payment.id,
                     "date": payment.date.isoformat() if payment.date else None,
@@ -1066,7 +1083,8 @@ async def search_appointments(
                     "id": doctor.id,
                     "name": doctor.name,
                     "email": doctor.email,
-                    "phone": doctor.phone
+                    "phone": doctor.phone,
+                    "color_code": doctor.color_code
                 },
                 "patient": {
                     "id": patient.id,
@@ -1297,6 +1315,12 @@ async def get_appointment_details(
             .all()
         )
 
+        completed_procedures = (
+            db.query(CompletedProcedure)
+            .filter(CompletedProcedure.appointment_id == appointment.id)
+            .all()
+        )
+
         doctor_data = None
         patient_data = None
 
@@ -1389,6 +1413,16 @@ async def get_appointment_details(
                     "completed": t.completed
                 } for t in plan.treatments]
             } for plan in treatment_plans],
+            "completed_procedures": [{
+                "id": cp.id,
+                "procedure_name": cp.procedure_name,
+                "unit_cost": cp.unit_cost,
+                "quantity": cp.quantity,
+                "amount": cp.amount,
+                "procedure_description": cp.procedure_description,
+                "created_at": cp.created_at.isoformat() if cp.created_at else None,
+                "updated_at": cp.updated_at.isoformat() if cp.updated_at else None
+            } for cp in completed_procedures],            
             "payments": [{
                 "id": payment.id,
                 "date": payment.date.isoformat() if payment.date else None,

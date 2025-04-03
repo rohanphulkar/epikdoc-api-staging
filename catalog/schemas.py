@@ -76,3 +76,23 @@ class TreatmentPlanUpdate(BaseModel):
 
     class Config:
         from_attributes = True
+
+class CompletedProcedureCreate(BaseModel):
+    clinic_id: Optional[str] = None
+    appointment_id: Optional[str] = None
+    procedure_name: str
+    unit_cost: float
+    quantity: int = 1
+    procedure_description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class CompletedProcedureUpdate(BaseModel):
+    procedure_name: Optional[str] = None
+    unit_cost: Optional[float] = None
+    quantity: Optional[int] = None
+    procedure_description: Optional[str] = None
+
+    class Config:
+        from_attributes = True

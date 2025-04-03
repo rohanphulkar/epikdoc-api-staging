@@ -60,17 +60,17 @@ class Treatment(Base):
     treatment_plan: Mapped["TreatmentPlan"] = relationship("TreatmentPlan", back_populates="treatments")
 
 
-# class CompletedProcedure(Base):
-#     __tablename__ = "completed_procedures"
+class CompletedProcedure(Base):
+    __tablename__ = "completed_procedures"
 
-#     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-#     patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id", ondelete='CASCADE'), nullable=True)
-#     appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id', ondelete='CASCADE'), nullable=True)
-#     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=True)
-#     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
-#     procedure_name: Mapped[str] = mapped_column(String(255), nullable=False)
-#     unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
-#     amount: Mapped[float] = mapped_column(Float, nullable=False)
-#     procedure_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-#     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
-#     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id', ondelete='CASCADE'), nullable=True)
+    doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=True)
+    clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
+    procedure_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    procedure_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
