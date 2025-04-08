@@ -588,8 +588,6 @@ async def get_all_patients(
                                 "updated_at": "2023-02-15T14:30:00"
                             }
                         ]
-                        
-                       
                     }
                 }
             }
@@ -772,7 +770,6 @@ async def get_patient_by_id(
                
             db_completed_procedures = db.execute(
                 select(CompletedProcedure).filter(
-                    CompletedProcedure.patient_id == patient_id,
                     CompletedProcedure.appointment_id == appointment.id
                 )
             ).scalars().all()
@@ -1723,16 +1720,17 @@ async def delete_patient(
 @patient_router.post(
     "/create-clinical-note/{patient_id}/{clinic_id}",
     status_code=status.HTTP_201_CREATED,
-    summary="Create clinical note with treatments, medicines and attachments",
+    summary="Create a clinical note with complaints, diagnoses, vital signs, treatments, medicines and attachments",
     description="""
-    Create a new clinical note for a patient with treatments, medicines and file attachments.
+    Create a comprehensive clinical note for a patient including complaints, diagnoses, vital signs, and optional treatments, medicines and file attachments.
     
     **Path Parameters:**
-    - patient_id: ID of the patient
+    - patient_id: UUID of the patient
+    - clinic_id: UUID of the clinic where the note is being created
     
     **Form Data:**
-    - complaint (required): Chief complaint text
-    - diagnosis (required): Doctor's diagnosis text  
+    - complaints (required): Patient's chief complaints
+    - diagnoses (required): Doctor's diagnoses
     - vital_signs (required): Patient vital signs data in JSON format
         {
             "temperature": "98.6",
@@ -1740,7 +1738,7 @@ async def delete_patient(
             "pulse": "72",
             "respiratory_rate": "16"
         }
-    - notes (optional): Notes of clinical note
+    - notes (optional): Additional clinical notes
     - treatments (optional): JSON array of treatments
         [
             {
@@ -1750,11 +1748,12 @@ async def delete_patient(
     - medicines (optional): JSON array of medicines
         [
             {
-                "name": "Medicine name",          // Required
-                "quantity": 1,                    // Optional, default: 1
-                "price": 10.50,                  // Optional, default: 0
-                "dosage": "1 tablet twice daily", // Optional
-                "instructions": "After meals"     // Optional
+                "item_name": "Medicine name",        // Required
+                "quantity": 1,                       // Optional, default: 1
+                "price": 10.50,                      // Optional, default: 0
+                "dosage": "1 tablet twice daily",    // Optional
+                "instructions": "After meals",       // Optional
+                "amount": 10.50                      // Optional, auto-calculated as price * quantity
             }
         ]
     - files (optional): List of file attachments (images, documents etc)
@@ -1766,11 +1765,16 @@ async def delete_patient(
     - Required: Bearer token in Authorization header
     - Token must be for the doctor associated with the patient
     
+    **Database Operations:**
+    - Creates entries in clinical_notes table
+    - Creates related entries in complaints, diagnoses, vital_signs tables
+    - Optionally creates entries in notes, clinical_note_treatments, medicines, and clinical_note_attachments tables
+    - All entries are properly linked with appropriate foreign keys
+    
     **Notes:**
-    - Creates a clinical note entry with basic details
-    - Optionally adds treatments, medicines and file attachments
+    - The doctor must have permission to access the specified clinic
     - File paths are stored in database, files saved to disk
-    - Medicine amount is auto-calculated as price * quantity
+    - Medicine amount is auto-calculated as price * quantity if not provided
     - All monetary values should be in the system's default currency
     """,
     responses={
@@ -1797,7 +1801,7 @@ async def delete_patient(
                             "value": {"message": "Database error: [error details]"}
                         },
                         "missing_fields": {
-                            "value": {"message": "Required fields missing: complaint, diagnosis, vital_signs"}
+                            "value": {"message": "Required fields missing: complaints, diagnoses, vital_signs"}
                         }
                     }
                 }
@@ -1813,6 +1817,9 @@ async def delete_patient(
                         },
                         "expired_token": {
                             "value": {"message": "Authentication token has expired"}
+                        },
+                        "unauthorized_clinic": {
+                            "value": {"message": "You are not authorized to access this clinic"}
                         }
                     }
                 }
@@ -1973,6 +1980,14 @@ async def create_clinical_note(
                 for medicine in medicines_list
             ]
             db.add_all(medicines_db)
+
+        if notes:
+            print(f"Processing notes: {notes}")
+            db_notes = Notes(
+                clinical_note_id=clinical_note_db.id,
+                note=notes
+            )
+            db.add(db_notes)
 
         db.commit()
         
