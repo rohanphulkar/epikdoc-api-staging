@@ -18,7 +18,7 @@ from typing import Optional, List
 from appointment.models import Appointment
 from math import ceil
 from catalog.models import Treatment, TreatmentPlan
-from sqlalchemy import case, cast, Integer
+from sqlalchemy import case, cast, Integer, or_
 from payment.models import Payment, Invoice, InvoiceItem
 from appointment.models import Appointment
 from catalog.models import *
@@ -472,8 +472,9 @@ async def get_all_patients(
     - Treatment history
     - Clinical notes
     - Treatment plans
-    - Medical records with attachments
     - Appointment history
+    - Payment history
+    - Invoices
     
     Required parameters:
     - patient_id: UUID of the patient
@@ -488,16 +489,116 @@ async def get_all_patients(
                 "application/json": {
                     "example": {
                         "id": "uuid",
+                        "doctor_id": "uuid",
+                        "clinic_id": "uuid",
+                        "patient_number": "P12345",
                         "name": "John Doe",
                         "mobile_number": "+1234567890",
+                        "contact_number": "+0987654321",
                         "email": "john@example.com",
+                        "secondary_mobile": "+1122334455",
                         "gender": "male",
+                        "address": "123 Main St",
+                        "locality": "Downtown",
+                        "city": "Metropolis",
+                        "pincode": "123456",
+                        "national_id": "ABC123456",
+                        "abha_id": "ABHA123456",
+                        "date_of_birth": "1988-01-01T00:00:00",
                         "age": "35",
-                        "treatments": [],
-                        "clinical_notes": [],
-                        "treatment_plans": [],
-                        "appointments": []
+                        "anniversary_date": "2010-06-15T00:00:00",
+                        "blood_group": "O+",
+                        "occupation": "Engineer",
+                        "relationship": "Married",
+                        "medical_history": "Hypertension",
+                        "allergies": "Peanuts",
+                        "habits": "Non-smoker",
+                        "weight": "75",
+                        "height": "180",
+                        "referred_by": "Dr. Smith",
+                        "groups": "Regular",
+                        "patient_notes": "Regular checkup needed",
+                        "created_at": "2023-01-01T10:00:00",
+                        "appointments": [
+                            {
+                                "id": "uuid",
+                                "date": "2023-02-15T14:00:00",
+                                "status": "completed",
+                                "reason": "Tooth pain",
+                                 "payments": [
+                            {
+                                "id": "uuid",
+                                "amount": 5000,
+                                "payment_method": "card",
+                                "status": "completed",
+                                "date": "2023-02-15T15:30:00"
+                            }
+                        ],
+                        "invoices": [
+                            {
+                                "id": "uuid",
+                                "invoice_number": "INV-001",
+                                "total_amount": 5000,
+                                "date": "2023-02-15T15:00:00",
+                                "items": [
+                                    {
+                                        "id": "uuid",
+                                        "name": "Root Canal Treatment",
+                                        "quantity": 1,
+                                        "unit_price": 5000
+                                    }
+                                ]
+                            }
+                        ]
+                            }
+                        ],
+                        "treatments": [
+                            {
+                                "id": "uuid",
+                                "treatment_id": "uuid",
+                                "name": "Root Canal",
+                                "status": "completed",
+                                "date": "2023-02-15T14:30:00"
+                            }
+                        ],
+                        "clinical_notes": [
+                            {
+                                "id": "uuid",
+                                "notes": "Patient reported tooth pain",
+                                "created_at": "2023-02-10T09:15:00"
+                            }
+                        ],
+                        "treatment_plans": [
+                            {
+                                "id": "uuid",
+                                "name": "Dental Restoration Plan",
+                                "status": "active",
+                                "created_at": "2023-02-10T09:30:00"
+                            }
+                        ],
+                        "completed_procedures": [
+                            {
+                                "id": "uuid",
+                                "procedure_name": "Root Canal",
+                                "unit_cost": 5000,
+                                "quantity": 1,
+                                "amount": 5000,
+                                "procedure_description": "Root Canal Treatment",
+                                "created_at": "2023-02-15T14:30:00",
+                                "updated_at": "2023-02-15T14:30:00"
+                            }
+                        ]
+                        
+                       
                     }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Missing patient ID",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient ID is required"}
                 }
             }
         },
@@ -535,12 +636,30 @@ async def get_patient_by_id(
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+        
+        if not patient_id:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "Patient ID is required"}
+            )
         
         # Get patient by ID
         patient = db.execute(
             select(Patient).filter(
                 Patient.id == patient_id,
-                Patient.doctor_id == decoded_token.get("user_id")
+                Patient.doctor_id == user.id
             )
         ).scalar_one_or_none()
 
@@ -586,122 +705,13 @@ async def get_patient_by_id(
         appointments = []
         payments = []
         invoices = []
+        completed_procedures = []
 
-
-        db_treatments = db.execute(
-            select(Treatment).filter(
-                Treatment.patient_id == patient_id
-            )
-        ).scalars().all()
-
-        db_clinical_notes = db.execute(
-            select(ClinicalNote).filter(
-                ClinicalNote.patient_id == patient_id
-            )
-        ).scalars().all()
-
-        db_treatment_plans = db.execute(
-            select(TreatmentPlan).filter(
-                TreatmentPlan.patient_id == patient_id
-            )
-        ).scalars().all()
         
-        
-        for treatment in db_treatments:
-            treatment_data = {
-                "id": treatment.id,
-                "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
-                "treatment_name": treatment.treatment_name,
-                "tooth_number": treatment.tooth_number,
-                "treatment_notes": treatment.treatment_notes,
-                "quantity": treatment.quantity,
-                "unit_cost": treatment.unit_cost,
-                "amount": treatment.amount,
-                "discount": treatment.discount,
-                "discount_type": treatment.discount_type,
-                "doctor_id": treatment.doctor_id,
-                "created_at": treatment.created_at.isoformat() if treatment.created_at else None
-            }
-            treatments.append(treatment_data)
-
-        for treatment_plan in db_treatment_plans:
-            treatment_plan_data = {
-                "id": treatment_plan.id,
-                "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
-                "created_at": treatment_plan.created_at.isoformat() if treatment_plan.created_at else None
-            }
-
-            treatment_plan_items = [
-                {
-                    "id": item.id,
-                    "treatment_name": item.treatment_name,
-                    "unit_cost": item.unit_cost,
-                    "quantity": item.quantity,
-                    "discount": item.discount,
-                    "discount_type": item.discount_type,
-                    "amount": item.amount,
-                    "treatment_description": item.treatment_description,
-                    "tooth_diagram": item.tooth_diagram,
-                } for item in db.query(Treatment)
-                .filter(Treatment.treatment_plan_id == treatment_plan.id)
-            ]
-
-            treatment_plan_data["items"] = treatment_plan_items
-
-            treatment_plans.append(treatment_plan_data)
-
-        for clinical_note in db_clinical_notes:
-            clinical_note_data = {
-                "id": clinical_note.id,
-                "complaints": [{
-                    "id": complaint.id,
-                    "complaint": complaint.complaint,
-                    "created_at": complaint.created_at.isoformat() if complaint.created_at else None
-                } for complaint in clinical_note.complaints],
-                "diagnosis": [{ 
-                    "id": diagnosis.id,
-                    "diagnosis": diagnosis.diagnosis,
-                    "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None
-                } for diagnosis in clinical_note.diagnoses],
-                "vital_signs": [{
-                    "id": vital_sign.id,
-                    "vital_sign": vital_sign.vital_sign,
-                    "created_at": vital_sign.created_at.isoformat() if vital_sign.created_at else None
-                } for vital_sign in clinical_note.vital_signs],
-                "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None,
-                "attachments": [
-                    {
-                        "id": attachment.id,
-                        "attachment": attachment.attachment,
-                        "created_at": attachment.created_at.isoformat() if attachment.created_at else None
-                    } for attachment in clinical_note.attachments
-                ],
-                "treatments": [
-                    {
-                        "id": treatment.id,
-                        "name": treatment.name,
-                        "created_at": treatment.created_at.isoformat() if treatment.created_at else None
-                    } for treatment in clinical_note.treatments
-                ],
-                "medicines": [
-                    {
-                        "id": medicine.id,
-                        "item_name": medicine.item_name,
-                        "price": medicine.price,
-                        "quantity": medicine.quantity,
-                        "dosage": medicine.dosage,
-                        "instructions": medicine.instructions,
-                        "amount": medicine.amount,
-                        "created_at": medicine.created_at.isoformat() if medicine.created_at else None
-                    } for medicine in clinical_note.medicines
-                ]
-            }
-            clinical_notes.append(clinical_note_data)
-
         db_appointments = db.execute(
             select(Appointment).filter(
                 Appointment.patient_id == patient_id,
-                Appointment.doctor_id == decoded_token.get("user_id")
+                Appointment.doctor_id == user.id
             )
         ).scalars().all()
 
@@ -713,7 +723,7 @@ async def get_patient_by_id(
                 "patient_name": appointment.patient_name,
                 "doctor_id": appointment.doctor_id,
                 "doctor_name": appointment.doctor_name,
-                "notes": appointment.notes,
+                "notes": str(appointment.notes).split(",") if appointment.notes else [],
                 "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
@@ -724,94 +734,232 @@ async def get_patient_by_id(
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None
             }
+
+            db_treatments = db.execute(
+                select(Treatment).filter(
+                    Treatment.patient_id == patient_id,
+                    Treatment.appointment_id == appointment.id
+                )
+            ).scalars().all()
+
+            db_clinical_notes = db.execute(
+                select(ClinicalNote).filter(
+                    ClinicalNote.patient_id == patient_id,
+                    ClinicalNote.appointment_id == appointment.id
+                )
+            ).scalars().all()
+
+            db_treatment_plans = db.execute(
+                select(TreatmentPlan).filter(
+                    TreatmentPlan.patient_id == patient_id,
+                    TreatmentPlan.appointment_id == appointment.id
+                )
+            ).scalars().all()
+
+            db_payments = db.execute(
+                select(Payment).filter(
+                    Payment.patient_id == patient_id,
+                    Payment.appointment_id == appointment.id
+                )
+            ).scalars().all()
+
+            db_invoices = db.execute(
+                select(Invoice).filter(
+                    Invoice.patient_id == patient_id,
+                    Invoice.appointment_id == appointment.id
+                )
+            ).scalars().all()
+               
+            db_completed_procedures = db.execute(
+                select(CompletedProcedure).filter(
+                    CompletedProcedure.patient_id == patient_id,
+                    CompletedProcedure.appointment_id == appointment.id
+                )
+            ).scalars().all()
+            
+            for treatment in db_treatments:
+                treatment_data = {
+                    "id": treatment.id,
+                    "treatment_date": treatment.treatment_date.isoformat() if treatment.treatment_date else None,
+                    "treatment_name": treatment.treatment_name,
+                    "tooth_number": treatment.tooth_number,
+                    "treatment_notes": treatment.treatment_notes,
+                    "quantity": treatment.quantity,
+                    "unit_cost": treatment.unit_cost,
+                    "amount": treatment.amount,
+                    "discount": treatment.discount,
+                    "discount_type": treatment.discount_type,
+                    "doctor_id": treatment.doctor_id,
+                    "created_at": treatment.created_at.isoformat() if treatment.created_at else None
+                }
+                treatments.append(treatment_data)
+
+            for treatment_plan in db_treatment_plans:
+                treatment_plan_data = {
+                    "id": treatment_plan.id,
+                    "date": treatment_plan.date.isoformat() if treatment_plan.date else None,
+                    "created_at": treatment_plan.created_at.isoformat() if treatment_plan.created_at else None
+                }
+
+                treatment_plan_items = [
+                    {
+                        "id": item.id,
+                        "treatment_name": item.treatment_name,
+                        "unit_cost": item.unit_cost,
+                        "quantity": item.quantity,
+                        "discount": item.discount,
+                        "discount_type": item.discount_type,
+                        "amount": item.amount,
+                        "treatment_description": item.treatment_description,
+                        "tooth_diagram": item.tooth_diagram,
+                    } for item in db.query(Treatment)
+                    .filter(Treatment.treatment_plan_id == treatment_plan.id)
+                ]
+
+                treatment_plan_data["items"] = treatment_plan_items
+
+                treatment_plans.append(treatment_plan_data)
+
+            for clinical_note in db_clinical_notes:
+                clinical_note_data = {
+                    "id": clinical_note.id,
+                    "complaints": [{
+                        "id": complaint.id,
+                        "complaint": complaint.complaint,
+                        "created_at": complaint.created_at.isoformat() if complaint.created_at else None
+                    } for complaint in clinical_note.complaints],
+                    "diagnosis": [{ 
+                        "id": diagnosis.id,
+                        "diagnosis": diagnosis.diagnosis,
+                        "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None
+                    } for diagnosis in clinical_note.diagnoses],
+                    "vital_signs": [{
+                        "id": vital_sign.id,
+                        "vital_sign": vital_sign.vital_sign,
+                        "created_at": vital_sign.created_at.isoformat() if vital_sign.created_at else None
+                    } for vital_sign in clinical_note.vital_signs],
+                    "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None,
+                    "attachments": [
+                        {
+                            "id": attachment.id,
+                            "attachment": attachment.attachment,
+                            "created_at": attachment.created_at.isoformat() if attachment.created_at else None
+                        } for attachment in clinical_note.attachments
+                    ],
+                    "treatments": [
+                        {
+                            "id": treatment.id,
+                            "name": treatment.name,
+                            "created_at": treatment.created_at.isoformat() if treatment.created_at else None
+                        } for treatment in clinical_note.treatments
+                    ],
+                    "medicines": [
+                        {
+                            "id": medicine.id,
+                            "item_name": medicine.item_name,
+                            "price": medicine.price,
+                            "quantity": medicine.quantity,
+                            "dosage": medicine.dosage,
+                            "instructions": medicine.instructions,
+                            "amount": medicine.amount,
+                            "created_at": medicine.created_at.isoformat() if medicine.created_at else None
+                        } for medicine in clinical_note.medicines
+                    ]
+                }
+                clinical_notes.append(clinical_note_data)     
+
+            for payment in db_payments:
+                payment_data = {
+                    "id": payment.id,
+                    "date": payment.date.isoformat() if payment.date else None,
+                    "patient_id": payment.patient_id,
+                    "doctor_id": payment.doctor_id,
+                    "clinic_id": payment.clinic_id,
+                    "invoice_id": payment.invoice_id,
+                    "appointment_id": payment.appointment_id,
+                    "patient_number": payment.patient_number,
+                    "patient_name": payment.patient_name,
+                    "receipt_number": payment.receipt_number,
+                    "treatment_name": payment.treatment_name,
+                    "amount_paid": payment.amount_paid,
+                    "invoice_number": payment.invoice_number,
+                    "notes": payment.notes,
+                    "payment_mode": payment.payment_mode,
+                    "status": payment.status,
+                    "refund": payment.refund,
+                    "refund_receipt_number": payment.refund_receipt_number,
+                    "refunded_amount": payment.refunded_amount,
+                    "cancelled": payment.cancelled,
+                    "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                    "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
+                }
+                payments.append(payment_data)
+
+            for invoice in db_invoices:
+                invoice_items = [
+                    {
+                        "id": item.id,
+                        "invoice_id": item.invoice_id,
+                        "treatment_name": item.treatment_name,
+                        "unit_cost": item.unit_cost,
+                        "quantity": item.quantity,
+                        "discount": item.discount,
+                        "discount_type": item.discount_type,
+                        "type": item.type,
+                        "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                        "tax_name": item.tax_name,
+                        "tax_percent": item.tax_percent,
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                        "updated_at": item.updated_at.isoformat() if item.updated_at else None
+                    } for item in invoice.invoice_items
+                ]
+                invoice_data = {
+                    "id": invoice.id,
+                    "date": invoice.date.isoformat() if invoice.date else None,
+                    "patient_id": invoice.patient_id,
+                    "doctor_id": invoice.doctor_id,
+                    "clinic_id": invoice.clinic_id,
+                    "payment_id": invoice.payment_id,
+                    "appointment_id": invoice.appointment_id,
+                    "patient_number": invoice.patient_number,
+                    "patient_name": invoice.patient_name,
+                    "doctor_name": invoice.doctor_name,
+                    "invoice_number": invoice.invoice_number,
+                    "cancelled": invoice.cancelled,
+                    "notes": invoice.notes,
+                    "description": invoice.description,
+                    "file_path": invoice.file_path,
+                    "total_amount": invoice.total_amount,
+                    "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                    "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+                    "items": invoice_items
+                }
+                invoices.append(invoice_data)
+            
+            for completed_procedure in db_completed_procedures:
+                completed_procedure_data = {
+                    "id": completed_procedure.id,
+                    "appointment_id": completed_procedure.appointment_id,
+                    "doctor_id": completed_procedure.doctor_id,
+                    "clinic_id": completed_procedure.clinic_id,
+                    "procedure_name": completed_procedure.procedure_name,
+                    "unit_cost": completed_procedure.unit_cost,
+                    "quantity": completed_procedure.quantity,
+                    "amount": completed_procedure.amount,
+                    "procedure_description": completed_procedure.procedure_description,
+                    "created_at": completed_procedure.created_at.isoformat() if completed_procedure.created_at else None,
+                    "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None
+                }
+                completed_procedures.append(completed_procedure_data)
+
+            appointment_data["treatments"] = treatments
+            appointment_data["clinical_notes"] = clinical_notes
+            appointment_data["treatment_plans"] = treatment_plans
+            appointment_data["appointments"] = appointments
+            appointment_data["payments"] = payments
+            appointment_data["invoices"] = invoices
             appointments.append(appointment_data)
 
-        db_payments = db.execute(
-            select(Payment).filter(
-                Payment.patient_id == patient_id
-            )
-        ).scalars().all()
-        
-        for payment in db_payments:
-            payment_data = {
-                "id": payment.id,
-                "date": payment.date.isoformat() if payment.date else None,
-                "patient_id": payment.patient_id,
-                "doctor_id": payment.doctor_id,
-                "clinic_id": payment.clinic_id,
-                "invoice_id": payment.invoice_id,
-                "appointment_id": payment.appointment_id,
-                "patient_number": payment.patient_number,
-                "patient_name": payment.patient_name,
-                "receipt_number": payment.receipt_number,
-                "treatment_name": payment.treatment_name,
-                "amount_paid": payment.amount_paid,
-                "invoice_number": payment.invoice_number,
-                "notes": payment.notes,
-                "payment_mode": payment.payment_mode,
-                "status": payment.status,
-                "refund": payment.refund,
-                "refund_receipt_number": payment.refund_receipt_number,
-                "refunded_amount": payment.refunded_amount,
-                "cancelled": payment.cancelled,
-                "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None
-            }
-            payments.append(payment_data)
-        
-        db_invoices = db.execute(
-            select(Invoice).filter(
-                Invoice.patient_id == patient_id
-            )
-        ).scalars().all()
-
-        for invoice in db_invoices:
-            invoice_items = [
-                {
-                    "id": item.id,
-                    "invoice_id": item.invoice_id,
-                    "treatment_name": item.treatment_name,
-                    "unit_cost": item.unit_cost,
-                    "quantity": item.quantity,
-                    "discount": item.discount,
-                    "discount_type": item.discount_type,
-                    "type": item.type,
-                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
-                    "tax_name": item.tax_name,
-                    "tax_percent": item.tax_percent,
-                    "created_at": item.created_at.isoformat() if item.created_at else None,
-                    "updated_at": item.updated_at.isoformat() if item.updated_at else None
-                } for item in invoice.invoice_items
-            ]
-            invoice_data = {
-                "id": invoice.id,
-                "date": invoice.date.isoformat() if invoice.date else None,
-                "patient_id": invoice.patient_id,
-                "doctor_id": invoice.doctor_id,
-                "clinic_id": invoice.clinic_id,
-                "payment_id": invoice.payment_id,
-                "appointment_id": invoice.appointment_id,
-                "patient_number": invoice.patient_number,
-                "patient_name": invoice.patient_name,
-                "doctor_name": invoice.doctor_name,
-                "invoice_number": invoice.invoice_number,
-                "cancelled": invoice.cancelled,
-                "notes": invoice.notes,
-                "description": invoice.description,
-                "file_path": invoice.file_path,
-                "total_amount": invoice.total_amount,
-                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
-                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
-                "items": invoice_items
-            }
-            invoices.append(invoice_data)
-            
-        patient_data["treatments"] = treatments
-        patient_data["clinical_notes"] = clinical_notes
-        patient_data["treatment_plans"] = treatment_plans
-        patient_data["appointments"] = appointments
-        patient_data["payments"] = payments
-        patient_data["invoices"] = invoices
         return JSONResponse(status_code=200, content=patient_data)
         
     except SQLAlchemyError as e:
@@ -915,49 +1063,103 @@ async def search_patients(
         decoded_token = verify_token(request)
         doctor_id = decoded_token.get("user_id")
         
-        # Base query
-        query = select(Patient).filter(Patient.doctor_id == doctor_id)
+        # Base query - use a join to ensure we get all patient fields
+        query = select(Patient).where(Patient.doctor_id == doctor_id)
         
         # Add filters for each field if provided
         if name:
-            query = query.filter(Patient.name.ilike(f"%{name}%"))
+            query = query.where(func.lower(Patient.name).contains(func.lower(name)))
         if mobile_number:
-            query = query.filter(Patient.mobile_number.ilike(f"%{mobile_number}%"))
+            query = query.where(Patient.mobile_number.contains(mobile_number))
         if gender:
-            query = query.filter(Patient.gender == gender)
+            query = query.where(Patient.gender == gender)
         if abha_id:
-            query = query.filter(Patient.abha_id.ilike(f"%{abha_id}%"))
+            query = query.where(Patient.abha_id.contains(abha_id))
 
-        # Add age range filter
+        # Add age range filter - handle both string and integer age values
         if min_age is not None:
-            query = query.filter(cast(Patient.age, Integer) >= min_age)
+            # Try both numeric comparison and string pattern matching
+            query = query.where(
+                or_(
+                    cast(Patient.age, Integer) >= min_age,
+                    Patient.age.like(f"{min_age}%"),
+                    Patient.age.like(f"%{min_age}%")
+                )
+            )
         if max_age is not None:
-            query = query.filter(cast(Patient.age, Integer) <= max_age)
+            query = query.where(
+                or_(
+                    cast(Patient.age, Integer) <= max_age,
+                    func.length(Patient.age) <= len(str(max_age))
+                )
+            )
 
         # Add date of birth filters
         if date_of_birth:
-            query = query.filter(Patient.date_of_birth == date_of_birth)
+            query = query.where(func.date(Patient.date_of_birth) == date_of_birth.date())
         if date_of_birth_after:
-            query = query.filter(Patient.date_of_birth >= date_of_birth_after)
+            query = query.where(func.date(Patient.date_of_birth) >= date_of_birth_after.date())
         if date_of_birth_before:
-            query = query.filter(Patient.date_of_birth <= date_of_birth_before)
+            query = query.where(func.date(Patient.date_of_birth) <= date_of_birth_before.date())
 
-        # Add sorting
-        sort_column = getattr(Patient, sort_by)
-        if sort_order == "desc":
-            query = query.order_by(sort_column.desc())
-        else:
-            query = query.order_by(sort_column.asc())
-            
-        # Get total count for pagination
-        from sqlalchemy import func
-        total = db.execute(select(func.count()).select_from(query.subquery())).scalar()
+        # Get total count for pagination before applying sorting and pagination
+        count_query = select(func.count()).select_from(query.subquery())
+        total = db.execute(count_query).scalar() or 0
         
+        # Add sorting
+        if hasattr(Patient, sort_by):
+            sort_column = getattr(Patient, sort_by)
+            if sort_order.lower() == "desc":
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
+        else:
+            # Default sort if invalid column specified
+            query = query.order_by(Patient.created_at.desc())
+            
         # Add pagination
         query = query.offset((page - 1) * per_page).limit(per_page)
             
         # Execute query
         patients = db.execute(query).scalars().all()
+        
+        # Format patient data for response
+        patient_list = []
+        for patient in patients:
+            patient_data = {
+                "id": patient.id,
+                "doctor_id": patient.doctor_id,
+                "clinic_id": patient.clinic_id,
+                "patient_number": patient.patient_number,
+                "name": patient.name,
+                "mobile_number": patient.mobile_number,
+                "contact_number": patient.contact_number,
+                "email": patient.email,
+                "secondary_mobile": patient.secondary_mobile,
+                "gender": patient.gender,
+                "address": patient.address,
+                "locality": patient.locality,
+                "city": patient.city,
+                "pincode": patient.pincode,
+                "national_id": patient.national_id,
+                "abha_id": patient.abha_id,
+                "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                "age": patient.age,
+                "anniversary_date": patient.anniversary_date.isoformat() if patient.anniversary_date else None,
+                "blood_group": patient.blood_group,
+                "occupation": patient.occupation,
+                "relationship": patient.relationship,
+                "medical_history": patient.medical_history,
+                "allergies": patient.allergies,
+                "habits": patient.habits,
+                "weight": patient.weight,
+                "height": patient.height,
+                "referred_by": patient.referred_by,
+                "groups": patient.groups,
+                "patient_notes": patient.patient_notes,
+                "created_at": patient.created_at.isoformat() if patient.created_at else None
+            }
+            patient_list.append(patient_data)
         
         # Calculate total pages
         pages = (total + per_page - 1) // per_page if total else 0
@@ -992,9 +1194,9 @@ async def search_patients(
         ).scalar() or 0
         
         return {
-            "items": patients,
+            "items": patient_list,
             "pagination": {
-                "total": total or 0,
+                "total": total,
                 "page": page,
                 "per_page": per_page,
                 "pages": pages
@@ -1010,7 +1212,7 @@ async def search_patients(
     except SQLAlchemyError as e:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"message": f"Internal server error: {str(e)}"}
+            content={"message": f"Database error: {str(e)}"}
         )
     except Exception as e:
         return JSONResponse(
@@ -1140,6 +1342,11 @@ async def update_patient(
     try:
         # Verify user authentication
         decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "Unauthorized"}
+            )
 
         user = db.execute(select(User).filter(User.id == decoded_token.get("user_id"))).scalar_one_or_none()
         if not user:
@@ -1162,9 +1369,15 @@ async def update_patient(
                 content={"message": "Patient not found"}
             )
         
-        # check if clinic is associated with the doctor
-        if patient.clinic_id:
-            clinic = db.execute(select(Clinic).filter(Clinic.id == patient.clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
+        # Check if clinic is associated with the doctor
+        if patient_update.clinic_id:
+            clinic = db.execute(
+                select(Clinic).filter(
+                    Clinic.id == patient_update.clinic_id,
+                    Clinic.doctors.any(User.id == user.id)
+                )
+            ).scalar_one_or_none()
+            
             if not clinic:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED, 
@@ -1172,7 +1385,7 @@ async def update_patient(
                 )
 
         # Update patient fields
-        update_data = patient_update.dict(exclude_unset=True)
+        update_data = patient_update.dict(exclude_unset=True, exclude_none=True)
         for field, value in update_data.items():
             setattr(patient, field, value)
             
@@ -1181,12 +1394,46 @@ async def update_patient(
             patient.age = calculate_age(patient.date_of_birth)
 
         db.commit()
-        db.refresh(patient)
         
-        return {
-            "message": "Patient updated successfully",
-            "patient": patient
+        # Convert patient to dictionary for response
+        patient_dict = {
+            "id": patient.id,
+            "name": patient.name,
+            "mobile_number": patient.mobile_number,
+            "contact_number": patient.contact_number,
+            "email": patient.email,
+            "secondary_mobile": patient.secondary_mobile,
+            "gender": patient.gender.value if patient.gender else None,
+            "address": patient.address,
+            "locality": patient.locality,
+            "city": patient.city,
+            "pincode": patient.pincode,
+            "national_id": patient.national_id,
+            "abha_id": patient.abha_id,
+            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+            "age": patient.age,
+            "anniversary_date": patient.anniversary_date.isoformat() if patient.anniversary_date else None,
+            "blood_group": patient.blood_group,
+            "occupation": patient.occupation,
+            "relationship": patient.relationship,
+            "medical_history": patient.medical_history,
+            "allergies": patient.allergies,
+            "habits": patient.habits,
+            "weight": patient.weight,
+            "height": patient.height,
+            "referred_by": patient.referred_by,
+            "groups": patient.groups,
+            "patient_notes": patient.patient_notes,
+            "created_at": patient.created_at.isoformat() if patient.created_at else None,
         }
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "Patient updated successfully",
+                "patient": patient_dict
+            }
+        )
         
     except SQLAlchemyError as e:
         db.rollback()
@@ -1195,6 +1442,7 @@ async def update_patient(
             content={"message": f"Database error: {str(e)}"}
         )
     except Exception as e:
+        db.rollback()
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"message": f"Internal server error: {str(e)}"}

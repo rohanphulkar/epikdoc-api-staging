@@ -5124,6 +5124,10 @@ async def get_all_users(
     - per_page: Number of items per page (default: 10, max: 100)
     - sort_by: Sort field (default: created_at)
     - sort_order: Sort direction - asc or desc (default: desc)
+    - name: Search by doctor name
+    - email: Search by doctor email
+    - phone: Search by doctor phone number
+    - doctor_id: Search by doctor ID
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -5214,9 +5218,15 @@ async def get_doctor_list(
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="created_at", description="Field to sort by"),
     sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
+    name: Optional[str] = Query(None, description="Search by doctor name"),
+    email: Optional[str] = Query(None, description="Search by doctor email"),
+    phone: Optional[str] = Query(None, description="Search by doctor phone"),
+    doctor_id: Optional[str] = Query(None, description="Search by doctor ID"),
     db: Session = Depends(get_db)
 ):
     try:
+        from sqlalchemy import or_, and_
+        
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -5225,8 +5235,25 @@ async def get_doctor_list(
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
+        # Build base query
+        query = db.query(User).filter(User.user_type == "doctor")
+        
+        # Apply search filters if provided
+        search_filters = []
+        if name:
+            search_filters.append(User.name.ilike(f"%{name}%"))
+        if email:
+            search_filters.append(User.email.ilike(f"%{email}%"))
+        if phone:
+            search_filters.append(User.phone.ilike(f"%{phone}%"))
+        if doctor_id:
+            search_filters.append(User.id == doctor_id)
+            
+        if search_filters:
+            query = query.filter(or_(*search_filters))
+        
         # Get total count
-        total = db.query(User).filter(User.user_type == "doctor").count()
+        total = query.count()
         if total == 0:
             return JSONResponse(status_code=404, content={"error": "No doctors found"})
             
@@ -5245,9 +5272,6 @@ async def get_doctor_list(
         month_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_month).first()
         year_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_year).first()
         overall_stats = stats_query.first()
-        
-        # Build base query
-        query = db.query(User).filter(User.user_type == "doctor")
         
         # Add sorting
         if hasattr(User, sort_by):

@@ -848,6 +848,7 @@ async def get_patient_appointments(
     Search and filter appointments using various criteria with pagination and statistics.
     
     **Query Parameters:**
+    - doctor_id (str, optional): Search by doctor id
     - patient_name (str, optional): Search by patient name (case-insensitive partial match)
     - patient_email (str, optional): Search by patient email (case-insensitive partial match) 
     - patient_phone (str, optional): Search by patient phone number
@@ -963,6 +964,7 @@ async def get_patient_appointments(
 )
 async def search_appointments(
     request: Request,
+    doctor_id: Optional[str] = None,
     patient_name: Optional[str] = None,
     patient_email: Optional[str] = None,
     patient_phone: Optional[str] = None,
@@ -1009,6 +1011,8 @@ async def search_appointments(
 
         # Filter conditions
         filter_conditions = []
+        if doctor_id:
+            filter_conditions.append(Appointment.doctor_id == doctor_id)
         if patient_gender:
             filter_conditions.append(Patient.gender == patient_gender)
         if clinic_id:
