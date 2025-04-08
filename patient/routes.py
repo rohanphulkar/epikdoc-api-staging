@@ -952,10 +952,12 @@ async def get_patient_by_id(
             appointment_data["treatments"] = treatments
             appointment_data["clinical_notes"] = clinical_notes
             appointment_data["treatment_plans"] = treatment_plans
-            appointment_data["appointments"] = appointments
             appointment_data["payments"] = payments
             appointment_data["invoices"] = invoices
+            appointment_data["completed_procedures"] = completed_procedures
             appointments.append(appointment_data)
+        
+        patient_data["appointments"] = appointments
 
         return JSONResponse(status_code=200, content=patient_data)
         
