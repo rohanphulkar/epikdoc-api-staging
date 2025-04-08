@@ -1849,6 +1849,7 @@ async def create_clinical_note(
     request: Request,
     patient_id: str,
     clinic_id: str,
+    appointment_id: str,
     complaints: str = Form(...),
     diagnoses: str = Form(...),
     vital_signs: str = Form(...),
@@ -1889,12 +1890,20 @@ async def create_clinical_note(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
                 content={"message": "You are not authorized to access this clinic"}
             )
+        
+        appointment = db.execute(select(Appointment).filter(Appointment.id == appointment_id, Appointment.patient_id == patient_id)).scalar_one_or_none()
+        if not appointment:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Appointment not found"}
+            )
 
         # Create medical record
         clinical_note_db = ClinicalNote(
             patient_id=patient.id,
             clinic_id=clinic.id,
             doctor_id=user.id,
+            appointment_id=appointment.id,
             date=datetime.now().date()
         )
 
