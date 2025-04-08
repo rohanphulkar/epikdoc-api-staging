@@ -315,23 +315,27 @@ async def get_all_appointments(
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Base query
+        # Base query - get all appointments for the doctor
         query = (
             db.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
             .join(User, Appointment.doctor_id == User.id)
-            .filter(Appointment.doctor_id == user.id)
+            .filter(Appointment.doctor_id == user_id)  # Filter by the authenticated doctor's ID
         )
 
         # Add sorting
-        sort_column = getattr(Appointment, sort_by)
-        if sort_order == "desc":
-            query = query.order_by(sort_column.desc())
+        if hasattr(Appointment, sort_by):
+            sort_column = getattr(Appointment, sort_by)
+            if sort_order.lower() == "desc":
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
         else:
-            query = query.order_by(sort_column.asc())
+            # Default sort if invalid column provided
+            query = query.order_by(Appointment.appointment_date.desc())
 
-        # Get total count
-        total = db.execute(select(func.count()).select_from(query.subquery())).scalar()
+        # Get total count for pagination
+        total = query.count()
 
         # Add pagination
         query = query.offset((page - 1) * per_page).limit(per_page)
@@ -344,33 +348,35 @@ async def get_all_appointments(
         today_start = datetime.combine(today, time.min)
         today_end = datetime.combine(today, time.max)
 
-        today_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at.between(today_start, today_end))
-        ).scalar() or 0
+        # Count appointments for today
+        today_count = db.query(Appointment).filter(
+            Appointment.doctor_id == user_id,
+            Appointment.appointment_date.between(today_start, today_end)
+        ).count()
 
-        month_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at >= today.replace(day=1))
-        ).scalar() or 0
+        # Count appointments for this month
+        first_day_of_month = today.replace(day=1)
+        month_count = db.query(Appointment).filter(
+            Appointment.doctor_id == user_id,
+            Appointment.appointment_date >= first_day_of_month
+        ).count()
 
-        year_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at >= today.replace(month=1, day=1))
-        ).scalar() or 0
+        # Count appointments for this year
+        first_day_of_year = today.replace(month=1, day=1)
+        year_count = db.query(Appointment).filter(
+            Appointment.doctor_id == user_id,
+            Appointment.appointment_date >= first_day_of_year
+        ).count()
 
-        total_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-        ).scalar() or 0
+        # Count all appointments
+        total_count = db.query(Appointment).filter(
+            Appointment.doctor_id == user_id
+        ).count()
 
         # Format response
         appointment_list = []
         for appointment, patient, doctor in appointments:
-            # Get related records with optimized queries
+            # Get related clinical notes
             clinical_notes = (
                 db.query(ClinicalNote)
                 .options(
@@ -386,7 +392,7 @@ async def get_all_appointments(
                 .all()
             )
 
-            # Get treatment plans first
+            # Get treatment plans
             treatment_plans = (
                 db.query(TreatmentPlan)
                 .options(joinedload(TreatmentPlan.treatments))
@@ -410,6 +416,7 @@ async def get_all_appointments(
             # Filter out treatments that are already in treatment plans
             standalone_treatments = [t for t in treatments if str(t.id) not in planned_treatment_ids]
 
+            # Get payments
             payments = (
                 db.query(Payment)
                 .filter(Payment.appointment_id == appointment.id)
@@ -431,7 +438,7 @@ async def get_all_appointments(
                 "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
                 "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
                 "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
-                "status": appointment.status.value,
+                "status": appointment.status.value if hasattr(appointment.status, 'value') else str(appointment.status),
                 "send_reminder": appointment.send_reminder,
                 "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
@@ -441,7 +448,7 @@ async def get_all_appointments(
                     "name": doctor.name,
                     "email": doctor.email,
                     "phone": doctor.phone,
-                    "color_code": doctor.color_code
+                    "color_code": doctor.color_code if hasattr(doctor, 'color_code') else None
                 },
                 "patient": {
                     "id": patient.id,
@@ -449,7 +456,7 @@ async def get_all_appointments(
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value
+                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
                 }
             }
 
@@ -458,7 +465,7 @@ async def get_all_appointments(
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
             "pagination": {
-                "total": total or 0,
+                "total": total,
                 "page": page,
                 "per_page": per_page,
                 "pages": (total + per_page - 1) // per_page if total else 0
@@ -471,6 +478,8 @@ async def get_all_appointments(
             }
         })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @appointment_router.get("/patient-appointments/{patient_id}",

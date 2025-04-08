@@ -1775,19 +1775,17 @@ async def delete_patient(
     - complaints (required): Patient's chief complaints
     - diagnoses (required): Doctor's diagnoses
     - vital_signs (required): Patient vital signs data in JSON format
-        {
-            "temperature": "98.6",
-            "blood_pressure": "120/80",
-            "pulse": "72",
-            "respiratory_rate": "16"
-        }
+        [
+            temperature
+            blood_pressure
+            pulse
+            respiratory_rate
+        ]
     - notes (optional): Additional clinical notes
     - treatments (optional): JSON array of treatments
         [
             {
-                "name": "Treatment name",           // Required
-                "tooth_number": "18",               // Optional
-                "treatment_notes": "Description"    // Optional
+                "name": "Treatment name",           // Required\
             }
         ]
     - medicines (optional): JSON array of medicines
@@ -1957,14 +1955,15 @@ async def create_clinical_note(
         db.commit()
         db.refresh(clinical_note_db)
 
-
         # Parse string inputs to lists
-        complaints_list = json.loads(complaints)
-        diagnoses_list = json.loads(diagnoses)
-        vital_signs_list = json.loads(vital_signs)
+        complaints_list = json.loads(complaints) if complaints else []
+        diagnoses_list = json.loads(diagnoses) if diagnoses else []
+        vital_signs_list = json.loads(vital_signs) if vital_signs else []
+        treatments_list = json.loads(treatments) if treatments else []
+        medicines_list = json.loads(medicines) if medicines else []
+        notes_list = json.loads(notes) if notes and notes.startswith("[") else [notes] if notes else []
 
         for complaint in complaints_list:
-            print(f"Processing complaint: {complaint}")
             db_complaint = Complaint(
                 clinical_note_id=clinical_note_db.id,
                 complaint=complaint
@@ -1972,15 +1971,14 @@ async def create_clinical_note(
             db.add(db_complaint)
 
         for diagnosis in diagnoses_list:
-            print(f"Processing diagnosis: {diagnosis}")
             db_diagnosis = Diagnosis(
                 clinical_note_id=clinical_note_db.id,
                 diagnosis=diagnosis
             )
             db.add(db_diagnosis)
         
+        # Process vital signs
         for vital_sign in vital_signs_list:
-            print(f"Processing vital sign: {vital_sign}")
             db_vital_sign = VitalSign(
                 clinical_note_id=clinical_note_db.id,
                 vital_sign=vital_sign
@@ -1989,7 +1987,6 @@ async def create_clinical_note(
             
         # Handle file attachments
         if files:
-            print(f"Processing files: {files}")
             attachments = []
             os.makedirs("uploads/clinical_notes", exist_ok=True)
             
@@ -2009,42 +2006,64 @@ async def create_clinical_note(
 
         # Add treatments if provided
         if treatments:
-            print(f"Processing treatments: {treatments}")
-            treatments_list = json.loads(treatments)
-            treatments_db = [
-                ClinicalNoteTreatment(
-                    clinical_note_id=clinical_note_db.id,
-                    name=treatment.get("name")
+            try:
+                treatments_db = []
+                for treatment in treatments_list:
+                    treatment_db = ClinicalNoteTreatment(
+                        clinical_note_id=clinical_note_db.id,
+                        name=treatment.get("name", "")
+                    )
+                    treatments_db.append(treatment_db)
+                
+                if treatments_db:
+                    db.add_all(treatments_db)
+            except json.JSONDecodeError:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"message": "Invalid JSON format for treatments"}
                 )
-                for treatment in treatments_list
-            ]
-            db.add_all(treatments_db)
 
         # Add medicines if provided
         if medicines:
-            print(f"Processing medicines: {medicines}")
-            medicines_list = json.loads(medicines)
-            medicines_db = [
-                Medicine(
-                    clinical_note_id=clinical_note_db.id,
-                    item_name=medicine.get("item_name"),
-                    quantity=medicine.get("quantity", 1),
-                    price=medicine.get("price", 0),
-                    amount=medicine.get("amount", medicine.get("price", 0) * medicine.get("quantity", 1)),
-                    dosage=medicine.get("dosage"),
-                    instructions=medicine.get("instructions")
+            try:
+                medicines_db = []
+                for medicine in medicines_list:
+                    quantity = int(medicine.get("quantity", 1))
+                    price = float(medicine.get("price", 0))
+                    # Calculate amount if not provided, otherwise use the provided amount
+                    amount = float(medicine.get("amount", price * quantity))
+                    
+                    medicine_db = Medicine(
+                        clinical_note_id=clinical_note_db.id,
+                        item_name=medicine.get("item_name", ""),
+                        quantity=quantity,
+                        price=price,
+                        amount=amount,
+                        dosage=medicine.get("dosage"),
+                        instructions=medicine.get("instructions")
+                    )
+                    medicines_db.append(medicine_db)
+                
+                if medicines_db:
+                    db.add_all(medicines_db)
+            except json.JSONDecodeError:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"message": "Invalid JSON format for medicines"}
                 )
-                for medicine in medicines_list
-            ]
-            db.add_all(medicines_db)
 
-        if notes:
-            print(f"Processing notes: {notes}")
-            db_notes = Notes(
-                clinical_note_id=clinical_note_db.id,
-                note=notes
-            )
-            db.add(db_notes)
+        # Add notes if provided
+        if notes_list:
+            notes_db = []
+            for note in notes_list:
+                db_note = Notes(
+                    clinical_note_id=clinical_note_db.id,
+                    note=note
+                )
+                notes_db.append(db_note)
+            
+            if notes_db:
+                db.add_all(notes_db)
 
         db.commit()
         
@@ -2052,12 +2071,6 @@ async def create_clinical_note(
             "message": "Clinical note created successfully",
             "clinical_note_id": clinical_note_db.id
         }
-        
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": "Invalid JSON format for treatments or medicines"}
-        )
     except SQLAlchemyError as e:
         db.rollback()
         return JSONResponse(
@@ -2065,6 +2078,7 @@ async def create_clinical_note(
             content={"message": f"Database error: {str(e)}"}
         )
     except Exception as e:
+        db.rollback()  # Added rollback for any other exceptions
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"message": f"Internal server error: {str(e)}"}
