@@ -1768,6 +1768,9 @@ async def delete_patient(
     - patient_id: UUID of the patient
     - clinic_id: UUID of the clinic where the note is being created
     
+    **Query Parameters:**
+    - appointment_id (optional): UUID of the associated appointment
+    
     **Form Data:**
     - complaints (required): Patient's chief complaints
     - diagnoses (required): Doctor's diagnoses
@@ -1782,7 +1785,9 @@ async def delete_patient(
     - treatments (optional): JSON array of treatments
         [
             {
-                "name": "Treatment name"  // Required
+                "name": "Treatment name",           // Required
+                "tooth_number": "18",               // Optional
+                "treatment_notes": "Description"    // Optional
             }
         ]
     - medicines (optional): JSON array of medicines
@@ -1887,7 +1892,7 @@ async def create_clinical_note(
     request: Request,
     patient_id: str,
     clinic_id: str,
-    appointment_id: str,
+    appointment_id: Optional[str] = None,
     complaints: str = Form(...),
     diagnoses: str = Form(...),
     vital_signs: str = Form(...),
@@ -1929,19 +1934,22 @@ async def create_clinical_note(
                 content={"message": "You are not authorized to access this clinic"}
             )
         
-        appointment = db.execute(select(Appointment).filter(Appointment.id == appointment_id)).scalar_one_or_none()
-        if not appointment:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={"message": "Appointment not found"}
-            )
+        # Check appointment only if appointment_id is provided
+        appointment = None
+        if appointment_id:
+            appointment = db.execute(select(Appointment).filter(Appointment.id == appointment_id)).scalar_one_or_none()
+            if not appointment:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"message": "Appointment not found"}
+                )
 
         # Create medical record
         clinical_note_db = ClinicalNote(
             patient_id=patient.id,
             clinic_id=clinic.id,
             doctor_id=user.id,
-            appointment_id=appointment.id,
+            appointment_id=appointment.id if appointment else None,
             date=datetime.now().date()
         )
 
