@@ -65,6 +65,10 @@ def calculate_age(date_of_birth: datetime) -> str:
     - referred_by: Referral source
     - groups: Patient groups/categories
     - patient_notes: Additional clinical notes
+    - allergies: Patient's allergies
+    - habits: Patient's habits or lifestyle factors
+    - weight: Patient's weight in kg
+    - height: Patient's height in cm
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -176,6 +180,10 @@ async def create_patient(
             referred_by=patient.referred_by,
             groups=patient.groups,
             patient_notes=patient.patient_notes,
+            allergies=patient.allergies,
+            habits=patient.habits,
+            weight=patient.weight,
+            height=patient.height
         )
         
         if patient.clinic_id:
@@ -1042,6 +1050,11 @@ async def search_patients(
     - patient_notes: Additional notes
     - national_id: National ID number
     - abha_id: ABHA ID number
+    - allergies: Patient's allergies
+    - habits: Patient's habits or lifestyle factors
+    - weight: Patient's weight in kg
+    - height: Patient's height in cm
+    - clinic_id: ID of the clinic where patient is registered
     
     Required headers:
     - Authorization: Bearer {access_token}
@@ -1066,6 +1079,10 @@ async def search_patients(
                             "city": "Mumbai",
                             "pincode": "400001",
                             "medical_history": "No major issues",
+                            "allergies": "Penicillin",
+                            "habits": "Non-smoker",
+                            "weight": 75,
+                            "height": 180,
                             "created_at": "2023-01-01T10:00:00",
                             "updated_at": "2023-06-15T14:30:00"
                         }
@@ -1085,7 +1102,14 @@ async def search_patients(
             "description": "Unauthorized - Invalid or missing authentication token or clinic access",
             "content": {
                 "application/json": {
-                    "example": {"message": "Unauthorized"}
+                    "examples": {
+                        "invalid_token": {
+                            "value": {"message": "Unauthorized"}
+                        },
+                        "unauthorized_clinic": {
+                            "value": {"message": "You are not authorized to access this clinic"}
+                        }
+                    }
                 }
             }
         },
@@ -1176,6 +1200,123 @@ async def update_patient(
             content={"message": f"Internal server error: {str(e)}"}
         )
 
+@patient_router.get(
+    "/get-health-info",
+    status_code=status.HTTP_200_OK,
+    summary="Get patient health information",
+    description="""
+    Retrieve health-related information for a specific patient.
+    
+    Query parameters:
+    - patient_id: UUID of the patient
+    
+    Returns health information including:
+    - allergies: Patient's allergies
+    - habits: Patient's habits or lifestyle factors
+    - weight: Patient's weight in kg
+    - height: Patient's height in cm
+    - medical_history: Previous medical conditions
+    - blood_group: Patient's blood group
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    """,
+    responses={
+        200: {
+            "description": "Health information retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Health info fetched successfully",
+                        "health_info": {
+                            "allergies": "Penicillin, Peanuts",
+                            "habits": "Smoking, Alcohol consumption",
+                            "weight": 75.5,
+                            "height": 175.0,
+                            "medical_history": "Hypertension, Diabetes",
+                            "blood_group": "O+"
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized access",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: {error_details}"}
+                }
+            }
+        }
+    }
+)
+async def get_health_info(
+    request: Request,
+    patient_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user authentication
+        decoded_token = verify_token(request)
+
+        user = db.execute(select(User).filter(User.id == decoded_token.get("user_id"))).scalar_one_or_none()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "Unauthorized"}
+            )
+        
+        # Get patient
+        patient = db.execute(
+            select(Patient).filter(
+                Patient.id == patient_id,
+                Patient.doctor_id == user.id
+            )
+        ).scalar_one_or_none()
+        
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Patient not found"}
+            )
+        
+        # Get all appointments for this patient
+        health_info = {
+            "allergies": patient.allergies,
+            "habits": patient.habits,
+            "weight": patient.weight,
+            "height": patient.height,
+            "medical_history": patient.medical_history,
+            "blood_group": patient.blood_group,
+        }
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "Health info fetched successfully", "health_info": health_info}
+        )
+        
+    except SQLAlchemyError as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )
+    
 @patient_router.delete(
     "/delete/{patient_id}",
     status_code=status.HTTP_200_OK,

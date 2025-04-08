@@ -27,6 +27,10 @@ class PatientCreateSchema(BaseModel):
     referred_by: Optional[str] = None
     groups: Optional[str] = None
     patient_notes: Optional[str] = None
+    allergies: Optional[str] = None
+    habits: Optional[str] = None
+    weight: Optional[float] = None
+    height: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -56,6 +60,10 @@ class PatientUpdateSchema(BaseModel):
     referred_by: Optional[str] = None
     groups: Optional[str] = None
     patient_notes: Optional[str] = None
+    allergies: Optional[str] = None
+    habits: Optional[str] = None
+    weight: Optional[float] = None
+    height: Optional[float] = None
 
     class Config:
         from_attributes = True
