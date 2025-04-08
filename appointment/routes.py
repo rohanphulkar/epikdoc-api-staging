@@ -859,6 +859,8 @@ async def get_patient_appointments(
     - clinic_id (str, optional): Filter by clinic ID
     - status (str, optional): Filter by appointment status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
     - appointment_date (datetime, optional): Filter appointments from this date onwards (ISO format)
+    - today (bool, optional): Filter appointments scheduled for today (default: false)
+    - recent (bool, optional): Filter appointments from the last 7 days (default: false)
     - page (int): Page number for pagination (default: 1, min: 1)
     - per_page (int): Number of items per page (default: 10, min: 1, max: 100)
     
@@ -975,6 +977,8 @@ async def search_appointments(
     clinic_id: Optional[str] = None,
     status: Optional[str] = None,
     appointment_date: Optional[datetime] = None,
+    today: Optional[bool] = False,
+    recent: Optional[bool] = False,
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("appointment_date", description="Field to sort by"),
@@ -1021,6 +1025,21 @@ async def search_appointments(
             filter_conditions.append(Appointment.status == status)
         if appointment_date:
             filter_conditions.append(Appointment.appointment_date >= appointment_date)
+            
+        # Add today filter
+        if today:
+            today_date = datetime.now().date()
+            today_start = datetime.combine(today_date, time.min)
+            today_end = datetime.combine(today_date, time.max)
+            filter_conditions.append(Appointment.appointment_date.between(today_start, today_end))
+        
+        # Add recent (last 7 days) filter
+        elif recent:
+            today_date = datetime.now().date()
+            seven_days_ago = today_date - timedelta(days=7)
+            seven_days_ago_start = datetime.combine(seven_days_ago, time.min)
+            today_end = datetime.combine(today_date, time.max)
+            filter_conditions.append(Appointment.appointment_date.between(seven_days_ago_start, today_end))
 
         if search_filters:
             query = query.filter(or_(*search_filters))
