@@ -24,6 +24,8 @@ from appointment.models import Appointment
 from catalog.models import *
 from prediction.models import *
 from auth.models import Clinic
+from datetime import date
+
 
 patient_router = APIRouter()
 
@@ -982,10 +984,16 @@ async def get_patient_by_id(
     Available search filters:
     - name: Partial match on patient name
     - mobile_number: Partial match on mobile number 
-    - age: Range filter with min_age and max_age
-    - date_of_birth: Exact date or range with date_of_birth_after/before
+    - min_age: Minimum age for filtering
+    - max_age: Maximum age for filtering
+    - date_of_birth: Exact date of birth (YYYY-MM-DD)
+    - date_of_birth_after: Filter patients born after this date
+    - date_of_birth_before: Filter patients born before this date
     - gender: Exact match (male/female/other)
     - abha_id: Partial match on ABHA ID
+    - created_at_date: Filter patients created on a specific date (YYYY-MM-DD)
+    - today: Boolean flag to filter patients created today (default: false)
+    - recent: Boolean flag to get patients created in the last 7 days (default: false)
     
     Pagination parameters:
     - page: Page number (default: 1)
@@ -998,7 +1006,7 @@ async def get_patient_by_id(
     """,
     responses={
         200: {
-            "description": "List of matching patients with pagination",
+            "description": "List of matching patients with pagination and statistics",
             "content": {
                 "application/json": {
                     "example": {
@@ -1017,6 +1025,12 @@ async def get_patient_by_id(
                             "page": 1,
                             "per_page": 10,
                             "pages": 10
+                        },
+                        "stats": {
+                            "today": 5,
+                            "this_month": 25,
+                            "this_year": 150,
+                            "overall": 500
                         }
                     }
                 }
@@ -1051,6 +1065,9 @@ async def search_patients(
     date_of_birth_before: Optional[datetime] = None,
     gender: Optional[Gender] = None,
     abha_id: Optional[str] = None,
+    created_at_date: Optional[date] = None,
+    today: bool = False,
+    recent: bool = False,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="created_at", description="Field to sort by"),
@@ -1100,13 +1117,34 @@ async def search_patients(
             query = query.where(func.date(Patient.date_of_birth) >= date_of_birth_after.date())
         if date_of_birth_before:
             query = query.where(func.date(Patient.date_of_birth) <= date_of_birth_before.date())
+            
+        # Add created_at date filters
+        if today:
+            today_date = datetime.now().date()
+            today_start = datetime.combine(today_date, time.min)
+            today_end = datetime.combine(today_date, time.max)
+            query = query.where(Patient.created_at.between(today_start, today_end))
+        elif recent:
+            # Filter patients created in the last 7 days
+            today_date = datetime.now().date()
+            seven_days_ago = today_date.replace(day=today_date.day - 7)
+            seven_days_ago_start = datetime.combine(seven_days_ago, time.min)
+            today_end = datetime.combine(today_date, time.max)
+            query = query.where(Patient.created_at.between(seven_days_ago_start, today_end))
+        elif created_at_date:
+            date_start = datetime.combine(created_at_date, time.min)
+            date_end = datetime.combine(created_at_date, time.max)
+            query = query.where(Patient.created_at.between(date_start, date_end))
 
         # Get total count for pagination before applying sorting and pagination
         count_query = select(func.count()).select_from(query.subquery())
         total = db.execute(count_query).scalar() or 0
         
         # Add sorting
-        if hasattr(Patient, sort_by):
+        if recent:
+            # Override sort settings for recent patients
+            query = query.order_by(Patient.created_at.desc())
+        elif hasattr(Patient, sort_by):
             sort_column = getattr(Patient, sort_by)
             if sort_order.lower() == "desc":
                 query = query.order_by(sort_column.desc())
@@ -1164,9 +1202,9 @@ async def search_patients(
         pages = (total + per_page - 1) // per_page if total else 0
 
         # Get statistics
-        today = datetime.now().date()
-        today_start = datetime.combine(today, time.min)
-        today_end = datetime.combine(today, time.max)
+        today_date = datetime.now().date()
+        today_start = datetime.combine(today_date, time.min)
+        today_end = datetime.combine(today_date, time.max)
 
         # Statistics queries
         total_count = db.execute(
@@ -1183,13 +1221,13 @@ async def search_patients(
         month_count = db.execute(
             select(func.count(Patient.id))
             .where(Patient.doctor_id == doctor_id)
-            .where(Patient.created_at >= today.replace(day=1))
+            .where(Patient.created_at >= datetime.combine(today_date.replace(day=1), time.min))
         ).scalar() or 0
 
         year_count = db.execute(
             select(func.count(Patient.id))
             .where(Patient.doctor_id == doctor_id)
-            .where(Patient.created_at >= today.replace(month=1, day=1))
+            .where(Patient.created_at >= datetime.combine(today_date.replace(month=1, day=1), time.min))
         ).scalar() or 0
         
         return {
@@ -1891,7 +1929,7 @@ async def create_clinical_note(
                 content={"message": "You are not authorized to access this clinic"}
             )
         
-        appointment = db.execute(select(Appointment).filter(Appointment.id == appointment_id, Appointment.patient_id == patient_id)).scalar_one_or_none()
+        appointment = db.execute(select(Appointment).filter(Appointment.id == appointment_id)).scalar_one_or_none()
         if not appointment:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
