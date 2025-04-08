@@ -31,7 +31,6 @@ class TreatmentCreate(BaseModel):
     treatment_notes: Optional[str] = None
     quantity: int = 1
     unit_cost: float
-    amount: float
     discount: Optional[float] = None
     discount_type: Optional[str] = None
     treatment_description: Optional[str] = None

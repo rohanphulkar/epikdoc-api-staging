@@ -124,6 +124,12 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
                 return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Invalid patient ID"})
 
         # Create treatment record
+        # Calculate amount with proper null handling
+        amount = 0
+        if treatment.quantity is not None and treatment.unit_cost is not None:
+            if treatment.quantity > 0 and treatment.unit_cost > 0:
+                amount = treatment.quantity * treatment.unit_cost
+        
         new_treatment = Treatment(
             doctor_id=user.id,
             patient_id=patient.id,
@@ -134,7 +140,7 @@ async def create_treatment(request: Request, treatment: TreatmentCreate, db: Ses
             treatment_notes=treatment.treatment_notes,
             quantity=treatment.quantity,
             unit_cost=treatment.unit_cost,
-            amount=treatment.amount,
+            amount=float(amount) if amount else 0.0,
             discount=treatment.discount,
             discount_type=treatment.discount_type,
             treatment_description=treatment.treatment_description,
@@ -435,7 +441,7 @@ async def search_treatments(
                 "treatment_notes": t.treatment_notes,
                 "quantity": t.quantity,
                 "unit_cost": t.unit_cost,
-                "amount": t.amount,
+                "amount": float(t.amount) if t.amount else 0.0,
                 "discount": t.discount,
                 "discount_type": t.discount_type,
                 "treatment_description": t.treatment_description,
@@ -548,7 +554,7 @@ async def get_treatment(treatment_id: str, request: Request, db: Session = Depen
                 "treatment_notes": treatment.treatment_notes,
                 "quantity": treatment.quantity,
                 "unit_cost": treatment.unit_cost,
-                "amount": treatment.amount,
+                "amount": float(treatment.amount) if treatment.amount else 0.0,
                 "discount": treatment.discount,
                 "discount_type": treatment.discount_type,
                 "treatment_description": treatment.treatment_description,
@@ -616,6 +622,13 @@ async def update_treatment(treatment_id: str, request: Request, treatment: Treat
         treatment_data = treatment.model_dump(exclude_unset=True)
         for field, value in treatment_data.items():
             setattr(existing_treatment, field, value)
+
+        # Calculate amount with proper null handling
+        amount = 0
+        if existing_treatment.quantity is not None and existing_treatment.unit_cost is not None:
+            if existing_treatment.quantity > 0 and existing_treatment.unit_cost > 0:
+                amount = existing_treatment.quantity * existing_treatment.unit_cost
+        existing_treatment.amount = float(amount) if amount else 0.0
             
         db.commit()
         
@@ -769,6 +782,12 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
         
         # Create treatment plan items
         for item in treatment_plan.treatment_plan_items:
+            # Calculate amount based on quantity and unit_cost
+            amount = 0
+            if item.quantity is not None and item.unit_cost is not None:
+                if item.quantity > 0 and item.unit_cost > 0:
+                    amount = item.quantity * item.unit_cost
+                    
             new_treatment_plan_item = Treatment(
                 treatment_plan_id=new_treatment_plan.id,
                 patient_id=patient.id,
@@ -780,7 +799,7 @@ async def create_treatment_plan(request: Request, treatment_plan: TreatmentPlanC
                 treatment_notes=item.treatment_notes,
                 quantity=item.quantity,
                 unit_cost=item.unit_cost,
-                amount=item.amount,
+                amount=float(amount) if amount else 0.0,
                 discount=item.discount,
                 discount_type=item.discount_type,
                 treatment_description=item.treatment_description,
@@ -895,7 +914,7 @@ async def get_treatment_plans(
                     "treatment_notes": item.treatment_notes,
                     "quantity": item.quantity,
                     "unit_cost": item.unit_cost,
-                    "amount": item.amount,
+                    "amount": float(item.amount) if item.amount else 0.0,
                     "discount": item.discount,
                     "discount_type": item.discount_type,
                     "treatment_description": item.treatment_description,
@@ -1041,9 +1060,9 @@ async def search_treatment_plans(
             treatment_plan_items = [{
                 "id": item.id,
                 "treatment_name": item.treatment_name,
-                "unit_cost": float(item.unit_cost),
+                "unit_cost": float(item.unit_cost) if item.unit_cost else 0.0,
                 "quantity": item.quantity,
-                "amount": float(item.amount),
+                "amount": float(item.amount) if item.amount else 0.0,
                 "discount": float(item.discount) if item.discount else None,
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
@@ -1121,9 +1140,9 @@ async def get_treatment_plan(treatment_plan_id: str, request: Request, db: Sessi
             {
                 "id": item.id,
                 "treatment_name": item.treatment_name,
-                "unit_cost": item.unit_cost,
+                "unit_cost": float(item.unit_cost) if item.unit_cost else 0.0,
                 "quantity": item.quantity,
-                "amount": item.amount,
+                "amount": float(item.amount) if item.amount else 0.0,
                 "discount": item.discount,
                 "discount_type": item.discount_type,
                 "treatment_description": item.treatment_description,
