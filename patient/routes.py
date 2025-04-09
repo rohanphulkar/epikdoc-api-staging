@@ -936,18 +936,28 @@ async def get_patient_by_id(
                 invoices.append(invoice_data)
             
             for completed_procedure in db_completed_procedures:
+                items = db.query(CompletedProcedureItem).filter(CompletedProcedureItem.completed_procedure_id == completed_procedure.id).all()
+                completed_procedure_items = [
+                    {
+                        "id": item.id,
+                        "procedure_name": item.procedure_name,
+                        "unit_cost": item.unit_cost,
+                        "quantity": item.quantity,
+                        "amount": item.amount,
+                        "procedure_description": item.procedure_description,
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                        "updated_at": item.updated_at.isoformat() if item.updated_at else None
+                    } for item in items
+                ]
+                
                 completed_procedure_data = {
                     "id": completed_procedure.id,
                     "appointment_id": completed_procedure.appointment_id,
                     "doctor_id": completed_procedure.doctor_id,
                     "clinic_id": completed_procedure.clinic_id,
-                    "procedure_name": completed_procedure.procedure_name,
-                    "unit_cost": completed_procedure.unit_cost,
-                    "quantity": completed_procedure.quantity,
-                    "amount": completed_procedure.amount,
-                    "procedure_description": completed_procedure.procedure_description,
+                    "items": completed_procedure_items,
                     "created_at": completed_procedure.created_at.isoformat() if completed_procedure.created_at else None,
-                    "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None
+                    "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None,
                 }
                 completed_procedures.append(completed_procedure_data)
 
