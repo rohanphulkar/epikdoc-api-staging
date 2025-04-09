@@ -1396,16 +1396,22 @@ async def create_completed_procedure(
             # Calculate total amount if not provided
             total_amount = item.amount
             if total_amount is None:
-                total_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity and item.unit_cost > 0 and item.quantity > 0 else 0.0
+                # Ensure unit_cost and quantity are properly handled
+                unit_cost = float(item.unit_cost) if item.unit_cost is not None else 0.0
+                quantity = int(item.quantity) if item.quantity is not None else 1
+                total_amount = unit_cost * quantity
                 
             # Calculate discount if provided
             discount = item.discount
             discount_type = item.discount_type
-            if discount is not None and discount_type is not None:
+            if discount is not None and discount_type is not None and discount > 0:
                 if discount_type == "percentage":
                     total_amount -= total_amount * (discount / 100)
                 else:
                     total_amount -= discount
+
+            # Ensure total_amount is never negative
+            total_amount = max(total_amount, 0)
 
             new_completed_procedure_item = CompletedProcedureItem(
                 completed_procedure_id=new_completed_procedure.id,
@@ -1538,7 +1544,7 @@ async def get_completed_procedures_by_doctor(
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
-                    "discount": float(item.discount),
+                    "discount": float(item.discount) if item.discount is not None else 0,
                     "discount_type": item.discount_type,
                     "procedure_description": item.procedure_description
                 }
@@ -1651,7 +1657,7 @@ async def get_completed_procedures_by_appointment(
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
-                    "discount": float(item.discount),
+                    "discount": float(item.discount) if item.discount is not None else 0,
                     "discount_type": item.discount_type,
                     "procedure_description": item.procedure_description
                 }
@@ -2003,33 +2009,45 @@ async def update_completed_procedure(
                             item.amount = item_data.amount
                         else:
                             # Calculate base amount
-                            item.amount = item.unit_cost * item.quantity
+                            base_amount = float(item.unit_cost) * item.quantity
                             
                             # Apply discount if present
-                            if item.discount is not None and item.discount_type is not None:
+                            if item.discount is not None and item.discount > 0:
                                 if item.discount_type == "percentage":
-                                    item.amount = item.amount - (item.amount * (item.discount / 100))
+                                    base_amount = base_amount - (base_amount * (float(item.discount) / 100))
                                 else:  # fixed discount
-                                    item.amount = item.amount - item.discount
+                                    base_amount = base_amount - float(item.discount)
+                            
+                            # Ensure amount is never negative
+                            item.amount = max(base_amount, 0)
                 else:
                     # Create new item
                     # Calculate amount
-                    amount = item_data.amount
-                    if amount is None:
-                        amount = item_data.unit_cost * item_data.quantity if item_data.unit_cost and item_data.quantity else 0.0
+                    unit_cost = float(item_data.unit_cost) if item_data.unit_cost is not None else 0.0
+                    quantity = item_data.quantity if item_data.quantity is not None else 1
+                    
+                    if item_data.amount is not None:
+                        amount = float(item_data.amount)
+                    else:
+                        # Calculate base amount
+                        amount = unit_cost * quantity
                         
                         # Apply discount if present
-                        if item_data.discount is not None and item_data.discount_type is not None:
+                        if item_data.discount is not None and item_data.discount > 0:
+                            discount = float(item_data.discount)
                             if item_data.discount_type == "percentage":
-                                amount = amount - (amount * (item_data.discount / 100))
+                                amount = amount - (amount * (discount / 100))
                             else:  # fixed discount
-                                amount = amount - item_data.discount
+                                amount = amount - discount
+                    
+                    # Ensure amount is never negative
+                    amount = max(amount, 0)
                     
                     new_item = CompletedProcedureItem(
                         completed_procedure_id=procedure_id,
                         procedure_name=item_data.procedure_name,
-                        unit_cost=item_data.unit_cost,
-                        quantity=item_data.quantity,
+                        unit_cost=unit_cost,
+                        quantity=quantity,
                         amount=amount,
                         discount=item_data.discount,
                         discount_type=item_data.discount_type,
@@ -2052,7 +2070,6 @@ async def update_completed_procedure(
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
-    
 @catalog_router.delete("/delete-completed-procedure-item/{item_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete a completed procedure item",
