@@ -1497,9 +1497,13 @@ async def get_appointment_details(
     **Request body (optional fields):**
     - notes (str): Updated notes
     - appointment_date (datetime): New appointment date/time
+    - start_time (datetime): New start time
+    - end_time (datetime): New end time
     - checked_in_at (datetime): New check-in time
     - checked_out_at (datetime): New check-out time
     - status (str): New status [SCHEDULED, CONFIRMED, CANCELLED, COMPLETED]
+    - doctor_id (UUID): New doctor assignment
+    - clinic_id (UUID): New clinic assignment
     - share_on_email (bool): Update email sharing preference
     - share_on_sms (bool): Update SMS sharing preference
     - share_on_whatsapp (bool): Update WhatsApp sharing preference
@@ -1586,6 +1590,17 @@ async def update_appointment(request: Request, appointment_id: str, appointment_
                     "message": "Invalid status. Must be either 'SCHEDULED', 'CONFIRMED', 'CANCELLED' or 'COMPLETED'"
                 })
             appointment.status = AppointmentStatus(status.lower())
+
+        if appointment_update.doctor_id is not None:
+            doctor = db.query(User).filter(User.id == appointment_update.doctor_id).first()
+            if not doctor:
+                return JSONResponse(status_code=404, content={"message": "Doctor not found"})
+            appointment.doctor_id = appointment_update.doctor_id
+        if appointment_update.clinic_id is not None:
+            clinic = db.query(Clinic).filter(Clinic.id == appointment_update.clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=404, content={"message": "Clinic not found"})
+            appointment.clinic_id = appointment_update.clinic_id
 
         # Update fields if provided
         if appointment_update.notes is not None:

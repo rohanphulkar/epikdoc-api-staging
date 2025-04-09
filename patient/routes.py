@@ -1486,13 +1486,13 @@ async def update_patient(
         )
 
 @patient_router.get(
-    "/get-health-info",
+    "/get-health-info/{patient_id}",
     status_code=status.HTTP_200_OK,
     summary="Get patient health information",
     description="""
     Retrieve health-related information for a specific patient.
     
-    Query parameters:
+    Path parameters:
     - patient_id: UUID of the patient
     
     Returns health information including:
@@ -1758,7 +1758,7 @@ async def delete_patient(
         )
 
 @patient_router.post(
-    "/create-clinical-note/{patient_id}/{clinic_id}",
+    "/create-clinical-note/{patient_id}",
     status_code=status.HTTP_201_CREATED,
     summary="Create a clinical note with complaints, diagnoses, vital signs, treatments, medicines and attachments",
     description="""
@@ -1766,9 +1766,9 @@ async def delete_patient(
     
     **Path Parameters:**
     - patient_id: UUID of the patient
-    - clinic_id: UUID of the clinic where the note is being created
     
     **Query Parameters:**
+    - clinic_id: UUID of the clinic where the note is being created
     - appointment_id (optional): UUID of the associated appointment
     
     **Form Data:**
@@ -1889,7 +1889,7 @@ async def delete_patient(
 async def create_clinical_note(
     request: Request,
     patient_id: str,
-    clinic_id: str,
+    clinic_id: Optional[str] = None,
     appointment_id: Optional[str] = None,
     complaints: str = Form(...),
     diagnoses: str = Form(...),
@@ -1925,12 +1925,13 @@ async def create_clinical_note(
             )
         
         # check if clinic is associated with the doctor
-        clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
-        if not clinic:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                content={"message": "You are not authorized to access this clinic"}
-            )
+        if clinic_id:
+            clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
+            if not clinic:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED, 
+                    content={"message": "You are not authorized to access this clinic"}
+                )
         
         # Check appointment only if appointment_id is provided
         appointment = None
@@ -1945,7 +1946,7 @@ async def create_clinical_note(
         # Create medical record
         clinical_note_db = ClinicalNote(
             patient_id=patient.id,
-            clinic_id=clinic.id,
+            clinic_id=clinic.id if clinic else None,
             doctor_id=user.id,
             appointment_id=appointment.id if appointment else None,
             date=datetime.now().date()

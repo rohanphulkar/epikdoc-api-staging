@@ -67,6 +67,15 @@ class CompletedProcedure(Base):
     appointment_id: Mapped[str] = mapped_column(String(40), ForeignKey('appointments.id', ondelete='CASCADE'), nullable=True)
     doctor_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete='CASCADE'), nullable=True)
     clinic_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("clinics.id", ondelete='CASCADE'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
+class CompletedProcedureItem(Base):
+    __tablename__ = "completed_procedure_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    completed_procedure_id: Mapped[str] = mapped_column(String(36), ForeignKey("completed_procedures.id", ondelete='CASCADE'), nullable=False)
     procedure_name: Mapped[str] = mapped_column(String(255), nullable=False)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

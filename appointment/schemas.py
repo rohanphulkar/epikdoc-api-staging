@@ -42,6 +42,8 @@ class AppointmentCreate(BaseModel):
         from_attributes = True
 
 class AppointmentUpdate(BaseModel):
+    doctor_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     notes: Optional[str] = None
     appointment_date: Optional[datetime] = None
     start_time: Optional[datetime] = None

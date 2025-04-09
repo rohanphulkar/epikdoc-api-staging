@@ -1308,20 +1308,22 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
     Create a new completed procedure record.
 
     Required fields in request body:
-    - procedure_name: Name of the procedure (string)
-    - unit_cost: Cost per unit of procedure (decimal)
-    - quantity: Number of units (integer, default: 1)
+    - completed_procedure_items: List of procedure items, each containing:
+      - procedure_name: Name of the procedure (string)
+      - unit_cost: Cost per unit of procedure (decimal)
+      - quantity: Number of units (integer, default: 1)
 
     Optional fields in request body:
     - clinic_id: ID of the clinic (string)
-    - appointment_id: ID of the appointment (string) 
-    - procedure_description: Additional description of the procedure (string)
+    - appointment_id: ID of the appointment (string)
+    - completed_procedure_items[].procedure_description: Additional description of the procedure (string)
+    - completed_procedure_items[].amount: Override calculated amount (decimal)
     
-    The amount will be automatically calculated as unit_cost * quantity.
+    The amount will be automatically calculated as unit_cost * quantity if not provided.
     The doctor_id will be set from the authenticated user's token.
 
     Returns:
-    - 201: Completed procedure created successfully
+    - 201: Completed procedure created successfully with procedure ID
     - 401: Authentication required or invalid token
     - 404: Clinic or appointment not found if IDs provided
     - 500: Database or internal server error
@@ -1369,32 +1371,48 @@ async def create_completed_procedure(
                     content={"message": "Appointment not found"}
                 )
             appointment_id = appointment.id
-            
-        # Calculate total amount
-        total_amount = completed_procedure.unit_cost * completed_procedure.quantity
+        
+        # Validate procedure items
+        if not completed_procedure.completed_procedure_items or len(completed_procedure.completed_procedure_items) == 0:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "At least one procedure item is required"}
+            )
             
         # Create completed procedure
         new_completed_procedure = CompletedProcedure(
             doctor_id=user.id,
             clinic_id=clinic_id,
-            appointment_id=appointment_id,
-            procedure_name=completed_procedure.procedure_name,
-            unit_cost=completed_procedure.unit_cost,
-            quantity=completed_procedure.quantity,
-            procedure_description=completed_procedure.procedure_description,
-            amount=total_amount
+            appointment_id=appointment_id
         )
         
         db.add(new_completed_procedure)
         db.commit()
         db.refresh(new_completed_procedure)
+
+        for item in completed_procedure.completed_procedure_items:
+            # Calculate total amount if not provided
+            total_amount = item.amount
+            if total_amount is None:
+                total_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity and item.unit_cost > 0 and item.quantity > 0 else 0.0
+                
+            new_completed_procedure_item = CompletedProcedureItem(
+                completed_procedure_id=new_completed_procedure.id,
+                procedure_name=item.procedure_name,
+                unit_cost=item.unit_cost,
+                quantity=item.quantity,
+                amount=total_amount,
+                procedure_description=item.procedure_description
+            )
+            db.add(new_completed_procedure_item)
+        
+        db.commit()
         
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, 
             content={
                 "message": "Completed procedure created successfully",
-                "completed_procedure_id": new_completed_procedure.id,
-                "amount": float(total_amount)
+                "completed_procedure_id": new_completed_procedure.id
             }
         )
         
@@ -1450,51 +1468,80 @@ async def get_completed_procedures_by_doctor(
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "User not found"})
         
-        # Validate sort_by field
-        valid_sort_fields = ["created_at", "procedure_name", "unit_cost", "quantity", "amount"]
-        if sort_by not in valid_sort_fields:
-            sort_by = "created_at"
-        
         # Build base query
         base_query = db.query(CompletedProcedure).filter(CompletedProcedure.doctor_id == user.id)
         
-        # Add search filter if provided
-        if search:
-            base_query = base_query.filter(CompletedProcedure.procedure_name.ilike(f"%{search}%"))
-        
         # Get total count for pagination
         total_procedures = base_query.count()
-        total_pages = ceil(total_procedures / limit)
+        total_pages = ceil(total_procedures / limit) if total_procedures > 0 else 1
         
         # Validate page number
         if page > total_pages and total_pages > 0:
             page = total_pages
         
         # Apply sorting
-        sort_column = getattr(CompletedProcedure, sort_by, CompletedProcedure.created_at)
+        if sort_by == "created_at":
+            sort_column = CompletedProcedure.created_at
+        else:
+            # For other fields, we need to join with CompletedProcedureItem
+            base_query = base_query.join(CompletedProcedureItem)
+            
+            # Map sort_by to the appropriate column
+            if sort_by == "procedure_name":
+                sort_column = CompletedProcedureItem.procedure_name
+            elif sort_by == "unit_cost":
+                sort_column = CompletedProcedureItem.unit_cost
+            elif sort_by == "quantity":
+                sort_column = CompletedProcedureItem.quantity
+            elif sort_by == "amount":
+                sort_column = CompletedProcedureItem.amount
+            else:
+                sort_column = CompletedProcedure.created_at
+        
+        # Apply search filter if provided
+        if search:
+            base_query = base_query.join(CompletedProcedureItem, isouter=True).filter(
+                CompletedProcedureItem.procedure_name.ilike(f"%{search}%")
+            )
+            
+        # Apply sort order
         base_query = base_query.order_by(asc(sort_column) if sort_order.lower() == "asc" else desc(sort_column))
             
         # Apply pagination
         completed_procedures = base_query.offset((page - 1) * limit).limit(limit).all()
         
         # Format response
+        procedures_list = []
+        for procedure in completed_procedures:
+            # Get items for this procedure
+            items = db.query(CompletedProcedureItem).filter(
+                CompletedProcedureItem.completed_procedure_id == procedure.id
+            ).all()
+            
+            procedure_items = [
+                {
+                    "id": item.id,
+                    "procedure_name": item.procedure_name,
+                    "unit_cost": float(item.unit_cost),
+                    "quantity": item.quantity,
+                    "amount": float(item.amount),
+                    "procedure_description": item.procedure_description
+                }
+                for item in items
+            ]
+            
+            procedures_list.append({
+                "id": procedure.id,
+                "clinic_id": procedure.clinic_id,
+                "appointment_id": procedure.appointment_id,
+                "created_at": procedure.created_at.isoformat() if procedure.created_at else None,
+                "updated_at": procedure.updated_at.isoformat() if procedure.updated_at else None,
+                "procedure_items": procedure_items
+            })
+        
         response = {
             "message": "Completed procedures retrieved successfully",
-            "completed_procedures": [
-                {
-                    "id": procedure.id,
-                    "procedure_name": procedure.procedure_name,
-                    "unit_cost": float(procedure.unit_cost),
-                    "quantity": procedure.quantity,
-                    "amount": float(procedure.amount),
-                    "procedure_description": procedure.procedure_description,
-                    "clinic_id": procedure.clinic_id,
-                    "appointment_id": procedure.appointment_id,
-                    "created_at": procedure.created_at.isoformat() if procedure.created_at else None,
-                    "updated_at": procedure.updated_at.isoformat() if procedure.updated_at else None
-                }
-                for procedure in completed_procedures
-            ],
+            "completed_procedures": procedures_list,
             "pagination": {
                 "total_items": total_procedures,
                 "total_pages": total_pages,
@@ -1506,10 +1553,8 @@ async def get_completed_procedures_by_doctor(
         }
         return JSONResponse(status_code=status.HTTP_200_OK, content=response)
     except SQLAlchemyError as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
     
 @catalog_router.get("/get-completed-procedures-by-appointment/{appointment_id}",
@@ -1576,23 +1621,38 @@ async def get_completed_procedures_by_appointment(
         # Apply pagination
         completed_procedures = base_query.offset((page - 1) * limit).limit(limit).all()
         
+        # Format response
+        procedures_list = []
+        for procedure in completed_procedures:
+            # Get items for this procedure
+            items = db.query(CompletedProcedureItem).filter(
+                CompletedProcedureItem.completed_procedure_id == procedure.id
+            ).all()
+            
+            procedure_items = [
+                {
+                    "id": item.id,
+                    "procedure_name": item.procedure_name,
+                    "unit_cost": float(item.unit_cost),
+                    "quantity": item.quantity,
+                    "amount": float(item.amount),
+                    "procedure_description": item.procedure_description
+                }
+                for item in items
+            ]
+            
+            procedures_list.append({
+                "id": procedure.id,
+                "clinic_id": procedure.clinic_id,
+                "appointment_id": procedure.appointment_id,
+                "created_at": procedure.created_at.isoformat() if procedure.created_at else None,
+                "updated_at": procedure.updated_at.isoformat() if procedure.updated_at else None,
+                "procedure_items": procedure_items
+            })
+        
         response = {
             "message": "Completed procedures retrieved successfully",
-            "completed_procedures": [
-                {
-                    "id": procedure.id,
-                    "procedure_name": procedure.procedure_name,
-                    "unit_cost": float(procedure.unit_cost),
-                    "quantity": procedure.quantity,
-                    "amount": float(procedure.amount),
-                    "procedure_description": procedure.procedure_description,
-                    "clinic_id": procedure.clinic_id,
-                    "appointment_id": procedure.appointment_id,
-                    "created_at": procedure.created_at.isoformat() if procedure.created_at else None,
-                    "updated_at": procedure.updated_at.isoformat() if procedure.updated_at else None
-                }
-                for procedure in completed_procedures
-            ],
+            "completed_procedures": procedures_list,
             "pagination": {
                 "total_items": total_procedures,
                 "total_pages": total_pages,
@@ -1604,10 +1664,8 @@ async def get_completed_procedures_by_appointment(
         }
         return JSONResponse(status_code=status.HTTP_200_OK, content=response)
     except SQLAlchemyError as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/get-completed-procedure-by-id/{procedure_id}",
@@ -1620,7 +1678,7 @@ async def get_completed_procedures_by_appointment(
     - procedure_id: Unique identifier of the completed procedure (string)
 
     Returns:
-    - 200: Completed procedure details
+    - 200: Completed procedure details with its items
     - 401: Authentication required or invalid token
     - 404: Completed procedure not found
     - 500: Database or internal server error
@@ -1639,32 +1697,50 @@ async def get_completed_procedure_by_id(
         
         user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
         if not user:
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "User not found"})
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Invalid token"})
         
-        completed_procedure = db.query(CompletedProcedure).filter(CompletedProcedure.id == procedure_id).first()
+        # Get the completed procedure
+        completed_procedure = db.query(CompletedProcedure).filter(
+            CompletedProcedure.id == procedure_id,
+            CompletedProcedure.doctor_id == user.id
+        ).first()
+        
         if not completed_procedure:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Completed procedure not found"})
+        
+        # Get procedure items
+        procedure_items = db.query(CompletedProcedureItem).filter(
+            CompletedProcedureItem.completed_procedure_id == procedure_id
+        ).all()
+        
+        # Format procedure items
+        formatted_items = [
+            {
+                "id": item.id,
+                "procedure_name": item.procedure_name,
+                "unit_cost": float(item.unit_cost),
+                "quantity": item.quantity,
+                "amount": float(item.amount),
+                "procedure_description": item.procedure_description
+            }
+            for item in procedure_items
+        ]
         
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Completed procedure retrieved successfully",
             "completed_procedure": {
                 "id": completed_procedure.id,
-                "procedure_name": completed_procedure.procedure_name,
-                "unit_cost": float(completed_procedure.unit_cost),
-                "quantity": completed_procedure.quantity,
-                "amount": float(completed_procedure.amount),
-                "procedure_description": completed_procedure.procedure_description,
+                "doctor_id": completed_procedure.doctor_id,
                 "clinic_id": completed_procedure.clinic_id,
                 "appointment_id": completed_procedure.appointment_id,
                 "created_at": completed_procedure.created_at.isoformat() if completed_procedure.created_at else None,
-                "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None
+                "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None,
+                "procedure_items": formatted_items
             }
         })
     except SQLAlchemyError as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
-        db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
 
 @catalog_router.get("/search-completed-procedures",
@@ -1690,8 +1766,8 @@ async def get_completed_procedure_by_id(
 )
 async def search_completed_procedures(
     request: Request,
-    procedure_name: Optional[str] = None,
-    appointment_id: Optional[str] = None,
+    procedure_name: Optional[str] = Query(None, description="Search term for procedure name"),
+    appointment_id: Optional[str] = Query(None, description="Filter by appointment ID"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("created_at", description="Field to sort by"),
@@ -1713,48 +1789,85 @@ async def search_completed_procedures(
         if sort_by not in valid_sort_fields:
             sort_by = "created_at"
 
-        # Build base query
-        query = db.query(CompletedProcedure).filter(CompletedProcedure.doctor_id == user.id)
+        # Build base query for completed procedures
+        base_query = db.query(CompletedProcedure).filter(CompletedProcedure.doctor_id == user.id)
 
-        # Apply filters if provided
-        if procedure_name:
-            query = query.filter(CompletedProcedure.procedure_name.ilike(f"%{procedure_name}%"))
-        
+        # Apply appointment filter if provided
         if appointment_id:
-            query = query.filter(CompletedProcedure.appointment_id == appointment_id)
+            base_query = base_query.filter(CompletedProcedure.appointment_id == appointment_id)
+
+        # For procedure name search, we need to join with CompletedProcedureItem
+        if procedure_name:
+            base_query = base_query.join(CompletedProcedureItem).filter(
+                CompletedProcedureItem.procedure_name.ilike(f"%{procedure_name}%")
+            ).distinct()
+
+        # Get total count for pagination
+        total_items = base_query.count()
+        total_pages = ceil(total_items / limit) if total_items > 0 else 1
+        
+        # Validate page number
+        if page > total_pages and total_pages > 0:
+            page = total_pages
 
         # Apply sorting
-        sort_column = getattr(CompletedProcedure, sort_by)
-        if sort_order.lower() == "asc":
-            query = query.order_by(sort_column.asc())
+        if sort_by == "created_at":
+            sort_column = CompletedProcedure.created_at
         else:
-            query = query.order_by(sort_column.desc())
-
-        # Calculate pagination
-        total_items = query.count()
-        total_pages = (total_items + limit - 1) // limit
-        offset = (page - 1) * limit
+            # For other fields, we need to join with CompletedProcedureItem if not already joined
+            if not procedure_name:
+                base_query = base_query.join(CompletedProcedureItem)
+            
+            # Map sort_by to the appropriate column
+            if sort_by == "procedure_name":
+                sort_column = CompletedProcedureItem.procedure_name
+            elif sort_by == "unit_cost":
+                sort_column = CompletedProcedureItem.unit_cost
+            elif sort_by == "quantity":
+                sort_column = CompletedProcedureItem.quantity
+            elif sort_by == "amount":
+                sort_column = CompletedProcedureItem.amount
+            else:
+                sort_column = CompletedProcedure.created_at
         
-        # Get paginated results
-        completed_procedures = query.offset(offset).limit(limit).all()
-
+        # Apply sort order
+        base_query = base_query.order_by(asc(sort_column) if sort_order.lower() == "asc" else desc(sort_column))
+        
+        # Apply pagination
+        completed_procedures = base_query.offset((page - 1) * limit).limit(limit).all()
+        
         # Format response
-        procedures_list = [{
-            "id": proc.id,
-            "procedure_name": proc.procedure_name,
-            "unit_cost": float(proc.unit_cost),
-            "quantity": proc.quantity,
-            "amount": float(proc.amount),
-            "procedure_description": proc.procedure_description,
-            "clinic_id": proc.clinic_id,
-            "appointment_id": proc.appointment_id,
-            "created_at": proc.created_at.isoformat() if proc.created_at else None,
-            "updated_at": proc.updated_at.isoformat() if proc.updated_at else None
-        } for proc in completed_procedures]
+        procedures_list = []
+        for procedure in completed_procedures:
+            # Get items for this procedure
+            items = db.query(CompletedProcedureItem).filter(
+                CompletedProcedureItem.completed_procedure_id == procedure.id
+            ).all()
+            
+            procedure_items = [
+                {
+                    "id": item.id,
+                    "procedure_name": item.procedure_name,
+                    "unit_cost": float(item.unit_cost),
+                    "quantity": item.quantity,
+                    "amount": float(item.amount),
+                    "procedure_description": item.procedure_description
+                }
+                for item in items
+            ]
+            
+            procedures_list.append({
+                "id": procedure.id,
+                "clinic_id": procedure.clinic_id,
+                "appointment_id": procedure.appointment_id,
+                "created_at": procedure.created_at.isoformat() if procedure.created_at else None,
+                "updated_at": procedure.updated_at.isoformat() if procedure.updated_at else None,
+                "procedure_items": procedure_items
+            })
 
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Completed procedures retrieved successfully",
-            "data": procedures_list,
+            "completed_procedures": procedures_list,
             "pagination": {
                 "total_items": total_items,
                 "total_pages": total_pages,
@@ -1779,15 +1892,21 @@ async def search_completed_procedures(
     - procedure_id: Unique identifier of the completed procedure (string)
 
     Request body fields (all optional):
-    - procedure_name: New name of the procedure (string)
-    - unit_cost: New cost per unit (decimal)
-    - quantity: New quantity (integer)
-    - procedure_description: New description (string)
     - clinic_id: New clinic ID (string)
     - appointment_id: New appointment ID (string)
+    - completed_procedure_items: List of procedure items to update, each containing:
+        - id: ID of the procedure item to update (string, required for existing items)
+        - procedure_name: Name of the procedure (string)
+        - unit_cost: Cost per unit (decimal)
+        - quantity: Quantity (integer)
+        - amount: Override calculated amount (decimal, optional)
+        - procedure_description: Description (string, optional)
+        
+    Note: If no ID is provided for a procedure item, it will be treated as a new item.
+    The amount will be automatically recalculated as unit_cost * quantity if not provided.
 
     Returns:
-    - 200: Updated completed procedure details
+    - 200: Completed procedure updated successfully
     - 401: Authentication required or invalid token
     - 404: Completed procedure not found
     - 500: Database or internal server error
@@ -1809,6 +1928,7 @@ async def update_completed_procedure(
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "User not found"})
         
+        # Find the completed procedure and verify ownership
         completed_procedure = db.query(CompletedProcedure).filter(
             CompletedProcedure.id == procedure_id,
             CompletedProcedure.doctor_id == user.id
@@ -1817,31 +1937,68 @@ async def update_completed_procedure(
         if not completed_procedure:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Completed procedure not found"})
 
-        # Update the completed procedure
-        update_data = procedure_data.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(completed_procedure, field, value)
+        # Update the completed procedure main record
+        if procedure_data.clinic_id is not None:
+            completed_procedure.clinic_id = procedure_data.clinic_id
         
-        # Recalculate amount if unit_cost or quantity changed
-        if "unit_cost" in update_data or "quantity" in update_data:
-            completed_procedure.amount = completed_procedure.unit_cost * completed_procedure.quantity
+        if procedure_data.appointment_id is not None:
+            completed_procedure.appointment_id = procedure_data.appointment_id
         
-        db.commit()
+        # Update procedure items if provided
+        updated_items = []
+        if procedure_data.completed_procedure_items:
+            for item_data in procedure_data.completed_procedure_items:
+                # Check if this is an existing item or a new one
+                if item_data.id:
+                    # Update existing item
+                    item = db.query(CompletedProcedureItem).filter(
+                        CompletedProcedureItem.id == item_data.id,
+                        CompletedProcedureItem.completed_procedure_id == procedure_id
+                    ).first()
+                    
+                    if item:
+                        # Update fields if provided
+                        if item_data.procedure_name is not None:
+                            item.procedure_name = item_data.procedure_name
+                        
+                        if item_data.unit_cost is not None:
+                            item.unit_cost = item_data.unit_cost
+                        
+                        if item_data.quantity is not None:
+                            item.quantity = item_data.quantity
+                        
+                        if item_data.procedure_description is not None:
+                            item.procedure_description = item_data.procedure_description
+                        
+                        # Calculate amount if not provided
+                        if item_data.amount is not None:
+                            item.amount = item_data.amount
+                        else:
+                            item.amount = item.unit_cost * item.quantity
+                        
+                        updated_items.append(item)
+                else:
+                    # Create new item
+                    amount = item_data.amount
+                    if amount is None:
+                        amount = item_data.unit_cost * item_data.quantity if item_data.unit_cost and item_data.quantity else 0.0
+                    
+                    new_item = CompletedProcedureItem(
+                        completed_procedure_id=procedure_id,
+                        procedure_name=item_data.procedure_name,
+                        unit_cost=item_data.unit_cost,
+                        quantity=item_data.quantity,
+                        amount=amount,
+                        procedure_description=item_data.procedure_description
+                    )
+                    db.add(new_item)
+                    updated_items.append(new_item)
+        
+        db.commit()    
 
         return JSONResponse(status_code=status.HTTP_200_OK, content={
             "message": "Completed procedure updated successfully",
-            "completed_procedure": {
-                "id": completed_procedure.id,
-                "procedure_name": completed_procedure.procedure_name,
-                "unit_cost": float(completed_procedure.unit_cost),
-                "quantity": completed_procedure.quantity,
-                "amount": float(completed_procedure.amount),
-                "procedure_description": completed_procedure.procedure_description,
-                "clinic_id": completed_procedure.clinic_id,
-                "appointment_id": completed_procedure.appointment_id,
-                "created_at": completed_procedure.created_at.isoformat() if completed_procedure.created_at else None,
-                "updated_at": completed_procedure.updated_at.isoformat() if completed_procedure.updated_at else None
-            }
+            "completed_procedure_id": completed_procedure.id
         })
     except SQLAlchemyError as e:
         db.rollback()
@@ -1849,6 +2006,53 @@ async def update_completed_procedure(
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
+    
+@catalog_router.delete("/delete-completed-procedure-item/{item_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a completed procedure item",
+    description="""
+    Delete a completed procedure item by its ID.
+    """
+)
+async def delete_completed_procedure_item(
+    request: Request,
+    item_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+        
+        user = db.query(User).filter(User.id == decoded_token.get("user_id")).first()
+        if not user:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "User not found"})
+        
+        # Check if the item exists
+        item = db.query(CompletedProcedureItem).filter(
+            CompletedProcedureItem.id == item_id
+        ).first()
+        
+        if not item:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Completed procedure item not found"})
+        
+        # Delete the item
+        db.delete(item)
+        db.commit()
+
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Completed procedure item deleted successfully",
+            "item_id": item_id
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
+        
+
 
 @catalog_router.delete("/delete-completed-procedure/{procedure_id}",
     status_code=status.HTTP_200_OK,
@@ -1881,6 +2085,7 @@ async def delete_completed_procedure(
         if not user:
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "User not found"})
         
+        # First check if the procedure exists
         completed_procedure = db.query(CompletedProcedure).filter(
             CompletedProcedure.id == procedure_id,
             CompletedProcedure.doctor_id == user.id
@@ -1889,6 +2094,12 @@ async def delete_completed_procedure(
         if not completed_procedure:
             return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Completed procedure not found"})
 
+        # Delete associated procedure items first to avoid foreign key constraint issues
+        db.query(CompletedProcedureItem).filter(
+            CompletedProcedureItem.completed_procedure_id == procedure_id
+        ).delete()
+        
+        # Then delete the procedure itself
         db.delete(completed_procedure)
         db.commit()
 
