@@ -943,7 +943,7 @@ async def get_patient_by_id(
                         "procedure_name": item.procedure_name,
                         "unit_cost": item.unit_cost,
                         "quantity": item.quantity,
-                        "amount": item.amount,
+                        "amount": float(item.amount),
                         "procedure_description": item.procedure_description,
                         "created_at": item.created_at.isoformat() if item.created_at else None,
                         "updated_at": item.updated_at.isoformat() if item.updated_at else None
