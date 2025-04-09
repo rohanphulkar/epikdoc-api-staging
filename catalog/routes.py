@@ -1312,6 +1312,8 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
       - procedure_name: Name of the procedure (string)
       - unit_cost: Cost per unit of procedure (decimal)
       - quantity: Number of units (integer, default: 1)
+      - discount: Discount amount (decimal, optional)
+      - discount_type: Discount type (string, optional, default: "fixed")
 
     Optional fields in request body:
     - clinic_id: ID of the clinic (string)
@@ -1396,12 +1398,23 @@ async def create_completed_procedure(
             if total_amount is None:
                 total_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity and item.unit_cost > 0 and item.quantity > 0 else 0.0
                 
+            # Calculate discount if provided
+            discount = item.discount
+            discount_type = item.discount_type
+            if discount is not None and discount_type is not None:
+                if discount_type == "percentage":
+                    total_amount -= total_amount * (discount / 100)
+                else:
+                    total_amount -= discount
+
             new_completed_procedure_item = CompletedProcedureItem(
                 completed_procedure_id=new_completed_procedure.id,
                 procedure_name=item.procedure_name,
                 unit_cost=item.unit_cost,
                 quantity=item.quantity,
                 amount=total_amount,
+                discount=discount,
+                discount_type=discount_type,
                 procedure_description=item.procedure_description
             )
             db.add(new_completed_procedure_item)
@@ -1525,6 +1538,8 @@ async def get_completed_procedures_by_doctor(
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
+                    "discount": float(item.discount),
+                    "discount_type": item.discount_type,
                     "procedure_description": item.procedure_description
                 }
                 for item in items
@@ -1636,6 +1651,8 @@ async def get_completed_procedures_by_appointment(
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
+                    "discount": float(item.discount),
+                    "discount_type": item.discount_type,
                     "procedure_description": item.procedure_description
                 }
                 for item in items
@@ -1721,6 +1738,8 @@ async def get_completed_procedure_by_id(
                 "unit_cost": float(item.unit_cost),
                 "quantity": item.quantity,
                 "amount": float(item.amount),
+                "discount": float(item.discount) if item.discount is not None else 0,
+                "discount_type": item.discount_type,
                 "procedure_description": item.procedure_description
             }
             for item in procedure_items
@@ -1851,6 +1870,8 @@ async def search_completed_procedures(
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
+                    "discount": float(item.discount) if item.discount is not None else 0,
+                    "discount_type": item.discount_type,
                     "procedure_description": item.procedure_description
                 }
                 for item in items
@@ -1900,6 +1921,8 @@ async def search_completed_procedures(
         - unit_cost: Cost per unit (decimal)
         - quantity: Quantity (integer)
         - amount: Override calculated amount (decimal, optional)
+        - discount: Discount amount (decimal, optional)
+        - discount_type: Discount type (string, optional, default: "fixed")
         - procedure_description: Description (string, optional)
         
     Note: If no ID is provided for a procedure item, it will be treated as a new item.
@@ -1945,7 +1968,6 @@ async def update_completed_procedure(
             completed_procedure.appointment_id = procedure_data.appointment_id
         
         # Update procedure items if provided
-        updated_items = []
         if procedure_data.completed_procedure_items:
             for item_data in procedure_data.completed_procedure_items:
                 # Check if this is an existing item or a new one
@@ -1967,6 +1989,12 @@ async def update_completed_procedure(
                         if item_data.quantity is not None:
                             item.quantity = item_data.quantity
                         
+                        if item_data.discount is not None:
+                            item.discount = item_data.discount
+                            
+                        if item_data.discount_type is not None:
+                            item.discount_type = item_data.discount_type
+                            
                         if item_data.procedure_description is not None:
                             item.procedure_description = item_data.procedure_description
                         
@@ -1974,14 +2002,28 @@ async def update_completed_procedure(
                         if item_data.amount is not None:
                             item.amount = item_data.amount
                         else:
+                            # Calculate base amount
                             item.amount = item.unit_cost * item.quantity
-                        
-                        updated_items.append(item)
+                            
+                            # Apply discount if present
+                            if item.discount is not None and item.discount_type is not None:
+                                if item.discount_type == "percentage":
+                                    item.amount = item.amount - (item.amount * (item.discount / 100))
+                                else:  # fixed discount
+                                    item.amount = item.amount - item.discount
                 else:
                     # Create new item
+                    # Calculate amount
                     amount = item_data.amount
                     if amount is None:
                         amount = item_data.unit_cost * item_data.quantity if item_data.unit_cost and item_data.quantity else 0.0
+                        
+                        # Apply discount if present
+                        if item_data.discount is not None and item_data.discount_type is not None:
+                            if item_data.discount_type == "percentage":
+                                amount = amount - (amount * (item_data.discount / 100))
+                            else:  # fixed discount
+                                amount = amount - item_data.discount
                     
                     new_item = CompletedProcedureItem(
                         completed_procedure_id=procedure_id,
@@ -1989,10 +2031,14 @@ async def update_completed_procedure(
                         unit_cost=item_data.unit_cost,
                         quantity=item_data.quantity,
                         amount=amount,
+                        discount=item_data.discount,
+                        discount_type=item_data.discount_type,
                         procedure_description=item_data.procedure_description
                     )
                     db.add(new_item)
-                    updated_items.append(new_item)
+        
+        # Update the timestamp
+        completed_procedure.updated_at = datetime.now()
         
         db.commit()    
 

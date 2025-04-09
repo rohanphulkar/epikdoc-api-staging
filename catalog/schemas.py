@@ -82,6 +82,8 @@ class CompletedProcedureItemCreate(BaseModel):
     unit_cost: float
     quantity: int = 1
     amount: Optional[float] = None
+    discount: Optional[float] = None
+    discount_type: Optional[str] = None
     procedure_description: Optional[str] = None
 
     class Config:
@@ -93,6 +95,8 @@ class CompletedProcedureItemUpdate(BaseModel):
     unit_cost: Optional[float] = None
     quantity: Optional[int] = None
     amount: Optional[float] = None
+    discount: Optional[float] = None
+    discount_type: Optional[str] = None
     procedure_description: Optional[str] = None
 
     class Config:

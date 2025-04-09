@@ -80,6 +80,8 @@ class CompletedProcedureItem(Base):
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
+    discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=0)
+    discount_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # Percentage or Fixed
     procedure_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
