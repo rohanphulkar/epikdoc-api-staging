@@ -1772,9 +1772,9 @@ async def delete_patient(
     - appointment_id (optional): UUID of the associated appointment
     
     **Form Data:**
-    - complaints (required): Patient's chief complaints
-    - diagnoses (required): Doctor's diagnoses
-    - vital_signs (required): Patient vital signs data in JSON format
+    - complaints (optional): Patient's chief complaints
+    - diagnoses (optional): Doctor's diagnoses
+    - vital_signs (optional): Patient vital signs data in JSON format
         [
             temperature
             blood_pressure
@@ -1891,9 +1891,9 @@ async def create_clinical_note(
     patient_id: str,
     clinic_id: Optional[str] = None,
     appointment_id: Optional[str] = None,
-    complaints: str = Form(...),
-    diagnoses: str = Form(...),
-    vital_signs: str = Form(...),
+    complaints: str = Form(None),
+    diagnoses: str = Form(None),
+    vital_signs: str = Form(None),
     notes: str = Form(None),
     treatments: str = Form(None),  # JSON string of treatments
     medicines: str = Form(None),   # JSON string of medicines
@@ -1957,34 +1957,37 @@ async def create_clinical_note(
         db.refresh(clinical_note_db)
 
         # Parse string inputs to lists
-        complaints_list = json.loads(complaints) if complaints else []
-        diagnoses_list = json.loads(diagnoses) if diagnoses else []
-        vital_signs_list = json.loads(vital_signs) if vital_signs else []
-        treatments_list = json.loads(treatments) if treatments else []
-        medicines_list = json.loads(medicines) if medicines else []
-        notes_list = json.loads(notes) if notes and notes.startswith("[") else [notes] if notes else []
+        complaints_list = json.loads(complaints) if complaints else None
+        diagnoses_list = json.loads(diagnoses) if diagnoses else None
+        vital_signs_list = json.loads(vital_signs) if vital_signs else None
+        treatments_list = json.loads(treatments) if treatments else None
+        medicines_list = json.loads(medicines) if medicines else None
+        notes_list = json.loads(notes) if notes and notes.startswith("[") else [notes] if notes else None
 
-        for complaint in complaints_list:
-            db_complaint = Complaint(
-                clinical_note_id=clinical_note_db.id,
-                complaint=complaint
-            )
-            db.add(db_complaint)
+        if complaints_list:
+            for complaint in complaints_list:
+                db_complaint = Complaint(
+                    clinical_note_id=clinical_note_db.id,
+                    complaint=complaint
+                )
+                db.add(db_complaint)
 
-        for diagnosis in diagnoses_list:
-            db_diagnosis = Diagnosis(
-                clinical_note_id=clinical_note_db.id,
-                diagnosis=diagnosis
-            )
-            db.add(db_diagnosis)
-        
-        # Process vital signs
-        for vital_sign in vital_signs_list:
-            db_vital_sign = VitalSign(
-                clinical_note_id=clinical_note_db.id,
-                vital_sign=vital_sign
-            )
-            db.add(db_vital_sign)
+        if diagnoses_list:
+            for diagnosis in diagnoses_list:
+                db_diagnosis = Diagnosis(
+                    clinical_note_id=clinical_note_db.id,
+                    diagnosis=diagnosis
+                )
+                db.add(db_diagnosis)
+
+        if vital_signs_list:
+            # Process vital signs
+            for vital_sign in vital_signs_list:
+                db_vital_sign = VitalSign(
+                    clinical_note_id=clinical_note_db.id,
+                    vital_sign=vital_sign
+                )
+                db.add(db_vital_sign)
             
         # Handle file attachments
         if files:
