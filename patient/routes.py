@@ -1941,6 +1941,7 @@ async def create_clinical_note(
             )
         
         # check if clinic is associated with the doctor
+        clinic = None
         if clinic_id:
             clinic = db.execute(select(Clinic).filter(Clinic.id == clinic_id, Clinic.doctors.any(User.id == user.id))).scalar_one_or_none()
             if not clinic:
