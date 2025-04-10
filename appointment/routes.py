@@ -316,12 +316,7 @@ async def get_all_appointments(
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         # Base query - get all appointments for the doctor
-        query = (
-            db.query(Appointment, Patient, User)
-            .join(Patient, Appointment.patient_id == Patient.id)
-            .join(User, Appointment.doctor_id == User.id)
-            .filter(Appointment.doctor_id == user_id)  # Filter by the authenticated doctor's ID
-        )
+        query = db.query(Appointment).filter(Appointment.doctor_id == user_id)
 
         # Add sorting
         if hasattr(Appointment, sort_by):
@@ -375,54 +370,33 @@ async def get_all_appointments(
 
         # Format response
         appointment_list = []
-        for appointment, patient, doctor in appointments:
-            # Get related clinical notes
-            clinical_notes = (
-                db.query(ClinicalNote)
-                .options(
-                    joinedload(ClinicalNote.attachments),
-                    joinedload(ClinicalNote.treatments),
-                    joinedload(ClinicalNote.medicines),
-                    joinedload(ClinicalNote.complaints),
-                    joinedload(ClinicalNote.diagnoses),
-                    joinedload(ClinicalNote.vital_signs),
-                    joinedload(ClinicalNote.notes)
-                )
-                .filter(ClinicalNote.appointment_id == appointment.id)
-                .all()
-            )
+        for appointment in appointments:
+            # Fetch patient and doctor separately
+            patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
+            doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
 
-            # Get treatment plans
-            treatment_plans = (
-                db.query(TreatmentPlan)
-                .options(joinedload(TreatmentPlan.treatments))
-                .filter(TreatmentPlan.appointment_id == appointment.id)
-                .all()
-            )
+            patient_data = None
+            doctor_data = None
 
-            # Get all treatments
-            treatments = (
-                db.query(Treatment)
-                .filter(Treatment.appointment_id == appointment.id)
-                .all()
-            )
+            if patient:
+                patient_data = {
+                    "id": patient.id,
+                    "name": patient.name,
+                    "email": patient.email,
+                    "mobile_number": patient.mobile_number,
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
+                }
 
-            # Create a set of treatment IDs that are in plans
-            planned_treatment_ids = set()
-            for plan in treatment_plans:
-                for treatment in plan.treatments:
-                    planned_treatment_ids.add(str(treatment.id))
-
-            # Filter out treatments that are already in treatment plans
-            standalone_treatments = [t for t in treatments if str(t.id) not in planned_treatment_ids]
-
-            # Get payments
-            payments = (
-                db.query(Payment)
-                .filter(Payment.appointment_id == appointment.id)
-                .all()
-            )
-
+            if doctor:
+                doctor_data = {
+                    "id": doctor.id,
+                    "name": doctor.name,
+                    "email": doctor.email,
+                    "phone": doctor.phone,
+                    "color_code": doctor.color_code if hasattr(doctor, 'color_code') else None
+                }
+            
             # Format response data
             appointment_data = {
                 "id": appointment.id,
@@ -443,21 +417,8 @@ async def get_all_appointments(
                 "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                "doctor": {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone,
-                    "color_code": doctor.color_code if hasattr(doctor, 'color_code') else None
-                },
-                "patient": {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
-                }
+                "doctor": doctor_data,
+                "patient": patient_data
             }
 
             appointment_list.append(appointment_data)

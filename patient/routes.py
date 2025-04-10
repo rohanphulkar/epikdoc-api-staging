@@ -1788,17 +1788,17 @@ async def delete_patient(
     - appointment_id (optional): UUID of the associated appointment
     
     **Form Data:**
-    - complaints (optional): Patient's chief complaints
-    - diagnoses (optional): Doctor's diagnoses
-    - vital_signs (optional): Patient vital signs data in JSON format
+    - complaints (optional): Patient's chief complaints (can be a string or JSON array)
+    - diagnoses (optional): Doctor's diagnoses (can be a string or JSON array)
+    - vital_signs (optional): Patient vital signs data (can be a string or JSON array)
         [
             temperature
             blood_pressure
             pulse
             respiratory_rate
         ]
-    - notes (optional): Additional clinical notes
-    - treatments (optional): JSON array of treatments
+    - notes (optional): Additional clinical notes (can be a string or JSON array)
+    - treatments (optional): JSON array of treatments or a string
         [
             {
                 "name": "Treatment name",           // Required\
@@ -1973,13 +1973,56 @@ async def create_clinical_note(
         db.commit()
         db.refresh(clinical_note_db)
 
-        # Parse string inputs to lists
-        complaints_list = json.loads(complaints) if complaints else []
-        diagnoses_list = json.loads(diagnoses) if diagnoses else []
-        vital_signs_list = json.loads(vital_signs) if vital_signs else []
-        treatments_list = json.loads(treatments) if treatments else []
-        medicines_list = json.loads(medicines) if medicines else []
-        notes_list = json.loads(notes) if notes and notes.startswith("[") else [notes] if notes else None
+        # Parse inputs - handle both string and JSON array formats
+        def parse_input(input_data):
+            if not input_data:
+                return []
+            
+            # Try to parse as JSON
+            try:
+                parsed_data = json.loads(input_data)
+                # If it's a list, return it
+                if isinstance(parsed_data, list):
+                    return parsed_data
+                # If it's a string or other value, wrap it in a list
+                return [parsed_data]
+            except json.JSONDecodeError:
+                # If not valid JSON, treat as a single string
+                return [input_data]
+
+        complaints_list = parse_input(complaints)
+        diagnoses_list = parse_input(diagnoses)
+        vital_signs_list = parse_input(vital_signs)
+        notes_list = parse_input(notes)
+        
+        # For treatments, handle JSON array, comma-separated string, or single string
+        treatments_list = []
+        if treatments:
+            try:
+                # Try to parse as JSON
+                parsed_treatments = json.loads(treatments)
+                if isinstance(parsed_treatments, list):
+                    treatments_list = parsed_treatments
+                else:
+                    treatments_list = [{"name": parsed_treatments}]
+            except json.JSONDecodeError:
+                # If not valid JSON, check if it's a comma-separated string
+                if "," in treatments:
+                    # Split by comma and create a list of treatment objects
+                    treatment_names = [name.strip() for name in treatments.split(",")]
+                    treatments_list = [{"name": name} for name in treatment_names if name]
+                else:
+                    # Treat as a single treatment name
+                    treatments_list = [{"name": treatments.strip()}]
+            
+        # For medicines, we need specific JSON structure
+        try:
+            medicines_list = json.loads(medicines) if medicines else []
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "Invalid JSON format for medicines"}
+            )
 
         if complaints_list:
             for complaint in complaints_list:
@@ -2026,52 +2069,40 @@ async def create_clinical_note(
             db.add_all(attachments)
 
         # Add treatments if provided
-        if treatments:
-            try:
-                treatments_db = []
-                for treatment in treatments_list:
-                    treatment_db = ClinicalNoteTreatment(
-                        clinical_note_id=clinical_note_db.id,
-                        name=treatment.get("name", "")
-                    )
-                    treatments_db.append(treatment_db)
-                
-                if treatments_db:
-                    db.add_all(treatments_db)
-            except json.JSONDecodeError:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": "Invalid JSON format for treatments"}
+        if treatments_list:
+            treatments_db = []
+            for treatment in treatments_list:
+                treatment_db = ClinicalNoteTreatment(
+                    clinical_note_id=clinical_note_db.id,
+                    name=treatment.get("name", "")
                 )
+                treatments_db.append(treatment_db)
+            
+            if treatments_db:
+                db.add_all(treatments_db)
 
         # Add medicines if provided
-        if medicines:
-            try:
-                medicines_db = []
-                for medicine in medicines_list:
-                    quantity = int(medicine.get("quantity", 1))
-                    price = float(medicine.get("price", 0))
-                    # Calculate amount if not provided, otherwise use the provided amount
-                    amount = float(medicine.get("amount", price * quantity))
-                    
-                    medicine_db = Medicine(
-                        clinical_note_id=clinical_note_db.id,
-                        item_name=medicine.get("item_name", ""),
-                        quantity=quantity,
-                        price=price,
-                        amount=amount,
-                        dosage=medicine.get("dosage"),
-                        instructions=medicine.get("instructions")
-                    )
-                    medicines_db.append(medicine_db)
+        if medicines_list:
+            medicines_db = []
+            for medicine in medicines_list:
+                quantity = int(medicine.get("quantity", 1))
+                price = float(medicine.get("price", 0))
+                # Calculate amount if not provided, otherwise use the provided amount
+                amount = float(medicine.get("amount", price * quantity))
                 
-                if medicines_db:
-                    db.add_all(medicines_db)
-            except json.JSONDecodeError:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": "Invalid JSON format for medicines"}
+                medicine_db = Medicine(
+                    clinical_note_id=clinical_note_db.id,
+                    item_name=medicine.get("item_name", ""),
+                    quantity=quantity,
+                    price=price,
+                    amount=amount,
+                    dosage=medicine.get("dosage"),
+                    instructions=medicine.get("instructions")
                 )
+                medicines_db.append(medicine_db)
+            
+            if medicines_db:
+                db.add_all(medicines_db)
 
         # Add notes if provided
         if notes_list:

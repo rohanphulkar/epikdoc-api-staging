@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 from appointment.models import Appointment, AppointmentStatus
 from patient.models import Patient
 from auth.models import User
-from utils.email import send_email, EMAIL_SENDER, EMAIL_PASSWORD
+from utils.email import send_email
+import requests
+from utils.config import SMS_API_KEY, EMAIL_SENDER, EMAIL_PASSWORD
 
 async def send_appointment_email(
     db: Session,
@@ -76,4 +78,60 @@ Dr. {doctor.name}
 
     except Exception as e:
         print(f"Error sending appointment email: {str(e)}")
+        return False, str(e)
+
+
+def send_appointment_sms(db: Session, mobile_number: str, appointment_id: str) -> tuple[bool, str]:
+    """
+    Send SMS notification about appointment status to the patient's mobile number
+    using 2Factor.in SMS API service.
+    
+    Args:
+        db: Database session
+        mobile_number: Patient's mobile number
+        appointment_id: ID of the appointment
+        
+    Returns:
+        Tuple of (success_status, message)
+    """
+    try:        
+        url = f"https://2factor.in/API/V1/{SMS_API_KEY}/ADDON_SERVICES/SEND/TSMS"
+
+        # Fetch appointment details
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            print("Appointment not found")
+            return False, "Appointment not found"
+        
+        # Get doctor information
+        doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+        doctor_name = f"Dr. {doctor.name}" if doctor else "Dr. Unknown"
+        
+        # Format appointment details
+        status = appointment.status.value.capitalize()
+        date = appointment.appointment_date.strftime('%B %d, %Y')
+        time = appointment.start_time.strftime('%I:%M %p')
+        
+        # Prepare SMS payload with template variables
+        payload = {
+            'From': 'EPKDOC',
+            'To': mobile_number,
+            'TemplateName': 'EPKDCAPPT',
+            'VAR1': doctor_name,
+            'VAR2': status,
+            'VAR3': date,
+            'VAR4': time,
+            'Msg': f'Your appointment with {doctor_name} is {status}.\n📅 Date: {date}\n⏰ Time: {time}'
+        }
+
+        # Send SMS request
+        response = requests.post(url, data=payload)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        
+        return True, "Appointment SMS sent successfully"
+    except requests.exceptions.RequestException as e:
+        print(f"SMS API request error: {str(e)}")
+        return False, f"SMS API error: {str(e)}"
+    except Exception as e:
+        print(f"Error sending appointment SMS: {str(e)}")
         return False, str(e)
