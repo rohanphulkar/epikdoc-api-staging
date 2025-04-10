@@ -316,7 +316,7 @@ async def get_all_appointments(
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         # Base query - get all appointments for the doctor
-        query = db.query(Appointment).filter(Appointment.doctor_id == user_id)
+        query = db.query(Appointment)
 
         # Add sorting
         if hasattr(Appointment, sort_by):

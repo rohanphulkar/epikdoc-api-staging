@@ -5103,7 +5103,7 @@ async def get_all_users(
     description="""
     Get all doctors in the system with detailed statistics.
     
-    Returns a paginated list of users with user_type='doctor' including:
+    Returns a paginated list of all users with user_type='doctor' including:
     - Doctor ID
     - Name
     - Email
@@ -5133,7 +5133,7 @@ async def get_all_users(
     - Authorization: Bearer {access_token}
     
     Notes:
-    - Only returns users with type 'doctor'
+    - Returns ALL users with type 'doctor' regardless of who is making the request
     - Sensitive information is excluded
     - Used for displaying doctor selection lists
     """,
@@ -5215,7 +5215,7 @@ async def get_all_users(
 async def get_doctor_list(
     request: Request,
     page: int = Query(default=1, ge=1, description="Page number"),
-    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    per_page: int = Query(default=25, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="created_at", description="Field to sort by"),
     sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
     name: Optional[str] = Query(None, description="Search by doctor name"),
@@ -5235,7 +5235,7 @@ async def get_doctor_list(
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        # Build base query
+        # Build base query - get ALL doctors
         query = db.query(User).filter(User.user_type == "doctor")
         
         # Apply search filters if provided
@@ -5281,7 +5281,7 @@ async def get_doctor_list(
             else:
                 query = query.order_by(sort_column.asc())
         
-        # Get paginated doctors
+        # Get paginated doctors - ALL doctors in the system
         doctors = query.offset(offset).limit(per_page).all()
         
         doctors_list = []
@@ -5326,7 +5326,6 @@ async def get_doctor_list(
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
-    
 @user_router.get("/dashboard",
     response_model=dict,
     status_code=200,
