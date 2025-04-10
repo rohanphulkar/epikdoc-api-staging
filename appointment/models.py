@@ -13,6 +13,8 @@ class AppointmentStatus(enum.Enum):
     SCHEDULED = "scheduled"
     CANCELLED = "cancelled"
     CHECKED_IN = "checked_in"
+    ENGAGED = "engaged"
+    CHECKED_OUT = "checked_out"
     COMPLETED = "completed"
 
 class Appointment(Base):

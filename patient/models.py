@@ -140,3 +140,13 @@ class Medicine(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=True, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="medicines")
+
+
+class PatientFile(Base):
+    __tablename__ = "patient_files"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    patient_id: Mapped[str] = mapped_column(String(36), ForeignKey("patients.id", ondelete='CASCADE'), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)

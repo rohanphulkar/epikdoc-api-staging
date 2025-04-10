@@ -25,6 +25,7 @@ from catalog.models import *
 from prediction.models import *
 from auth.models import Clinic
 from datetime import date
+from prediction.routes import update_image_url
 
 
 patient_router = APIRouter()
@@ -2247,3 +2248,511 @@ async def get_clinical_notes(
             content={"message": f"Internal server error: {str(e)}"}
         )
     
+async def save_file(file: UploadFile):
+    save_dir = "uploads/patient_files"
+    os.makedirs(save_dir, exist_ok=True)
+    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+    file_path = os.path.join(save_dir, filename)
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+    return file_path
+
+@patient_router.post("/add-patient-files/{patient_id}",
+    response_model=dict,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add one or more files to a patient's record",
+    description="""
+    Upload and attach one or more files to a patient's medical record.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - patient_id: UUID of the patient
+    
+    Form data:
+    - files: One or more files to upload (multipart/form-data)
+    
+    Returns:
+    - A success message and the IDs of the newly created file records
+    """,
+    responses={
+        201: {
+            "description": "Files added successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Files added successfully", "file_ids": ["uuid1", "uuid2"]}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
+async def add_patient_file(
+    request: Request,
+    patient_id: str,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                content={"message": "Unauthorized"}
+            )
+
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        # Check if patient belongs to the user
+        patient = db.query(Patient).filter(
+            Patient.id == patient_id,
+            Patient.doctor_id == user_id
+        ).first()
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Patient not found"}
+            )
+
+        file_ids = []
+        # Process each uploaded file
+        for file in files:
+            # Save file to disk
+            file_path = await save_file(file)
+            # Create patient file record
+            patient_file = PatientFile(
+                patient_id=patient_id,
+                file_path=update_image_url(file_path, request)
+            )
+            db.add(patient_file)
+            db.flush()
+            file_ids.append(str(patient_file.id))
+        
+        db.commit()
+
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={"message": "Files added successfully", "file_ids": file_ids}
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": f"Database error: {str(e)}"}
+        )
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )
+    
+@patient_router.get("/get-patient-files/{patient_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Get all files for a patient",
+    description="""
+    Retrieve all files associated with a specific patient's medical record.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - patient_id: UUID of the patient
+    
+    Returns:
+    - A list of file records with their metadata
+    """,
+    responses={
+        200: {
+            "description": "Files retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Files retrieved successfully", 
+                        "files": [
+                            {
+                                "id": "uuid",
+                                "file_path": "https://example.com/uploads/patient_files/file.pdf",
+                                "created_at": "2023-01-01T00:00:00",
+                                "updated_at": "2023-01-01T00:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "Patient not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Patient not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
+async def get_patient_files(
+    request: Request,
+    patient_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        # Check if patient belongs to the user
+        patient = db.query(Patient).filter(
+            Patient.id == patient_id,
+            Patient.doctor_id == user_id
+        ).first()
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "Patient not found"}
+            )
+
+        # Get all files for the patient
+        files = db.query(PatientFile).filter(
+            PatientFile.patient_id == patient_id
+        ).order_by(PatientFile.created_at.desc()).all()
+
+        file_list = []
+        for file in files:
+            file_list.append({
+                "id": str(file.id),
+                "file_path": file.file_path,
+                "created_at": file.created_at.isoformat() if file.created_at else None,
+                "updated_at": file.updated_at.isoformat() if file.updated_at else None
+            })
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "Files retrieved successfully", "files": file_list}
+        )
+    except SQLAlchemyError as e:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": f"Database error: {str(e)}"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )
+    
+@patient_router.get("/get-patient-file/{file_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Get a specific patient file",
+    description="""
+    Retrieve details of a specific file by its ID.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - file_id: UUID of the file to retrieve
+    
+    Returns:
+    - File metadata including path and timestamps
+    """,
+    responses={
+        200: {
+            "description": "File retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "File retrieved successfully", 
+                        "file": {
+                            "id": "uuid",
+                            "file_path": "https://example.com/uploads/patient_files/file.pdf",
+                            "created_at": "2023-01-01T00:00:00",
+                            "updated_at": "2023-01-01T00:00:00"
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        404: {
+            "description": "File not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "File not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
+async def get_patient_file(
+    request: Request,
+    file_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        # Check if file exists
+        file = db.query(PatientFile).filter(
+            PatientFile.id == file_id
+        ).first()
+        if not file:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "File not found"}
+            )
+        
+        # Check if the file belongs to a patient of this doctor
+        patient = db.query(Patient).filter(
+            Patient.id == file.patient_id,
+            Patient.doctor_id == user_id
+        ).first()
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"message": "Access denied to this file"}
+            )
+        
+        file_data = {
+            "id": str(file.id),
+            "file_path": file.file_path,
+            "created_at": file.created_at.isoformat() if file.created_at else None,
+            "updated_at": file.updated_at.isoformat() if file.updated_at else None
+        }
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "File retrieved successfully", "file": file_data}
+        )
+    except SQLAlchemyError as e:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": f"Database error: {str(e)}"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )
+    
+@patient_router.delete("/delete-patient-file/{file_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Delete a patient file",
+    description="""
+    Delete a specific file from a patient's record.
+    
+    Required headers:
+    - Authorization: Bearer {access_token}
+    
+    Path parameters:
+    - file_id: UUID of the file to delete
+    
+    Returns:
+    - A success message confirming deletion
+    """,
+    responses={
+        200: {
+            "description": "File deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "File deleted successfully"}
+                }
+            }
+        },
+        401: {
+            "description": "Unauthorized - Invalid or missing authentication token",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Unauthorized"}
+                }
+            }
+        },
+        403: {
+            "description": "Forbidden - User doesn't have permission to delete this file",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Access denied to this file"}
+                }
+            }
+        },
+        404: {
+            "description": "File not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "File not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Internal server error: [error details]"}
+                }
+            }
+        }
+    }
+)
+async def delete_patient_file(
+    request: Request,
+    file_id: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify user authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+        
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Unauthorized"}
+            )
+
+        # Check if file exists
+        file = db.query(PatientFile).filter(
+            PatientFile.id == file_id
+        ).first()
+        if not file:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "File not found"}
+            )
+        
+        # Check if the file belongs to a patient of this doctor
+        patient = db.query(Patient).filter(
+            Patient.id == file.patient_id,
+            Patient.doctor_id == user_id
+        ).first()
+        if not patient:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"message": "Access denied to this file"}
+            )
+        
+        # Delete the physical file if possible
+        try:
+            file_path = file.file_path
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except:
+            # Continue even if physical file deletion fails
+            pass
+            
+        # Delete the database record
+        db.delete(file)
+        db.commit()
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "File deleted successfully"}
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": f"Database error: {str(e)}"}
+        )
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": f"Internal server error: {str(e)}"}
+        )

@@ -1877,6 +1877,87 @@ async def check_out_appointment(request: Request, appointment_id: str, db: Sessi
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
        
+@appointment_router.patch("/update-appointment-status/{appointment_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Update appointment status",
+    description="""
+    Update the status of a specific appointment by its ID.
+    
+    **Path parameter:**
+    - appointment_id (UUID): Appointment's unique identifier
+    
+    **Status Flow:**
+    1. SCHEDULED → CHECKED_IN (when doctor checks in the patient)
+    2. CHECKED_IN → ENGAGED (when doctor starts the appointment)
+    3. ENGAGED → CHECKED_OUT (when doctor checks out the patient)
+    4. CHECKED_OUT → COMPLETED (when appointment is finalized)
+    
+    Each status change happens with a single API call in sequence.
+    """
+)
+async def update_appointment_status(request: Request, appointment_id: str, db: Session = Depends(get_db)):
+    try:
+        # Validate authentication
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Authentication required"})
+    
+        user_id = decoded_token.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"message": "Unauthorized - doctor access required"})
+        
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Appointment not found"})
+        
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Cannot update status of cancelled appointments"})
+        
+        # Status transition logic
+        if appointment.status == AppointmentStatus.SCHEDULED:
+            # First click: Check-in the patient
+            appointment.status = AppointmentStatus.CHECKED_IN
+            appointment.checked_in_at = datetime.now()
+            status_message = "Patient checked in successfully"
+
+        elif appointment.status == AppointmentStatus.CHECKED_IN:
+            # Second click: Start engagement
+            appointment.status = AppointmentStatus.ENGAGED
+            status_message = "Appointment marked as engaged"
+
+        elif appointment.status == AppointmentStatus.ENGAGED:
+            # Third click: Check-out
+            appointment.status = AppointmentStatus.CHECKED_OUT
+            appointment.checked_out_at = datetime.now()
+            status_message = "Patient checked out successfully"
+
+        elif appointment.status == AppointmentStatus.CHECKED_OUT:
+            # Final click: Complete the appointment
+            appointment.status = AppointmentStatus.COMPLETED
+            status_message = "Appointment completed successfully"
+            
+        else:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": f"Cannot update from current status: {appointment.status.value}"})
+        
+        db.commit()
+        db.refresh(appointment)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": status_message,
+            "appointment_id": appointment_id,
+            "status": str(appointment.status.value)
+        })
+    
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Database error: {str(e)}"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
+
+    
 @appointment_router.patch("/cancel/{appointment_id}",
     response_model=dict,
     status_code=status.HTTP_200_OK,
@@ -2244,7 +2325,7 @@ async def save_file(file: UploadFile):
         f.write(contents)
     return file_path
 
-@appointment_router.post("/add-files/{appointment_id}",
+@appointment_router.post("/add-appointment-files/{appointment_id}",
     response_model=dict,
     status_code=status.HTTP_201_CREATED,
     summary="Add file to appointment", 
@@ -2352,7 +2433,7 @@ async def add_file_to_appointment(
             content={"message": f"An unexpected error occurred: {str(e)}"}
         )
     
-@appointment_router.get("/get-files/{appointment_id}",
+@appointment_router.get("/get-appointment-files/{appointment_id}",
     response_model=dict,
     status_code=status.HTTP_200_OK,
     summary="Get files for an appointment",
@@ -2423,7 +2504,7 @@ async def get_files_for_appointment(request: Request, appointment_id: str, db: S
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
     
-@appointment_router.get("/search-files",
+@appointment_router.get("/search-appointment-files",
     response_model=dict,
     status_code=status.HTTP_200_OK,
     summary="Search appointment files",
@@ -2450,7 +2531,7 @@ async def get_files_for_appointment(request: Request, appointment_id: str, db: S
         }
     }
 )
-async def search_files(request: Request, remark: str, db: Session = Depends(get_db)):
+async def search_appointment_files(request: Request, remark: str, db: Session = Depends(get_db)):
     try:
         # Validate authentication
         decoded_token = verify_token(request)
@@ -2487,7 +2568,7 @@ async def search_files(request: Request, remark: str, db: Session = Depends(get_
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
     
-@appointment_router.patch("/update-file/{appointment_file_id}",
+@appointment_router.patch("/update-appointment-file/{appointment_file_id}",
     response_model=dict,
     status_code=status.HTTP_200_OK,
     summary="Update appointment file details",
@@ -2521,7 +2602,7 @@ async def search_files(request: Request, remark: str, db: Session = Depends(get_
         }
     }
 )
-async def update_file(request: Request, appointment_file_id: str, file_update: AppointmentFileUpdate, db: Session = Depends(get_db)):
+async def update_appointment_file(request: Request, appointment_file_id: str, file_update: AppointmentFileUpdate, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -2561,7 +2642,7 @@ async def update_file(request: Request, appointment_file_id: str, file_update: A
     except Exception as e:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"An unexpected error occurred: {str(e)}"})
     
-@appointment_router.delete("/delete-file/{appointment_file_id}",
+@appointment_router.delete("/delete-appointment-file/{appointment_file_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete appointment file",
     description="""
@@ -2595,7 +2676,7 @@ async def update_file(request: Request, appointment_file_id: str, file_update: A
         }
     }
 )
-async def delete_file(request: Request, appointment_file_id: str, db: Session = Depends(get_db)):
+async def delete_appointment_file(request: Request, appointment_file_id: str, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:

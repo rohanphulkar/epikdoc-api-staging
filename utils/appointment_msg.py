@@ -5,14 +5,19 @@ from patient.models import Patient
 from auth.models import User
 from utils.email import send_email
 import requests
-from utils.config import SMS_API_KEY, EMAIL_SENDER, EMAIL_PASSWORD
+from utils.config import EMAIL_HOST, EMAIL_PORT, EMAIL_SENDER, EMAIL_PASSWORD
+from pathlib import Path
+from jinja2 import Template
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 async def send_appointment_email(
     db: Session,
     appointment_id: str
 ) -> tuple[bool, str]:
     """
-    Send appointment confirmation email
+    Send appointment confirmation email using HTML template
     Args:
         db: Database session
         appointment_id: ID of the appointment
@@ -40,98 +45,90 @@ async def send_appointment_email(
         # Format email subject
         subject = f"Appointment {appointment.status.value.capitalize()} - {appointment.start_time.strftime('%B %d, %Y')}"
 
-        # Format email message with better structure
-        message = f"""
-Dear {patient.name},
+        # Prepare template data
+        template_data = {
+            "patient": {"name": patient.name},
+            "appointment": {
+                "status": {"value": appointment.status.value},
+                "notes": appointment.notes,
+                "appointment_date": appointment.appointment_date.strftime('%Y-%m-%d'),
+                "start_time": appointment.start_time.strftime('%I:%M %p'),
+                "end_time": appointment.end_time.strftime('%I:%M %p')
+            },
+            "doctor": {
+                "name": doctor.name,
+                "email": doctor.email,
+                "phone": doctor.phone if doctor.phone else "Not provided"
+            }
+        }        
+        # Path to HTML template
+        template_path = "utils/templates/appointment-email.html"
 
-Your appointment has been {appointment.status.value} with Dr. {doctor.name}.
-
-Appointment Details:
-------------------
-Notes: {appointment.notes}
-Date: {appointment.appointment_date.strftime('%B %d, %Y')}
-Time: {appointment.start_time.strftime('%I:%M %p')} - {appointment.end_time.strftime('%I:%M %p')}
-
-Doctor Details:
--------------
-Name: Dr. {doctor.name}
-Email: {doctor.email}
-Phone: {doctor.phone if doctor.phone else "Not provided"}
-
-Important Notes:
---------------
-- Please arrive 10 minutes before your scheduled time
-- Bring any relevant medical records or test results
-- If you need to cancel or reschedule, please contact us at least 24 hours in advance
-
-If you have any questions or concerns, please don't hesitate to contact us.
-
-Best regards,
-Dr. {doctor.name}
-"""
-        # Use the centralized email sending function
-        return send_email(
-            receiver_emails=patient.email if patient.email else [],
-            subject=subject,
-            body=message
-        ), "Appointment email sent successfully"
-
+        sender_email = EMAIL_SENDER
+        sender_password = EMAIL_PASSWORD
+        email_host = EMAIL_HOST
+        email_port = EMAIL_PORT
+        
+        # Create message container
+        msg = MIMEMultipart('alternative')
+        msg['From'] = sender_email
+        msg['To'] = patient.email if patient.email else ""
+        msg['Subject'] = subject
+        
+        # Read the HTML template
+        html_content = Path(template_path).read_text()
+        
+        # Convert string dates to datetime objects if they exist
+        if 'appointment' in template_data and 'appointment_date' in template_data['appointment']:
+            if isinstance(template_data['appointment']['appointment_date'], str):
+                try:
+                    date_obj = datetime.strptime(
+                        template_data['appointment']['appointment_date'], '%Y-%m-%d'
+                    )
+                    # Format date as "10 April 2025"
+                    template_data['appointment']['appointment_date'] = date_obj.strftime('%d %B %Y')
+                except ValueError:
+                    pass  # Keep as string if parsing fails
+        
+        # Format times if they exist
+        if 'appointment' in template_data:
+            if 'start_time' in template_data['appointment'] and isinstance(template_data['appointment']['start_time'], str):
+                try:
+                    # Try to parse and format the time as "03:00 PM"
+                    time_obj = datetime.strptime(template_data['appointment']['start_time'], '%I:%M %p')
+                    template_data['appointment']['start_time'] = time_obj.strftime('%I:%M %p')
+                except ValueError:
+                    pass  # Keep original format if parsing fails
+            
+            if 'end_time' in template_data['appointment'] and isinstance(template_data['appointment']['end_time'], str):
+                try:
+                    # Try to parse and format the time as "03:00 PM"
+                    time_obj = datetime.strptime(template_data['appointment']['end_time'], '%I:%M %p')
+                    template_data['appointment']['end_time'] = time_obj.strftime('%I:%M %p')
+                except ValueError:
+                    pass  # Keep original format if parsing fails
+        
+        template = Template(html_content)
+        html_content = template.render(**template_data)
+        
+        # Attach HTML content
+        part = MIMEText(html_content, 'html')
+        msg.attach(part)
+        
+        # Connect to SMTP server
+        server = smtplib.SMTP(email_host, email_port)
+        server.starttls()  # Secure the connection
+        
+        # Login to sender email
+        server.login(sender_email, sender_password)
+        
+        # Send email
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"Email sent successfully to {patient.email}")
+        return True, "Appointment email sent successfully"
+    
     except Exception as e:
         print(f"Error sending appointment email: {str(e)}")
-        return False, str(e)
-
-
-def send_appointment_sms(db: Session, mobile_number: str, appointment_id: str) -> tuple[bool, str]:
-    """
-    Send SMS notification about appointment status to the patient's mobile number
-    using 2Factor.in SMS API service.
-    
-    Args:
-        db: Database session
-        mobile_number: Patient's mobile number
-        appointment_id: ID of the appointment
-        
-    Returns:
-        Tuple of (success_status, message)
-    """
-    try:        
-        url = f"https://2factor.in/API/V1/{SMS_API_KEY}/ADDON_SERVICES/SEND/TSMS"
-
-        # Fetch appointment details
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-        if not appointment:
-            print("Appointment not found")
-            return False, "Appointment not found"
-        
-        # Get doctor information
-        doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
-        doctor_name = f"Dr. {doctor.name}" if doctor else "Dr. Unknown"
-        
-        # Format appointment details
-        status = appointment.status.value.capitalize()
-        date = appointment.appointment_date.strftime('%B %d, %Y')
-        time = appointment.start_time.strftime('%I:%M %p')
-        
-        # Prepare SMS payload with template variables
-        payload = {
-            'From': 'EPKDOC',
-            'To': mobile_number,
-            'TemplateName': 'EPKDCAPPT',
-            'VAR1': doctor_name,
-            'VAR2': status,
-            'VAR3': date,
-            'VAR4': time,
-            'Msg': f'Your appointment with {doctor_name} is {status}.\n📅 Date: {date}\n⏰ Time: {time}'
-        }
-
-        # Send SMS request
-        response = requests.post(url, data=payload)
-        response.raise_for_status()  # Raise exception for HTTP errors
-        
-        return True, "Appointment SMS sent successfully"
-    except requests.exceptions.RequestException as e:
-        print(f"SMS API request error: {str(e)}")
-        return False, f"SMS API error: {str(e)}"
-    except Exception as e:
-        print(f"Error sending appointment SMS: {str(e)}")
         return False, str(e)
