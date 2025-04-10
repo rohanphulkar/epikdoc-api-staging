@@ -581,11 +581,11 @@ async def get_all_patients(
                         "completed_procedures": [
                             {
                                 "id": "uuid",
-                                "procedure_name": "Root Canal",
+                                "treatment_name": "Root Canal",
                                 "unit_cost": 5000,
                                 "quantity": 1,
                                 "amount": 5000,
-                                "procedure_description": "Root Canal Treatment",
+                                "treatment_description": "Root Canal Treatment",
                                 "created_at": "2023-02-15T14:30:00",
                                 "updated_at": "2023-02-15T14:30:00"
                             }
@@ -944,13 +944,13 @@ async def get_patient_by_id(
                 completed_procedure_items = [
                     {
                         "id": item.id,
-                        "procedure_name": item.procedure_name,
+                        "treatment_name": item.treatment_name,
                         "unit_cost": item.unit_cost,
                         "quantity": item.quantity,
                         "amount": float(item.amount),
                         "discount": float(item.discount) if item.discount is not None else 0,
                         "discount_type": item.discount_type,
-                        "procedure_description": item.procedure_description,
+                        "treatment_description": item.treatment_description,
                         "created_at": item.created_at.isoformat() if item.created_at else None,
                         "updated_at": item.updated_at.isoformat() if item.updated_at else None
                     } for item in items
@@ -1974,11 +1974,11 @@ async def create_clinical_note(
         db.refresh(clinical_note_db)
 
         # Parse string inputs to lists
-        complaints_list = json.loads(complaints) if complaints else None
-        diagnoses_list = json.loads(diagnoses) if diagnoses else None
-        vital_signs_list = json.loads(vital_signs) if vital_signs else None
-        treatments_list = json.loads(treatments) if treatments else None
-        medicines_list = json.loads(medicines) if medicines else None
+        complaints_list = json.loads(complaints) if complaints else []
+        diagnoses_list = json.loads(diagnoses) if diagnoses else []
+        vital_signs_list = json.loads(vital_signs) if vital_signs else []
+        treatments_list = json.loads(treatments) if treatments else []
+        medicines_list = json.loads(medicines) if medicines else []
         notes_list = json.loads(notes) if notes and notes.startswith("[") else [notes] if notes else None
 
         if complaints_list:

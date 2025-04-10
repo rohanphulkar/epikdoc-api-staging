@@ -1309,7 +1309,7 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
 
     Required fields in request body:
     - completed_procedure_items: List of procedure items, each containing:
-      - procedure_name: Name of the procedure (string)
+      - treatment_name: Name of the procedure (string)
       - unit_cost: Cost per unit of procedure (decimal)
       - quantity: Number of units (integer, default: 1)
       - discount: Discount amount (decimal, optional)
@@ -1318,7 +1318,7 @@ async def delete_treatment_plan(treatment_plan_id: str, request: Request, db: Se
     Optional fields in request body:
     - clinic_id: ID of the clinic (string)
     - appointment_id: ID of the appointment (string)
-    - completed_procedure_items[].procedure_description: Additional description of the procedure (string)
+    - completed_procedure_items[].treatment_description: Additional description of the procedure (string)
     - completed_procedure_items[].amount: Override calculated amount (decimal)
     
     The amount will be automatically calculated as unit_cost * quantity if not provided.
@@ -1415,13 +1415,13 @@ async def create_completed_procedure(
 
             new_completed_procedure_item = CompletedProcedureItem(
                 completed_procedure_id=new_completed_procedure.id,
-                procedure_name=item.procedure_name,
+                treatment_name=item.treatment_name,
                 unit_cost=item.unit_cost,
                 quantity=item.quantity,
                 amount=total_amount,
                 discount=discount,
                 discount_type=discount_type,
-                procedure_description=item.procedure_description
+                treatment_description=item.treatment_description
             )
             db.add(new_completed_procedure_item)
         
@@ -1540,13 +1540,13 @@ async def get_completed_procedures_by_doctor(
             procedure_items = [
                 {
                     "id": item.id,
-                    "procedure_name": item.procedure_name,
+                    "treatment_name": item.treatment_name,
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
                     "discount": float(item.discount) if item.discount is not None else 0,
                     "discount_type": item.discount_type,
-                    "procedure_description": item.procedure_description
+                    "treatment_description": item.treatment_description
                 }
                 for item in items
             ]
@@ -1653,13 +1653,13 @@ async def get_completed_procedures_by_appointment(
             procedure_items = [
                 {
                     "id": item.id,
-                    "procedure_name": item.procedure_name,
+                    "treatment_name": item.treatment_name,
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
                     "discount": float(item.discount) if item.discount is not None else 0,
                     "discount_type": item.discount_type,
-                    "procedure_description": item.procedure_description
+                    "treatment_description": item.treatment_description
                 }
                 for item in items
             ]
@@ -1740,13 +1740,13 @@ async def get_completed_procedure_by_id(
         formatted_items = [
             {
                 "id": item.id,
-                "procedure_name": item.procedure_name,
+                "treatment_name": item.treatment_name,
                 "unit_cost": float(item.unit_cost),
                 "quantity": item.quantity,
                 "amount": float(item.amount),
                 "discount": float(item.discount) if item.discount is not None else 0,
                 "discount_type": item.discount_type,
-                "procedure_description": item.procedure_description
+                "treatment_description": item.treatment_description
             }
             for item in procedure_items
         ]
@@ -1772,15 +1772,15 @@ async def get_completed_procedure_by_id(
     status_code=status.HTTP_200_OK,
     summary="Search completed procedures",
     description="""
-    Search for completed procedures by procedure name and/or appointment ID.
+    Search for completed procedures by treatment name and/or appointment ID.
 
     Query parameters:
-    - procedure_name: Search term for procedure name (string, optional)
+    - treatment_name: Search term for treatment name (string, optional)
     - appointment_id: Filter by appointment ID (string, optional)
     - page: Page number (integer, min: 1, default: 1)
     - limit: Number of items per page (integer, min: 1, max: 100, default: 10)
     - sort_by: Field to sort by (string, default: created_at)
-      Available fields: created_at, procedure_name, unit_cost, quantity, amount
+      Available fields: created_at, treatment_name, unit_cost, quantity, amount
     - sort_order: Sort order (string, options: asc/desc, default: desc)
 
     Returns:
@@ -1791,7 +1791,7 @@ async def get_completed_procedure_by_id(
 )
 async def search_completed_procedures(
     request: Request,
-    procedure_name: Optional[str] = Query(None, description="Search term for procedure name"),
+    treatment_name: Optional[str] = Query(None, description="Search term for treatment name"),
     appointment_id: Optional[str] = Query(None, description="Filter by appointment ID"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Items per page"),
@@ -1822,9 +1822,9 @@ async def search_completed_procedures(
             base_query = base_query.filter(CompletedProcedure.appointment_id == appointment_id)
 
         # For procedure name search, we need to join with CompletedProcedureItem
-        if procedure_name:
+        if treatment_name:
             base_query = base_query.join(CompletedProcedureItem).filter(
-                CompletedProcedureItem.procedure_name.ilike(f"%{procedure_name}%")
+                CompletedProcedureItem.treatment_name.ilike(f"%{treatment_name}%")
             ).distinct()
 
         # Get total count for pagination
@@ -1840,12 +1840,12 @@ async def search_completed_procedures(
             sort_column = CompletedProcedure.created_at
         else:
             # For other fields, we need to join with CompletedProcedureItem if not already joined
-            if not procedure_name:
+            if not treatment_name:
                 base_query = base_query.join(CompletedProcedureItem)
             
             # Map sort_by to the appropriate column
-            if sort_by == "procedure_name":
-                sort_column = CompletedProcedureItem.procedure_name
+            if sort_by == "treatment_name":
+                sort_column = CompletedProcedureItem.treatment_name
             elif sort_by == "unit_cost":
                 sort_column = CompletedProcedureItem.unit_cost
             elif sort_by == "quantity":
@@ -1872,13 +1872,13 @@ async def search_completed_procedures(
             procedure_items = [
                 {
                     "id": item.id,
-                    "procedure_name": item.procedure_name,
+                    "treatment_name": item.treatment_name,
                     "unit_cost": float(item.unit_cost),
                     "quantity": item.quantity,
                     "amount": float(item.amount),
                     "discount": float(item.discount) if item.discount is not None else 0,
                     "discount_type": item.discount_type,
-                    "procedure_description": item.procedure_description
+                    "treatment_description": item.treatment_description
                 }
                 for item in items
             ]
@@ -1923,13 +1923,13 @@ async def search_completed_procedures(
     - appointment_id: New appointment ID (string)
     - completed_procedure_items: List of procedure items to update, each containing:
         - id: ID of the procedure item to update (string, required for existing items)
-        - procedure_name: Name of the procedure (string)
+        - treatment_name: Name of the treatment (string)
         - unit_cost: Cost per unit (decimal)
         - quantity: Quantity (integer)
         - amount: Override calculated amount (decimal, optional)
         - discount: Discount amount (decimal, optional)
         - discount_type: Discount type (string, optional, default: "fixed")
-        - procedure_description: Description (string, optional)
+        - treatment_description: Description (string, optional)
         
     Note: If no ID is provided for a procedure item, it will be treated as a new item.
     The amount will be automatically recalculated as unit_cost * quantity if not provided.
@@ -1986,8 +1986,8 @@ async def update_completed_procedure(
                     
                     if item:
                         # Update fields if provided
-                        if item_data.procedure_name is not None:
-                            item.procedure_name = item_data.procedure_name
+                        if item_data.treatment_name is not None:
+                            item.treatment_name = item_data.treatment_name
                         
                         if item_data.unit_cost is not None:
                             item.unit_cost = item_data.unit_cost
@@ -2001,8 +2001,8 @@ async def update_completed_procedure(
                         if item_data.discount_type is not None:
                             item.discount_type = item_data.discount_type
                             
-                        if item_data.procedure_description is not None:
-                            item.procedure_description = item_data.procedure_description
+                        if item_data.treatment_description is not None:
+                            item.treatment_description = item_data.treatment_description
                         
                         # Calculate amount if not provided
                         if item_data.amount is not None:
@@ -2045,13 +2045,13 @@ async def update_completed_procedure(
                     
                     new_item = CompletedProcedureItem(
                         completed_procedure_id=procedure_id,
-                        procedure_name=item_data.procedure_name,
+                        treatment_name=item_data.treatment_name,
                         unit_cost=unit_cost,
                         quantity=quantity,
                         amount=amount,
                         discount=item_data.discount,
                         discount_type=item_data.discount_type,
-                        procedure_description=item_data.procedure_description
+                        treatment_description=item_data.treatment_description
                     )
                     db.add(new_item)
         

@@ -78,26 +78,26 @@ class TreatmentPlanUpdate(BaseModel):
 
 
 class CompletedProcedureItemCreate(BaseModel):
-    procedure_name: str
+    treatment_name: str
     unit_cost: float
     quantity: int = 1
     amount: Optional[float] = None
     discount: Optional[float] = None
     discount_type: Optional[str] = None
-    procedure_description: Optional[str] = None
+    treatment_description: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 class CompletedProcedureItemUpdate(BaseModel):
     id: Optional[str] = None
-    procedure_name: Optional[str] = None
+    treatment_name: Optional[str] = None
     unit_cost: Optional[float] = None
     quantity: Optional[int] = None
     amount: Optional[float] = None
     discount: Optional[float] = None
     discount_type: Optional[str] = None
-    procedure_description: Optional[str] = None
+    treatment_description: Optional[str] = None
 
     class Config:
         from_attributes = True
