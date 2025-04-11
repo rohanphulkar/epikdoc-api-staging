@@ -2070,6 +2070,7 @@ async def update_completed_procedure(
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
+    
 @catalog_router.delete("/delete-completed-procedure-item/{item_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete a completed procedure item",
@@ -2115,8 +2116,6 @@ async def delete_completed_procedure_item(
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal error: {str(e)}"})
         
-
-
 @catalog_router.delete("/delete-completed-procedure/{procedure_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete a completed procedure",

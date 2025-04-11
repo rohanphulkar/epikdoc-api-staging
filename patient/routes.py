@@ -842,6 +842,16 @@ async def get_patient_by_id(
                         "vital_sign": vital_sign.vital_sign,
                         "created_at": vital_sign.created_at.isoformat() if vital_sign.created_at else None
                     } for vital_sign in clinical_note.vital_signs],
+                    "observations": [{
+                        "id": observation.id,
+                        "observation": observation.observation,
+                        "created_at": observation.created_at.isoformat() if observation.created_at else None
+                    } for observation in clinical_note.observations],
+                    "investigations": [{
+                        "id": investigation.id,
+                        "investigation": investigation.investigation,
+                        "created_at": investigation.created_at.isoformat() if investigation.created_at else None
+                    } for investigation in clinical_note.investigations],                    
                     "created_at": clinical_note.created_at.isoformat() if clinical_note.created_at else None,
                     "attachments": [
                         {
@@ -1749,6 +1759,13 @@ async def delete_patient(
         if clinical_note_ids:
             db.query(Medicine).filter(Medicine.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
             db.query(ClinicalNoteTreatment).filter(ClinicalNoteTreatment.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(Observation).filter(Observation.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(Investigation).filter(Investigation.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(Notes).filter(Notes.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(ClinicalNoteAttachment).filter(ClinicalNoteAttachment.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(Complaint).filter(Complaint.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(Diagnosis).filter(Diagnosis.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
+            db.query(VitalSign).filter(VitalSign.clinical_note_id.in_(clinical_note_ids)).delete(synchronize_session=False)
         db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete(synchronize_session=False)
 
         # Delete all appointments
@@ -1911,6 +1928,8 @@ async def create_clinical_note(
     complaints: str = Form(None),
     diagnoses: str = Form(None),
     vital_signs: str = Form(None),
+    observations: str = Form(None),
+    investigations: str = Form(None),
     notes: str = Form(None),
     treatments: str = Form(None),  # JSON string of treatments
     medicines: str = Form(None),   # JSON string of medicines
@@ -1995,6 +2014,8 @@ async def create_clinical_note(
         diagnoses_list = parse_input(diagnoses)
         vital_signs_list = parse_input(vital_signs)
         notes_list = parse_input(notes)
+        observations_list = parse_input(observations)
+        investigations_list = parse_input(investigations)
         
         # For treatments, handle JSON array, comma-separated string, or single string
         treatments_list = []
@@ -2049,6 +2070,22 @@ async def create_clinical_note(
                     vital_sign=vital_sign
                 )
                 db.add(db_vital_sign)
+        
+        if observations_list:
+            for observation in observations_list:
+                db_observation = Observation(
+                    clinical_note_id=clinical_note_db.id,
+                    observation=observation
+                )
+                db.add(db_observation)
+            
+        if investigations_list:
+            for investigation in investigations_list:
+                db_investigation = Investigation(
+                    clinical_note_id=clinical_note_db.id,
+                    investigation=investigation
+                )
+                db.add(db_investigation)
             
         # Handle file attachments
         if files:
@@ -2177,6 +2214,8 @@ async def create_clinical_note(
                         "vital_signs": [],
                         "complaints": [],
                         "diagnoses": [],
+                        "observations": [],
+                        "investigations": [],
                         "created_at": "2023-01-01T00:00:00"
                     }]
                 }
@@ -2240,6 +2279,8 @@ async def get_clinical_notes(
             note.vital_signs = db.query(VitalSign).filter_by(clinical_note_id=note.id).all()
             note.complaints = db.query(Complaint).filter_by(clinical_note_id=note.id).all()
             note.diagnoses = db.query(Diagnosis).filter_by(clinical_note_id=note.id).all()
+            note.observations = db.query(Observation).filter_by(clinical_note_id=note.id).all()
+            note.investigations = db.query(Investigation).filter_by(clinical_note_id=note.id).all()
 
         return clinical_notes
     except Exception as e:

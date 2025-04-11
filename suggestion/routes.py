@@ -1138,3 +1138,511 @@ async def delete_vital_sign_suggestion(vital_sign_suggestion_id: str, request: R
     except Exception as e:
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.post("/add-observation-suggestion",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a new observation suggestion",
+    description="Add a new observation suggestion to the system.",
+    responses={
+        201: {
+            "description": "Observation suggestion added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Observation suggestion added successfully",
+                        "observation_suggestion_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Observation suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Observation suggestion already exists"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def add_observation_suggestion(observation_suggestion: ObservationSuggestionSchema, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(ObservationSuggestion).filter(ObservationSuggestion.observation == observation_suggestion.observation).first()
+        if existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Observation suggestion already exists"})
+        
+        new_suggestion = ObservationSuggestion(
+            observation=observation_suggestion.observation
+        )
+        db.add(new_suggestion)
+        db.commit()
+        db.refresh(new_suggestion)
+        return JSONResponse(status_code=status.HTTP_201_CREATED, content={
+            "message": "Observation suggestion added successfully",
+            "observation_suggestion_id": new_suggestion.id
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+@suggestion_router.get("/get-observation-suggestions",
+    response_model=Dict[str, object],
+    status_code=status.HTTP_200_OK,
+    summary="Get all observation suggestions",
+    description="Get all observation suggestions from the system.",
+    responses={
+        200: {
+            "description": "Observation suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Observation suggestions retrieved successfully",
+                        "observation_suggestions": [
+                            {
+                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "observation": "Normal breathing pattern",
+                                "created_at": "2023-01-01T12:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def get_observation_suggestions(db: Session = Depends(get_db)):
+    try:
+        suggestions = db.query(ObservationSuggestion).all()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Observation suggestions retrieved successfully",
+            "observation_suggestions": [{"id": s.id, "observation": s.observation, "created_at": s.created_at.isoformat() if s.created_at else None} for s in suggestions]
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+@suggestion_router.get("/search-observation-suggestions",
+    response_model=Dict[str, object],
+    status_code=status.HTTP_200_OK,
+    summary="Search observation suggestions",
+    description="Search observation suggestions by observation name.",
+    responses={
+        200: {
+            "description": "Observation suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Observation suggestions retrieved successfully",
+                        "observation_suggestions": [
+                            {
+                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "observation": "Normal breathing pattern",
+                                "created_at": "2023-01-01T12:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def search_observation_suggestions(observation: str, db: Session = Depends(get_db)):
+    try:
+        suggestions = db.query(ObservationSuggestion).filter(ObservationSuggestion.observation.ilike(f"%{observation}%")).all()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Observation suggestions retrieved successfully",
+            "observation_suggestions": [{"id": s.id, "observation": s.observation, "created_at": s.created_at.isoformat() if s.created_at else None} for s in suggestions]
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+@suggestion_router.patch("/update-observation-suggestion/{observation_suggestion_id}",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_200_OK,
+    summary="Update an observation suggestion",
+    description="Update an existing observation suggestion by its ID.",
+    responses={
+        200: {
+            "description": "Observation suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Observation suggestion updated successfully",
+                        "observation_suggestion_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Observation suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Observation suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def update_observation_suggestion(observation_suggestion_id: str, observation_suggestion: ObservationSuggestionSchema, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(ObservationSuggestion).filter(ObservationSuggestion.id == observation_suggestion_id).first()
+        if not existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Observation suggestion not found"})
+        
+        existing_suggestion.observation = observation_suggestion.observation
+        db.commit()
+        db.refresh(existing_suggestion)
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Observation suggestion updated successfully",
+            "observation_suggestion_id": existing_suggestion.id
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.delete("/delete-observation-suggestion/{observation_suggestion_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete an observation suggestion",
+    description="Delete an existing observation suggestion by its ID.",
+    responses={
+        200: {
+            "description": "Observation suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Observation suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Observation suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Observation suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def delete_observation_suggestion(observation_suggestion_id: str, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(ObservationSuggestion).filter(ObservationSuggestion.id == observation_suggestion_id).first()
+        if not existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Observation suggestion not found"})
+        
+        db.delete(existing_suggestion)
+        db.commit()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Observation suggestion deleted successfully"})
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.post("/add-investigation-suggestion",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a new investigation suggestion",
+    description="Add a new investigation suggestion to the system.",
+    responses={
+        201: {
+            "description": "Investigation suggestion added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Investigation suggestion added successfully",
+                        "investigation_suggestion_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Investigation suggestion already exists",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Investigation suggestion already exists"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def add_investigation_suggestion(investigation_suggestion: InvestigationSuggestionSchema, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(InvestigationSuggestion).filter(InvestigationSuggestion.investigation == investigation_suggestion.investigation).first()
+        if existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "Investigation suggestion already exists"})
+        
+        new_suggestion = InvestigationSuggestion(
+            investigation=investigation_suggestion.investigation
+        )
+        db.add(new_suggestion)
+        db.commit()
+        db.refresh(new_suggestion)
+        return JSONResponse(status_code=status.HTTP_201_CREATED, content={
+            "message": "Investigation suggestion added successfully",
+            "investigation_suggestion_id": new_suggestion.id
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.get("/get-investigation-suggestions",
+    response_model=Dict[str, object],
+    status_code=status.HTTP_200_OK,
+    summary="Get all investigation suggestions",
+    description="Get all investigation suggestions from the system.",
+    responses={
+        200: {
+            "description": "Investigation suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Investigation suggestions retrieved successfully",
+                        "investigation_suggestions": [
+                            {
+                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "investigation": "Blood test",
+                                "created_at": "2023-01-01T12:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def get_investigation_suggestions(db: Session = Depends(get_db)):
+    try:
+        suggestions = db.query(InvestigationSuggestion).all()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Investigation suggestions retrieved successfully",
+            "investigation_suggestions": [{"id": s.id, "investigation": s.investigation, "created_at": s.created_at.isoformat() if s.created_at else None} for s in suggestions]
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.get("/search-investigation-suggestions",
+    response_model=Dict[str, object],
+    status_code=status.HTTP_200_OK,
+    summary="Search investigation suggestions",
+    description="Search investigation suggestions by investigation name.",
+    responses={
+        200: {
+            "description": "Investigation suggestions retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Investigation suggestions retrieved successfully",
+                        "investigation_suggestions": [
+                            {
+                                "id": "123e4567-e89b-12d3-a456-426614174000",
+                                "investigation": "Blood test",
+                                "created_at": "2023-01-01T12:00:00"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def search_investigation_suggestions(investigation: str, db: Session = Depends(get_db)):
+    try:
+        suggestions = db.query(InvestigationSuggestion).filter(InvestigationSuggestion.investigation.ilike(f"%{investigation}%")).all()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Investigation suggestions retrieved successfully",
+            "investigation_suggestions": [{"id": s.id, "investigation": s.investigation, "created_at": s.created_at.isoformat() if s.created_at else None} for s in suggestions]
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+
+@suggestion_router.patch("/update-investigation-suggestion/{investigation_suggestion_id}",
+    response_model=Dict[str, str],
+    status_code=status.HTTP_200_OK,
+    summary="Update an investigation suggestion",
+    description="Update an existing investigation suggestion by its ID.",
+    responses={
+        200: {
+            "description": "Investigation suggestion updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Investigation suggestion updated successfully",
+                        "investigation_suggestion_id": "123e4567-e89b-12d3-a456-426614174000"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Investigation suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Investigation suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def update_investigation_suggestion(investigation_suggestion_id: str, investigation_suggestion: InvestigationSuggestionSchema, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(InvestigationSuggestion).filter(InvestigationSuggestion.id == investigation_suggestion_id).first()
+        if not existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Investigation suggestion not found"})
+        
+        existing_suggestion.investigation = investigation_suggestion.investigation
+        db.commit()
+        db.refresh(existing_suggestion)
+        return JSONResponse(status_code=status.HTTP_200_OK, content={
+            "message": "Investigation suggestion updated successfully",
+            "investigation_suggestion_id": existing_suggestion.id
+        })
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    
+@suggestion_router.delete("/delete-investigation-suggestion/{investigation_suggestion_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete an investigation suggestion",
+    description="Delete an existing investigation suggestion by its ID.",
+    responses={
+        200: {
+            "description": "Investigation suggestion deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Investigation suggestion deleted successfully"}
+                }
+            }
+        },
+        404: {
+            "description": "Investigation suggestion not found",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Investigation suggestion not found"}
+                }
+            }
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Database error or unexpected issue"}
+                }
+            }
+        }
+    }
+)
+async def delete_investigation_suggestion(investigation_suggestion_id: str, db: Session = Depends(get_db)):
+    try:
+        existing_suggestion = db.query(InvestigationSuggestion).filter(InvestigationSuggestion.id == investigation_suggestion_id).first()
+        if not existing_suggestion:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "Investigation suggestion not found"})
+        
+        db.delete(existing_suggestion)
+        db.commit()
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Investigation suggestion deleted successfully"})
+    except SQLAlchemyError as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": str(e)})

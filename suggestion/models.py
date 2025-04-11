@@ -43,3 +43,17 @@ class VitalSignSuggestion(Base):
     vital_sign: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+class InvestigationSuggestion(Base):
+    __tablename__ = "investigation_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    investigation: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+class ObservationSuggestion(Base):
+    __tablename__ = "observation_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    observation: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+

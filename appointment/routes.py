@@ -618,7 +618,9 @@ async def get_patient_appointments(
                     joinedload(ClinicalNote.complaints),
                     joinedload(ClinicalNote.diagnoses),
                     joinedload(ClinicalNote.vital_signs),
-                    joinedload(ClinicalNote.notes)
+                    joinedload(ClinicalNote.notes),
+                    joinedload(ClinicalNote.observations),
+                    joinedload(ClinicalNote.investigations)
                 )
                 .filter(ClinicalNote.appointment_id == appointment.id)
                 .all()
@@ -723,7 +725,9 @@ async def get_patient_appointments(
                     "complaints": [{"id": c.id, "complaint": c.complaint} for c in note.complaints],
                     "diagnoses": [{"id": d.id, "diagnosis": d.diagnosis} for d in note.diagnoses],
                     "vital_signs": [{"id": v.id, "vital_sign": v.vital_sign} for v in note.vital_signs],
-                    "notes": [{"id": n.id, "note": n.note} for n in note.notes]
+                    "notes": [{"id": n.id, "note": n.note} for n in note.notes],
+                    "observations": [{"id": o.id, "observation": o.observation} for o in note.observations],
+                    "investigations": [{"id": i.id, "investigation": i.investigation} for i in note.investigations],
                 } for note in clinical_notes],
                 "treatments": [{
                     "id": t.id,
@@ -1272,7 +1276,9 @@ async def get_appointment_details(
                     joinedload(ClinicalNote.complaints),
                     joinedload(ClinicalNote.diagnoses),
                     joinedload(ClinicalNote.vital_signs),
-                    joinedload(ClinicalNote.notes)
+                    joinedload(ClinicalNote.notes),
+                    joinedload(ClinicalNote.observations),
+                    joinedload(ClinicalNote.investigations)
                 )
                 .filter(ClinicalNote.appointment_id == appointment.id)
                 .all()
@@ -1374,7 +1380,9 @@ async def get_appointment_details(
                 "complaints": [{"id": c.id, "complaint": c.complaint} for c in note.complaints],
                 "diagnoses": [{"id": d.id, "diagnosis": d.diagnosis} for d in note.diagnoses],
                 "vital_signs": [{"id": v.id, "vital_sign": v.vital_sign} for v in note.vital_signs],
-                "notes": [{"id": n.id, "note": n.note} for n in note.notes]
+                "notes": [{"id": n.id, "note": n.note} for n in note.notes],
+                "observations": [{"id": o.id, "observation": o.observation} for o in note.observations],
+                "investigations": [{"id": i.id, "investigation": i.investigation} for i in note.investigations],
             } for note in clinical_notes],
             "treatments": [{
                 "id": t.id,

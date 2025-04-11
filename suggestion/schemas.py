@@ -30,3 +30,15 @@ class NotesSuggestionSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+class ObservationSuggestionSchema(BaseModel):
+    observation: str
+
+    class Config:
+        from_attributes = True
+
+class InvestigationSuggestionSchema(BaseModel):
+    investigation: str
+
+    class Config:
+        from_attributes = True

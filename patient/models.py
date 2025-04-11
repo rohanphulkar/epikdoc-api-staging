@@ -67,6 +67,8 @@ class ClinicalNote(Base):
     diagnoses: Mapped[List["Diagnosis"]] = relationship("Diagnosis", back_populates="clinical_note")
     vital_signs: Mapped[List["VitalSign"]] = relationship("VitalSign", back_populates="clinical_note")
     notes: Mapped[List["Notes"]] = relationship("Notes", back_populates="clinical_note")
+    observations: Mapped[List["Observation"]] = relationship("Observation", back_populates="clinical_note")
+    investigations: Mapped[List["Investigation"]] = relationship("Investigation", back_populates="clinical_note")
 
 
 class Complaint(Base):
@@ -95,6 +97,22 @@ class VitalSign(Base):
     vital_sign: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="vital_signs")
+
+class Observation(Base):
+    __tablename__ = "observations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
+    observation: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="observations")
+
+class Investigation(Base):
+    __tablename__ = "investigations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    clinical_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("clinical_notes.id", ondelete='CASCADE'), nullable=False)
+    investigation: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    clinical_note: Mapped["ClinicalNote"] = relationship("ClinicalNote", back_populates="investigations")
 
 
 class Notes(Base):

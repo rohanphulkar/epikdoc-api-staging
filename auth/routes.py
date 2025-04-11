@@ -2272,8 +2272,8 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
                         patient_number=patient.patient_number,
                         patient_name=patient.name,
                         appointment_date=appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date,
-                        start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
-                        end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
+                        start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
+                        end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
                         checked_in_at=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
                         checked_out_at=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
                         status=status,
@@ -2365,7 +2365,18 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         
         treatments = []
         treatment_suggestions = set()
-        skipped_treatments = 0
+        
+        # Create a dictionary to store all appointments by patient for finding nearest date
+        patient_appointments = {}
+        for key, appointment in appointments_dict.items():
+            patient_id, date = key
+            if patient_id not in patient_appointments:
+                patient_appointments[patient_id] = []
+            patient_appointments[patient_id].append((date, appointment))
+        
+        # Sort appointments by date for each patient
+        for patient_id in patient_appointments:
+            patient_appointments[patient_id].sort(key=lambda x: x[0])
         
         for patient_number, group in grouped:
             # Update progress
@@ -2409,10 +2420,14 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                         if appointment:
                             break
                 
-                # Skip this treatment if no appointment exists
-                if not appointment:
-                    skipped_treatments += 1
-                    continue
+                # If still no appointment found, find the nearest appointment by date
+                if not appointment and patient.id in patient_appointments and patient_appointments[patient.id]:
+                    # Find the appointment with the closest date
+                    nearest_appointment = min(
+                        patient_appointments[patient.id], 
+                        key=lambda x: abs((x[0] - treatment_date_obj).days)
+                    )
+                    appointment = nearest_appointment[1]
                 
                 # Clean and convert numeric fields
                 try:
@@ -2528,28 +2543,28 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                     if isinstance(treatment_name, str):
                         treatment_name = treatment_name.strip().strip("'").strip('"')
                     
-                    # Create treatment record
-                    new_treatment = Treatment(
-                        patient_id=patient.id,
-                        appointment_id=appointment.id,
-                        # clinic_id=clinic.id,
-                        treatment_date=treatment_date,
-                        treatment_name=treatment_name,
-                        tooth_number=tooth_number,
-                        treatment_notes=treatment_notes,
-                        quantity=quantity,
-                        unit_cost=unit_cost,
-                        amount=amount,
-                        discount=discount,
-                        discount_type=discount_type,
-                        doctor_id=user.id
-                    )
-                    treatments.append(new_treatment)
-                    
-                    
-                    # Add treatment name to suggestions set
-                    if treatment_name:
-                        treatment_suggestions.add(treatment_name)
+                    # Create treatment record if we have an appointment
+                    if appointment:
+                        new_treatment = Treatment(
+                            patient_id=patient.id,
+                            appointment_id=appointment.id,
+                            # clinic_id=clinic.id,
+                            treatment_date=treatment_date,
+                            treatment_name=treatment_name,
+                            tooth_number=tooth_number,
+                            treatment_notes=treatment_notes,
+                            quantity=quantity,
+                            unit_cost=unit_cost,
+                            amount=amount,
+                            discount=discount,
+                            discount_type=discount_type,
+                            doctor_id=user.id
+                        )
+                        treatments.append(new_treatment)
+                        
+                        # Add treatment name to suggestions set
+                        if treatment_name:
+                            treatment_suggestions.add(treatment_name)
                 except Exception as e:
                     print(f"Error processing treatment: {str(e)}")
                     continue
@@ -2575,7 +2590,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         if new_suggestions:
             db.bulk_save_objects(new_suggestions)
         
-        print(f"Processed {len(treatments)} treatments. Skipped {skipped_treatments} treatments due to missing appointments.")
+        print(f"Processed {len(treatments)} treatments.")
         
         db.commit()
         import_log.status = ImportStatus.COMPLETED
@@ -2626,16 +2641,12 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 # Appointment.clinic_id == clinic.id
             ).all()
             
-            # Group appointments by patient_id and date for faster lookup
+            # Group appointments by patient_id for faster lookup
             for appt in all_appointments:
                 if appt.patient_id not in appointments_by_patient:
-                    appointments_by_patient[appt.patient_id] = {}
+                    appointments_by_patient[appt.patient_id] = []
                 
-                appt_date_str = appt.appointment_date.strftime('%Y-%m-%d')
-                if appt_date_str not in appointments_by_patient[appt.patient_id]:
-                    appointments_by_patient[appt.patient_id][appt_date_str] = []
-                
-                appointments_by_patient[appt.patient_id][appt_date_str].append(appt)
+                appointments_by_patient[appt.patient_id].append(appt)
         
         # Track statistics
         clinical_notes_created = 0
@@ -2654,16 +2665,28 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 skipped_notes += len(group)
                 continue
             
-            # Convert date to string for lookup
+            # Convert date to datetime object for comparison
             note_date_obj = note_date.date() if hasattr(note_date, 'date') else note_date
-            note_date_str = note_date_obj.strftime('%Y-%m-%d')
             
-            # Find appointment for this patient on this date
+            # Find appointment for this patient with the nearest date
             appointment = None
-            if (patient.id in appointments_by_patient and 
-                note_date_str in appointments_by_patient[patient.id]):
-                # Take the first appointment if multiple exist on same day
-                appointment = appointments_by_patient[patient.id][note_date_str][0]
+            if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
+                # Get all appointments for this patient
+                patient_appointments = appointments_by_patient[patient.id]
+                
+                # Find the appointment with the closest date
+                closest_appointment = None
+                min_days_diff = float('inf')
+                
+                for appt in patient_appointments:
+                    appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
+                    days_diff = abs((note_date_obj - appt_date).days)
+                    
+                    if days_diff < min_days_diff:
+                        min_days_diff = days_diff
+                        closest_appointment = appt
+                
+                appointment = closest_appointment
             
             # Create clinical note
             clinical_note = ClinicalNote(
@@ -2718,7 +2741,7 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                     if not existing:
                         db.add(DiagnosisSuggestion(diagnosis=normalized_diagnosis))
                     
-                elif "observation" in note_type or "vital" in note_type:
+                elif "vital" in note_type:
                     vital_sign = VitalSign(
                         clinical_note_id=clinical_note.id,
                         vital_sign=description
@@ -2732,14 +2755,37 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                     ).first()
                     if not existing:
                         db.add(VitalSignSuggestion(vital_sign=normalized_vital_sign))
+                
+                elif "observation" in note_type:
+                    observation = Observation(
+                        clinical_note_id=clinical_note.id,
+                        observation=description
+                    )
+                    db.add(observation)
+                    
+                    # Clean before normalizing
+                    normalized_observation = normalize_string(description)
+                    existing = db.query(ObservationSuggestion).filter(
+                        ObservationSuggestion.observation == normalized_observation
+                    ).first()
+                    if not existing:
+                        db.add(ObservationSuggestion(observation=normalized_observation))
                     
                 elif "investigation" in note_type:
                     # Handle investigation type notes
-                    investigation = Notes(
+                    investigation = Investigation(
                         clinical_note_id=clinical_note.id,
-                        note=f"Investigation: {description}"
+                        investigation=description
                     )
                     db.add(investigation)
+                    
+                    # Clean before normalizing
+                    normalized_investigation = normalize_string(description)
+                    existing = db.query(InvestigationSuggestion).filter(
+                        InvestigationSuggestion.investigation == normalized_investigation
+                    ).first()
+                    if not existing:
+                        db.add(InvestigationSuggestion(investigation=normalized_investigation))
                     
                 elif "note" in note_type or "treatment" in note_type:
                     note = Notes(
@@ -2896,7 +2942,19 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 if patient.id in appointments_by_patient and date_str in appointments_by_patient[patient.id]:
                     # Use the first appointment for this date
                     appointment = appointments_by_patient[patient.id][date_str][0]
-                
+                else:
+                    # Find appointment with nearest date if no exact match
+                    if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
+                        # Get all appointment dates for this patient
+                        all_dates = []
+                        for date_key, appts in appointments_by_patient[patient.id].items():
+                            appt_date = datetime.strptime(date_key, '%Y-%m-%d').date()
+                            all_dates.append((appt_date, appts[0]))  # Store date and first appointment
+                        
+                        if all_dates:
+                            # Find appointment with closest date
+                            closest_date = min(all_dates, key=lambda x: abs((treatment_date.date() - x[0]).days))
+                            appointment = closest_date[1]
                 
                 # Create treatment plan
                 treatment_plan = TreatmentPlan(
@@ -3131,23 +3189,18 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         patient_ids = [p.id for p in patients.values()]
         
         # Fetch all appointments for these patients
-        appointments_by_patient_date = {}
+        appointments_by_patient = {}
         if patient_ids:
             all_appointments = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
                 # Appointment.clinic_id == clinic.id
             ).all()
             
-            # Group appointments by patient_id and date for faster lookup
+            # Group appointments by patient_id for faster lookup
             for appt in all_appointments:
-                if appt.patient_id not in appointments_by_patient_date:
-                    appointments_by_patient_date[appt.patient_id] = {}
-                
-                appt_date_str = appt.appointment_date.strftime('%Y-%m-%d')
-                if appt_date_str not in appointments_by_patient_date[appt.patient_id]:
-                    appointments_by_patient_date[appt.patient_id][appt_date_str] = []
-                
-                appointments_by_patient_date[appt.patient_id][appt_date_str].append(appt)
+                if appt.patient_id not in appointments_by_patient:
+                    appointments_by_patient[appt.patient_id] = []
+                appointments_by_patient[appt.patient_id].append(appt)
         
         # Fetch all invoices to link them to payments
         invoices_by_number = {}
@@ -3183,14 +3236,25 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 skipped_count += 1
                 continue
             
-            # Find appointment for this patient on this date
+            # Find appointment for this patient with nearest date
             appointment = None
-            payment_date_str = payment_date.strftime('%Y-%m-%d')
-            
-            if (patient.id in appointments_by_patient_date and 
-                payment_date_str in appointments_by_patient_date[patient.id]):
-                # Take the first appointment if multiple exist on same day
-                appointment = appointments_by_patient_date[patient.id][payment_date_str][0]
+            if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
+                # Convert payment date to datetime.date for comparison
+                payment_date_only = payment_date.date() if hasattr(payment_date, 'date') else payment_date
+                
+                # Find appointment with nearest date
+                nearest_appointment = None
+                min_days_diff = float('inf')
+                
+                for appt in appointments_by_patient[patient.id]:
+                    appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
+                    days_diff = abs((payment_date_only - appt_date).days)
+                    
+                    if days_diff < min_days_diff:
+                        min_days_diff = days_diff
+                        nearest_appointment = appt
+                
+                appointment = nearest_appointment
             
             # Calculate total amount for this group
             total_amount = group["Amount Paid"].sum()
@@ -3327,7 +3391,7 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         
         # Get all appointments for these patients
         patient_ids = [p.id for p in patients.values()]
-        appointments_by_patient_date = {}
+        all_appointments_by_patient = {}
         
         if patient_ids:
             all_appointments = db.query(Appointment).filter(
@@ -3335,16 +3399,11 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 # Appointment.clinic_id == clinic.id
             ).all()
             
-            # Group appointments by patient_id and date for faster lookup
+            # Group appointments by patient_id for faster lookup
             for appt in all_appointments:
-                if appt.patient_id not in appointments_by_patient_date:
-                    appointments_by_patient_date[appt.patient_id] = {}
-                
-                appt_date_str = appt.appointment_date.strftime('%Y-%m-%d')
-                if appt_date_str not in appointments_by_patient_date[appt.patient_id]:
-                    appointments_by_patient_date[appt.patient_id][appt_date_str] = []
-                
-                appointments_by_patient_date[appt.patient_id][appt_date_str].append(appt)
+                if appt.patient_id not in all_appointments_by_patient:
+                    all_appointments_by_patient[appt.patient_id] = []
+                all_appointments_by_patient[appt.patient_id].append(appt)
         
         # Get all existing payments to link with invoices
         all_payments = db.query(Payment).all()
@@ -3374,14 +3433,23 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 skipped_invoices += 1
                 continue
             
-            # Find appointment for this patient on this date
+            # Find appointment for this patient - get the one with nearest date
             appointment = None
-            date_str = invoice_date.strftime('%Y-%m-%d')
-            
-            if (patient.id in appointments_by_patient_date and 
-                date_str in appointments_by_patient_date[patient.id]):
-                # Take the first appointment if multiple exist on same day
-                appointment = appointments_by_patient_date[patient.id][date_str][0]
+            if patient.id in all_appointments_by_patient and all_appointments_by_patient[patient.id]:
+                # Find appointment with nearest date
+                patient_appointments = all_appointments_by_patient[patient.id]
+                
+                # Calculate time difference between invoice date and each appointment date
+                nearest_appointment = None
+                min_time_diff = float('inf')
+                
+                for appt in patient_appointments:
+                    time_diff = abs((invoice_date - appt.appointment_date.replace(tzinfo=None)).total_seconds())
+                    if time_diff < min_time_diff:
+                        min_time_diff = time_diff
+                        nearest_appointment = appt
+                
+                appointment = nearest_appointment
             
             # Get payment if it exists
             payment = payments_by_invoice_number.get(invoice_number)
