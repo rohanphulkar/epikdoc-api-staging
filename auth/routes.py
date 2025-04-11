@@ -2151,8 +2151,10 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             dob = None if pd.isna(dob_series.iloc[idx]) else dob_series.iloc[idx].to_pydatetime()
             anniversary = None if pd.isna(anniversary_series.iloc[idx]) else anniversary_series.iloc[idx].to_pydatetime()
 
-            existing_patient = db.query(Patient).filter(Patient.patient_number == patient_number,Patient.doctor_id == user.id).first()
+            # Check if patient already exists for this doctor
+            existing_patient = db.query(Patient).filter(Patient.patient_number == patient_number, Patient.doctor_id == user.id).first()
             if existing_patient:
+                # Skip this patient if already exists for this doctor
                 continue
                 
             new_patient = Patient(
@@ -2270,6 +2272,8 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
                         patient_number=patient.patient_number,
                         patient_name=patient.name,
                         appointment_date=appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date,
+                        start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
+                        end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
                         checked_in_at=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
                         checked_out_at=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
                         status=status,
