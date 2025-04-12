@@ -22,6 +22,9 @@ from catalog.routes import catalog_router
 from suggestion.routes import suggestion_router
 from lookup.routes import lookup_router
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 # Configure logging with more comprehensive settings
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +80,9 @@ app = FastAPI(
         "email": "support@epikdoc.com"
     }
 )
+
+# Prometheus metrics
+instrumentator = Instrumentator().instrument(app).expose(app)
 
 # Custom CORS middleware class
 class CustomCORSMiddleware(BaseHTTPMiddleware):

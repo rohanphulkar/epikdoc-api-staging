@@ -2,7 +2,7 @@ import logging
 import sys
 
 # === Logging setup ===
-LOG_FILE = "app.log"
+LOG_FILE = "logs/app.log"
 
 # Create a custom logger
 logger = logging.getLogger()
