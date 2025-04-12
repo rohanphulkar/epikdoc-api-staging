@@ -28,6 +28,7 @@ from suggestion.models import *
 import random
 import asyncio
 from multiprocessing import Process
+
 user_router = APIRouter()
 
 @user_router.post("/register", 
@@ -4034,7 +4035,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         }
     }
 )
-async def import_data(background_tasks: BackgroundTasks, request: Request, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+async def import_data(background_tasks: BackgroundTasks, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -4050,54 +4051,51 @@ async def import_data(background_tasks: BackgroundTasks, request: Request, files
         
         # Validate file extension
         allowed_extensions = ['.csv', '.zip']
-        import_log_ids = []
-        for file in files:
-            file_ext = os.path.splitext(str(file.filename))[1].lower()
-            if file_ext not in allowed_extensions:
-                return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
+        file_ext = os.path.splitext(str(file.filename))[1].lower()
+        if file_ext not in allowed_extensions:
+            return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
+    
+        uuid = generate_uuid()
+        # Create uploads directory if it doesn't exist
+        upload_dir = os.path.join("uploads", "imports", uuid)
+        os.makedirs(upload_dir, exist_ok=True)
         
-            uuid = generate_uuid()
-            # Create uploads directory if it doesn't exist
-            upload_dir = os.path.join("uploads", "imports", uuid)
-            os.makedirs(upload_dir, exist_ok=True)
+        # Create import log entry
+        import_log = ImportLog(
+            user_id=user.id,
+            # clinic_id=clinic.id,
+            file_name=file.filename,
+            status=ImportStatus.PENDING,
+            progress=0,
+            current_stage="Initializing",
+            current_file=None,
+            files_processed=0,
+            total_files=0,
+            error_message=None
+        )
+        db.add(import_log)
+        db.commit()
+        db.refresh(import_log)
+        
+        # Read and save file
+        file_contents = await file.read()
+        file_path = f"uploads/imports/{uuid}/{file.filename}"
+        with open(file_path, "wb") as f:
+            f.write(file_contents)
             
-            # Create import log entry
-            import_log = ImportLog(
-                user_id=user.id,
-                # clinic_id=clinic.id,
-                file_name=file.filename,
-                status=ImportStatus.PENDING,
-                progress=0,
-                current_stage="Initializing",
-                current_file=None,
-                files_processed=0,
-                total_files=0,
-                error_message=None
-            )
-            db.add(import_log)
+        if file_ext == '.zip':
+            import_log.zip_file = file_path
             db.commit()
-            db.refresh(import_log)
-            import_log_ids.append(import_log.id)
-            
-            # Read and save file
-            file_contents = await file.read()
-            file_path = f"uploads/imports/{uuid}/{file.filename}"
-            with open(file_path, "wb") as f:
-                f.write(file_contents)
-                
-            if file_ext == '.zip':
-                import_log.zip_file = file_path
-                db.commit()
 
-            # Start background processing without using scheduler
-            # This avoids timezone and scheduler issues
-            process = Process(target=run_process_data_in_background, args=(file_path, user.id, import_log.id, uuid))
-            process.daemon = True
-            process.start()
+        # Start background processing without using scheduler
+        # This avoids timezone and scheduler issues
+        process = Process(target=run_process_data_in_background, args=(file_path, user.id, import_log.id, uuid))
+        process.daemon = True
+        process.start()
 
         return JSONResponse(status_code=200, content={
             "message": "Data import started",
-            "import_log_ids": import_log_ids
+            "import_log_id": import_log.id
         })
 
     except Exception as e:
