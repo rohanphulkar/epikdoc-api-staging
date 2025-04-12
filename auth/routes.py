@@ -3637,34 +3637,22 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         return JSONResponse(status_code=400, content={"error": f"Error processing procedure catalog data: {str(e)}"})
 
 async def process_data_in_background(file_path: str, user_id: str, import_log_id: str, db: Session, uuid: str):
-    # Create a completely new database session to ensure isolation from other requests
-    from db.db import SessionLocal
-    from sqlalchemy.orm import sessionmaker
-    from sqlalchemy import create_engine
-    from db.db import SQLALCHEMY_DATABASE_URL
-    
-    # Create a dedicated engine and session for this background process
-    dedicated_engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
-    DedicatedSession = sessionmaker(autocommit=False, autoflush=False, bind=dedicated_engine)
-    isolated_db = DedicatedSession()
-    
     try:
         print(f"Starting background processing for file: {file_path}")
-        import_log = isolated_db.query(ImportLog).filter(ImportLog.id == import_log_id).first()
-        user = isolated_db.query(User).filter(User.id == user_id).first()
+        import_log = db.query(ImportLog).filter(ImportLog.id == import_log_id).first()
+        user = db.query(User).filter(User.id == user_id).first()
         print(f"Found import_log {import_log_id} and user {user_id}")
-        
+        # clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
         if not import_log:
             print(f"Import log with id {import_log_id} not found")
             return
         if not user:
             print(f"User with id {user_id} not found")
             return
+        # if not clinic:
+        #     print(f"Clinic with id {clinic_id} not found")
+        #     return
 
-        # Create a dedicated directory for this import process
-        import_dir = f"uploads/imports/{uuid}"
-        os.makedirs(import_dir, exist_ok=True)
-        
         file_ext = os.path.splitext(file_path)[1].lower()
         print(f"File extension: {file_ext}")
         
@@ -3673,53 +3661,37 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
             try:
                 print("Extracting zip file...")
                 import_log.current_stage = "Extracting ZIP file"
-                isolated_db.commit()
+                db.commit()
                 
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
-                    zip_ref.extractall(import_dir)
+                    zip_ref.extractall(f"uploads/imports/{uuid}")
                 print("Zip file extracted successfully")
                 
-                isolated_db.commit()
+                db.commit()
             except Exception as e:
                 print(f"Error extracting zip file: {str(e)}")
                 import_log.status = ImportStatus.FAILED
                 import_log.error_message = f"Failed to extract ZIP: {str(e)}"
-                isolated_db.commit()
+                db.commit()
                 return
 
         # Update status to processing
         import_log.status = ImportStatus.PROCESSING
         import_log.current_stage = "Analyzing files"
-        isolated_db.commit()
+        db.commit()
 
         # Process each CSV file
-        csv_files = [f for f in os.listdir(import_dir) if f.endswith('.csv')]
+        csv_files = [f for f in os.listdir(f"uploads/imports/{uuid}") if f.endswith('.csv')]
         print(f"Found CSV files: {csv_files}")
         if not csv_files:
             print("No CSV files found")
             import_log.status = ImportStatus.FAILED
             import_log.error_message = "No CSV files found in upload"
-            isolated_db.commit()
+            db.commit()
             return
-            
-        # Reset global counters for this process
-        global total_rows, rows_processed, percentage_completed, total_progress
-        total_rows = 0
-        rows_processed = 0
-        percentage_completed = 0
-        total_progress = 0
-        
-        # Count total rows across all files
+        global total_rows
         for file in csv_files:
-            try:
-                file_path = os.path.join(import_dir, file)
-                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                    total_rows += len(pd.read_csv(file_path))
-                else:
-                    print(f"Warning: File {file} is empty or does not exist")
-            except Exception as e:
-                print(f"Error counting rows in {file}: {str(e)}")
-                # Continue with other files even if one fails
+            total_rows += len(pd.read_csv(f"uploads/imports/{uuid}/{file}"))
 
         # Define processing order and file name patterns
         file_types = [
@@ -3773,7 +3745,6 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         total_files = len(csv_files)
         files_processed = 0
         import_log.total_files = total_files
-        isolated_db.commit()  # Commit total_files update
 
         # Process files in order
         for file_type in file_types:
@@ -3787,46 +3758,28 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                     try:
                         import_log.current_stage = f"{file_type['stage_name']} ({filename})"
                         import_log.current_file = filename
-                        isolated_db.commit()
+                        db.commit()
                         
-                        file_path = os.path.join(import_dir, filename)
-                        print(f"Reading CSV file: {file_path}")
-                        
-                        # Check if file exists and is not empty
-                        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-                            print(f"Warning: File {filename} is empty or does not exist, skipping")
-                            continue
-                            
-                        df = pd.read_csv(file_path, keep_default_na=False)
+                        print(f"Reading CSV file: {filename}")
+                        df = pd.read_csv(f"uploads/imports/{uuid}/{filename}", keep_default_na=False)
                         df = df.fillna("")
                         print(f"Successfully read CSV with {len(df)} rows")
                         
                         # Call appropriate processor function
                         processor = file_type["processor"]
                         if processor in [process_patient_data, process_appointment_data, process_expense_data, 
-                                      process_invoice_data, process_payment_data, process_procedure_catalog_data, 
-                                      process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
-                            result = await processor(import_log, df, isolated_db, user)
+                                      process_invoice_data, process_payment_data, process_procedure_catalog_data, process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
+                            await processor(import_log, df, db, user)
                         else:
-                            result = await processor(import_log, df, isolated_db)
-                            
-                        # Check if processor returned an error response
-                        if isinstance(result, JSONResponse):
-                            print(f"Processor returned error: {result.body}")
-                            import_log.error_message = f"Error in {filename}: {result.body}"
-                            isolated_db.commit()
-                            continue
+                            await processor(import_log, df, db)
                             
                         files_processed += 1
                         import_log.files_processed = files_processed
-                        isolated_db.commit()
+                        db.commit()
                             
                     except Exception as e:
                         print(f"Error processing file {filename}: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
                         import_log.error_message = f"Error in {filename}: {str(e)}"
-                        isolated_db.commit()
                         continue
 
         # Update import log status to completed
@@ -3834,37 +3787,23 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         import_log.current_file = None
         import_log.current_stage = f"Import Completed - Processed {total_rows} total rows"
         import_log.progress = 100
-        isolated_db.commit()
+        db.commit()
         print(f"Import completed successfully. Total rows processed: {total_rows}")
         
     except Exception as e:
         print(f"Error in background processing: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        if 'import_log' in locals() and import_log:
-            import_log.status = ImportStatus.FAILED
-            import_log.error_message = f"Import failed: {str(e)}"
-            try:
-                isolated_db.commit()
-            except Exception as commit_error:
-                print(f"Error committing failure status: {str(commit_error)}")
-            print("Updated import status to FAILED")
+        if 'import_log' in locals():
+            if import_log:
+                import_log.status = ImportStatus.FAILED
+                import_log.error_message = f"Import failed: {str(e)}"
+                db.commit()
+                print("Updated import status to FAILED")
     finally:
-        # Clean up resources
-        try:
-            isolated_db.close()
-            dedicated_engine.dispose()
-        except Exception as close_error:
-            print(f"Error closing database connection: {str(close_error)}")
-            
-        try:
-            if os.path.exists(f"uploads/imports/{uuid}"):
-                shutil.rmtree(f"uploads/imports/{uuid}")
-        except Exception as cleanup_error:
-            print(f"Error cleaning up temporary files: {str(cleanup_error)}")
-            
-        print("Background process completed and resources cleaned up")
+        db.close()
+        shutil.rmtree(f"uploads/imports/{uuid}")
+        print("Database connection closed")
 
+        
 @user_router.post("/import-data",
     response_model=dict,
     status_code=200,
