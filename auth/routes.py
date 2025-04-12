@@ -27,7 +27,7 @@ from sqlalchemy import func
 from suggestion.models import *
 import random
 import asyncio
-
+from multiprocessing import Process
 user_router = APIRouter()
 
 @user_router.post("/register", 
@@ -2147,9 +2147,10 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             
             patient_number = str(row.get("Patient Number", "")).strip("'")
             
-            # Handle NaT values for dates by converting to None - use iloc for proper indexing
-            dob = None if pd.isna(dob_series.iloc[idx]) else dob_series.iloc[idx].to_pydatetime()
-            anniversary = None if pd.isna(anniversary_series.iloc[idx]) else anniversary_series.iloc[idx].to_pydatetime()
+            # Handle NaT values for dates by converting to None - convert idx to integer explicitly
+            idx_int = df.index.get_loc(idx)  # Get integer position for the index
+            dob = None if pd.isna(dob_series.iloc[idx_int]) else dob_series.iloc[idx_int].to_pydatetime()
+            anniversary = None if pd.isna(anniversary_series.iloc[idx_int]) else anniversary_series.iloc[idx_int].to_pydatetime()
 
             # Check if patient already exists for this doctor
             existing_patient = db.query(Patient).filter(Patient.patient_number == patient_number, Patient.doctor_id == user.id).first()
@@ -2239,52 +2240,65 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
         # Initialize progress tracking
         global total_rows, rows_processed, percentage_completed
 
-        for k, v in grouped_appointments.items():
+        # Process in smaller batches to avoid timeouts
+        batch_size = 50
+        total_patients = len(grouped_appointments)
+        
+        for i, (k, v) in enumerate(grouped_appointments.items()):
             # Update progress
             update_progress(1, total_rows, import_log, db)
             
             patient = patients.get(k)
             if patient:
-                for appointment in v:
-                    appointment_date = appointment.get("Date")
-                    if pd.isna(appointment_date):
-                        continue
-                    
-                    # Ensure status is a valid enum value
-                    status_str = str(appointment.get("Status", "scheduled")).lower().strip()
-                    try:
-                        status = AppointmentStatus(status_str)
-                    except ValueError:
-                        status = AppointmentStatus.SCHEDULED
+                # Process appointments in batches
+                for j in range(0, len(v), batch_size):
+                    batch = v[j:j+batch_size]
+                    for appointment in batch:
+                        appointment_date = appointment.get("Date")
+                        if pd.isna(appointment_date):
+                            continue
                         
-                    new_appointment = Appointment(
-                        patient_id=patient.id,
-                        # clinic_id=clinic.id,
-                        patient_number=patient.patient_number,
-                        patient_name=patient.name,
-                        appointment_date=appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date,
-                        start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
-                        end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
-                        checked_in_at=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
-                        checked_out_at=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
-                        status=status,
-                        notes=str(appointment.get("Notes", "")).strip(),
-                        doctor_id=user.id,
-                        doctor_name=user.name,
-                        share_on_email=False,
-                        share_on_sms=False,
-                        share_on_whatsapp=False,
-                        send_reminder=False
-                    )
-                    db.add(new_appointment)
-                    db.commit()
-                    db.refresh(new_appointment)
+                        # Ensure status is a valid enum value
+                        status_str = str(appointment.get("Status", "scheduled")).lower().strip()
+                        try:
+                            status = AppointmentStatus(status_str)
+                        except ValueError:
+                            status = AppointmentStatus.SCHEDULED
+                            
+                        new_appointment = Appointment(
+                            patient_id=patient.id,
+                            # clinic_id=clinic.id,
+                            patient_number=patient.patient_number,
+                            patient_name=patient.name,
+                            appointment_date=appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date,
+                            start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
+                            end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
+                            checked_in_at=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
+                            checked_out_at=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
+                            status=status,
+                            notes=str(appointment.get("Notes", "")).strip(),
+                            doctor_id=user.id,
+                            doctor_name=user.name,
+                            share_on_email=False,
+                            share_on_sms=False,
+                            share_on_whatsapp=False,
+                            send_reminder=False
+                        )
+                        appointments.append(new_appointment)
+                    
+                    # Log progress
+                    print(f"Processed {j+len(batch)} appointments for patient {k} ({i+1}/{total_patients})")
             
         import_log.status = ImportStatus.COMPLETED
         db.commit()
+        if appointments:
+            db.bulk_save_objects(appointments)
+            db.commit()
         return True
     except Exception as e:
         print(f"Error during appointment processing: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         import_log.status = ImportStatus.FAILED
         db.commit()
@@ -2366,7 +2380,8 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         for patient_id in patient_appointments:
             patient_appointments[patient_id].sort(key=lambda x: x[0])
         
-        for patient_number, group in grouped:
+        total_patients = len(grouped)
+        for i, (patient_number, group) in enumerate(grouped):
             # Update progress
             update_progress(1, total_rows, import_log, db)
             
@@ -2379,186 +2394,196 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
             # Sort treatments by date for this patient
             patient_treatments = group.sort_values("Date").to_dict(orient="records")
             
-            for treatment in patient_treatments:
-                treatment_date = treatment.get("Date")
-                treatment_name = treatment.get("Treatment Name")
+            # Process in smaller batches to avoid long transactions
+            batch_size = 50
+            for j in range(0, len(patient_treatments), batch_size):
+                batch = patient_treatments[j:j+batch_size]
                 
-                if pd.isna(treatment_date) or not treatment_name:
-                    continue
-                
-                # Convert treatment_date to date object for lookup
-                treatment_date_obj = None
-                if hasattr(treatment_date, 'date'):
-                    treatment_date_obj = treatment_date.date()
-                elif isinstance(treatment_date, datetime.date):
-                    treatment_date_obj = treatment_date
-                else:
-                    # Skip if we can't get a valid date
-                    continue
-                
-                # Look up appointment in our dictionary
-                appointment = appointments_dict.get((patient.id, treatment_date_obj))
-                
-                # If no appointment found, try to find the closest appointment within 1 day
-                if not appointment and treatment_date_obj is not None:
-                    # Check one day before and after
-                    for delta in [-1, 1]:
-                        adjacent_date = treatment_date_obj + timedelta(days=delta)
-                        appointment = appointments_dict.get((patient.id, adjacent_date))
-                        if appointment:
-                            break
-                
-                # If still no appointment found, find the nearest appointment by date
-                if not appointment and patient.id in patient_appointments and patient_appointments[patient.id]:
-                    # Find the appointment with the closest date
-                    nearest_appointment = min(
-                        patient_appointments[patient.id], 
-                        key=lambda x: abs((x[0] - treatment_date_obj).days)
-                    )
-                    appointment = nearest_appointment[1]
-                
-                # Clean and convert numeric fields
-                try:
-                    # Handle quantity
-                    quantity = treatment.get("Quantity")
-                    if quantity is not None:
-                        if isinstance(quantity, str):
-                            # Remove quotes and convert to integer
-                            quantity = quantity.strip().strip("'").strip('"')
-                            try:
-                                quantity = int(quantity)
-                            except ValueError:
+                for treatment in batch:
+                    treatment_date = treatment.get("Date")
+                    treatment_name = treatment.get("Treatment Name")
+                    
+                    if pd.isna(treatment_date) or not treatment_name:
+                        continue
+                    
+                    # Convert treatment_date to date object for lookup
+                    treatment_date_obj = None
+                    if hasattr(treatment_date, 'date'):
+                        treatment_date_obj = treatment_date.date()
+                    elif isinstance(treatment_date, datetime.date):
+                        treatment_date_obj = treatment_date
+                    else:
+                        # Skip if we can't get a valid date
+                        continue
+                    
+                    # Look up appointment in our dictionary
+                    appointment = appointments_dict.get((patient.id, treatment_date_obj))
+                    
+                    # If no appointment found, try to find the closest appointment within 1 day
+                    if not appointment and treatment_date_obj is not None:
+                        # Check one day before and after
+                        for delta in [-1, 1]:
+                            adjacent_date = treatment_date_obj + timedelta(days=delta)
+                            appointment = appointments_dict.get((patient.id, adjacent_date))
+                            if appointment:
+                                break
+                    
+                    # If still no appointment found, find the nearest appointment by date
+                    if not appointment and patient.id in patient_appointments and patient_appointments[patient.id]:
+                        # Find the appointment with the closest date
+                        nearest_appointment = min(
+                            patient_appointments[patient.id], 
+                            key=lambda x: abs((x[0] - treatment_date_obj).days)
+                        )
+                        appointment = nearest_appointment[1]
+                    
+                    # Clean and convert numeric fields
+                    try:
+                        # Handle quantity
+                        quantity = treatment.get("Quantity")
+                        if quantity is not None:
+                            if isinstance(quantity, str):
+                                # Remove quotes and convert to integer
+                                quantity = quantity.strip().strip("'").strip('"')
+                                try:
+                                    quantity = int(quantity)
+                                except ValueError:
+                                    quantity = 1
+                            elif pd.isna(quantity):
                                 quantity = 1
-                        elif pd.isna(quantity):
+                            else:
+                                try:
+                                    quantity = int(quantity)
+                                except ValueError:
+                                    quantity = 1
+                        else:
                             quantity = 1
-                        else:
-                            try:
-                                quantity = int(quantity)
-                            except ValueError:
-                                quantity = 1
-                    else:
-                        quantity = 1
-                    
-                    # Handle unit_cost
-                    unit_cost = treatment.get("Treatment Cost")
-                    if unit_cost is not None:
-                        if isinstance(unit_cost, str):
-                            unit_cost = unit_cost.strip().strip("'").strip('"')
-                            try:
-                                unit_cost = float(unit_cost)
-                            except ValueError:
+                        
+                        # Handle unit_cost
+                        unit_cost = treatment.get("Treatment Cost")
+                        if unit_cost is not None:
+                            if isinstance(unit_cost, str):
+                                unit_cost = unit_cost.strip().strip("'").strip('"')
+                                try:
+                                    unit_cost = float(unit_cost)
+                                except ValueError:
+                                    unit_cost = 0
+                            elif pd.isna(unit_cost):
                                 unit_cost = 0
-                        elif pd.isna(unit_cost):
+                            else:
+                                try:
+                                    unit_cost = float(unit_cost)
+                                except ValueError:
+                                    unit_cost = 0
+                        else:
                             unit_cost = 0
-                        else:
-                            try:
-                                unit_cost = float(unit_cost)
-                            except ValueError:
-                                unit_cost = 0
-                    else:
-                        unit_cost = 0
-                    
-                    # Handle amount
-                    amount = treatment.get("Amount")
-                    if amount is not None:
-                        if isinstance(amount, str):
-                            amount = amount.strip().strip("'").strip('"')
-                            try:
-                                amount = float(amount)
-                            except ValueError:
+                        
+                        # Handle amount
+                        amount = treatment.get("Amount")
+                        if amount is not None:
+                            if isinstance(amount, str):
+                                amount = amount.strip().strip("'").strip('"')
+                                try:
+                                    amount = float(amount)
+                                except ValueError:
+                                    amount = 0
+                            elif pd.isna(amount):
                                 amount = 0
-                        elif pd.isna(amount):
+                            else:
+                                try:
+                                    amount = float(amount)
+                                except ValueError:
+                                    amount = 0
+                        else:
                             amount = 0
-                        else:
-                            try:
-                                amount = float(amount)
-                            except ValueError:
-                                amount = 0
-                    else:
-                        amount = 0
-                    
-                    # Handle discount
-                    discount = treatment.get("Discount")
-                    if discount is not None:
-                        if isinstance(discount, str):
-                            discount = discount.strip().strip("'").strip('"')
-                            if discount:
+                        
+                        # Handle discount
+                        discount = treatment.get("Discount")
+                        if discount is not None:
+                            if isinstance(discount, str):
+                                discount = discount.strip().strip("'").strip('"')
+                                if discount:
+                                    try:
+                                        discount = float(discount)
+                                    except ValueError:
+                                        discount = 0
+                                else:
+                                    discount = 0
+                            elif pd.isna(discount):
+                                discount = 0
+                            else:
                                 try:
                                     discount = float(discount)
                                 except ValueError:
                                     discount = 0
-                            else:
-                                discount = 0
-                        elif pd.isna(discount):
-                            discount = 0
                         else:
-                            try:
-                                discount = float(discount)
-                            except ValueError:
-                                discount = 0
-                    else:
-                        discount = 0
-                    
-                    # Handle discount_type
-                    discount_type = treatment.get("DiscountType")
-                    if discount_type is not None:
-                        if isinstance(discount_type, str):
-                            discount_type = discount_type.strip().strip("'").strip('"')
-                            if not discount_type or discount_type.upper() not in ["PERCENT", "AMOUNT"]:
+                            discount = 0
+                        
+                        # Handle discount_type
+                        discount_type = treatment.get("DiscountType")
+                        if discount_type is not None:
+                            if isinstance(discount_type, str):
+                                discount_type = discount_type.strip().strip("'").strip('"')
+                                if not discount_type or discount_type.upper() not in ["PERCENT", "AMOUNT"]:
+                                    discount_type = "PERCENT"
+                            else:
                                 discount_type = "PERCENT"
                         else:
                             discount_type = "PERCENT"
-                    else:
-                        discount_type = "PERCENT"
-                    
-                    # Handle tooth_number
-                    tooth_number = treatment.get("Tooth Number")
-                    if tooth_number is not None:
-                        if isinstance(tooth_number, str):
-                            tooth_number = tooth_number.strip().strip("'").strip('"')
-                        elif pd.isna(tooth_number):
-                            tooth_number = None
-                    
-                    # Handle treatment_notes
-                    treatment_notes = treatment.get("Treatment Notes")
-                    if treatment_notes is not None:
-                        if isinstance(treatment_notes, str):
-                            treatment_notes = treatment_notes.strip().strip("'").strip('"')
-                        elif pd.isna(treatment_notes):
-                            treatment_notes = None
-                    
-                    # Clean treatment name
-                    if isinstance(treatment_name, str):
-                        treatment_name = treatment_name.strip().strip("'").strip('"')
-                    
-                    # Create treatment record if we have an appointment
-                    if appointment:
-                        new_treatment = Treatment(
-                            patient_id=patient.id,
-                            appointment_id=appointment.id,
-                            # clinic_id=clinic.id,
-                            treatment_date=treatment_date,
-                            treatment_name=treatment_name,
-                            tooth_number=tooth_number,
-                            treatment_notes=treatment_notes,
-                            quantity=quantity,
-                            unit_cost=unit_cost,
-                            amount=amount,
-                            discount=discount,
-                            discount_type=discount_type,
-                            doctor_id=user.id
-                        )
-                        db.add(new_treatment)
-                        db.commit()
-                        db.refresh(new_treatment)
                         
-                        # Add treatment name to suggestions set
-                        if treatment_name:
-                            treatment_suggestions.add(treatment_name)
-                except Exception as e:
-                    print(f"Error processing treatment: {str(e)}")
-                    continue
-        
+                        # Handle tooth_number
+                        tooth_number = treatment.get("Tooth Number")
+                        if tooth_number is not None:
+                            if isinstance(tooth_number, str):
+                                tooth_number = tooth_number.strip().strip("'").strip('"')
+                            elif pd.isna(tooth_number):
+                                tooth_number = None
+                        
+                        # Handle treatment_notes
+                        treatment_notes = treatment.get("Treatment Notes")
+                        if treatment_notes is not None:
+                            if isinstance(treatment_notes, str):
+                                treatment_notes = treatment_notes.strip().strip("'").strip('"')
+                            elif pd.isna(treatment_notes):
+                                treatment_notes = None
+                        
+                        # Clean treatment name
+                        if isinstance(treatment_name, str):
+                            treatment_name = treatment_name.strip().strip("'").strip('"')
+                        
+                        # Create treatment record if we have an appointment
+                        if appointment:
+                            new_treatment = Treatment(
+                                patient_id=patient.id,
+                                appointment_id=appointment.id,
+                                # clinic_id=clinic.id,
+                                treatment_date=treatment_date,
+                                treatment_name=treatment_name,
+                                tooth_number=tooth_number,
+                                treatment_notes=treatment_notes,
+                                quantity=quantity,
+                                unit_cost=unit_cost,
+                                amount=amount,
+                                discount=discount,
+                                discount_type=discount_type,
+                                doctor_id=user.id
+                            )
+                            treatments.append(new_treatment)
+                            
+                            # Add treatment name to suggestions set
+                            if treatment_name:
+                                treatment_suggestions.add(treatment_name)
+                    except Exception as e:
+                        print(f"Error processing treatment: {str(e)}")
+                        continue
+
+                # Log progress
+                print(f"Processed {j+len(batch)} treatments for patient {patient_number} ({i+1}/{total_patients})")
+
+
+        if treatments:
+            db.bulk_save_objects(treatments)
+            db.commit()
         # Add treatment suggestions that don't already exist
         existing_suggestions = {
             s.treatment_name for s in 
@@ -2575,10 +2600,10 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         
         if new_suggestions:
             db.bulk_save_objects(new_suggestions)
+            db.commit()
         
         print(f"Processed {len(treatments)} treatments.")
         
-        db.commit()
         import_log.status = ImportStatus.COMPLETED
         db.commit()
         return True
@@ -2640,15 +2665,20 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         
         # Group by Patient Number and Date
         grouped = df.groupby(["Patient Number", "Date"])
+        total_groups = len(grouped)
+        processed_groups = 0
         
         for (patient_number, note_date), group in grouped:
             # Update progress
             update_progress(1, total_rows, import_log, db)
+            processed_groups += 1
+            print(f"Processing group {processed_groups}/{total_groups} for patient {patient_number}")
             
             patient = patients.get(patient_number)
             
             if not patient or pd.isna(note_date):
                 skipped_notes += len(group)
+                print(f"Skipping {len(group)} notes for patient {patient_number} - patient not found or invalid date")
                 continue
             
             # Convert date to datetime object for comparison
@@ -2687,7 +2717,14 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
             clinical_notes_created += 1
             
             # Process each row in this group
+            note_count = 0
             for _, row in group.iterrows():
+                note_count += 1
+                if note_count % 50 == 0:
+                    print(f"Processing note {note_count}/{len(group)} for patient {patient_number}")
+                    # Commit periodically to avoid long transactions
+                    db.commit()
+                
                 note_type = row["Type"].lower()
                 description = row["Description"]
                 
@@ -2779,9 +2816,10 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                         note=description
                     )
                     db.add(note)
-        
-        # Commit all changes
-        db.commit()
+            
+            # Commit after each patient group to avoid long transactions
+            db.commit()
+            print(f"Committed notes for patient {patient_number}")
         
         # Update import log status
         import_log.status = ImportStatus.COMPLETED
@@ -2798,6 +2836,7 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         import_log.status = ImportStatus.FAILED
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during clinical notes processing: {str(e)}"})
+
 
 async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing treatment plan data")
@@ -2874,7 +2913,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             ).all()
         }
     
-        
         # Get all appointments for these patients to match with dates
         patient_ids = [p.id for p in patients.values()]
         appointments_by_patient = {}
@@ -2884,7 +2922,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 Appointment.patient_id.in_(patient_ids),
                 # Appointment.clinic_id == clinic.id
             ).all()
-            
             
             # Group appointments by patient_id and date for faster lookup
             for appt in all_appointments:
@@ -2905,6 +2942,10 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
         
         # Group by Patient Number and Date
         grouped = df.groupby(["Patient Number", "Date"])
+        
+        # Process in smaller batches to avoid long-running transactions
+        batch_size = 100
+        batch_count = 0
         
         for (patient_number, treatment_date), group in grouped:
             # Update progress
@@ -3001,9 +3042,19 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                     except Exception as e:
                         print(f"Error processing individual treatment: {str(e)}")
                         continue
+                
+                # Commit in batches to avoid long transactions
+                batch_count += 1
+                if batch_count % batch_size == 0:
+                    db.commit()
+                    print(f"Committed batch {batch_count // batch_size} of treatment plans")
+                    
             except Exception as e:
-                print(f"Error processing group for patient {patient_number} on {date_str}: {str(e)}")
+                print(f"Error processing group for patient {patient_number} on {date_str if 'date_str' in locals() else 'unknown date'}: {str(e)}")
                 continue
+        
+        # Final commit for any remaining records
+        db.commit()
         
         # Add treatment name suggestions that don't already exist
         existing_suggestions = {s.treatment_name for s in db.query(TreatmentNameSuggestion.treatment_name).all()}
@@ -3014,10 +3065,12 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 new_suggestions.append(TreatmentNameSuggestion(treatment_name=treatment_name))
         
         if new_suggestions:
-            db.bulk_save_objects(new_suggestions)
-        
-        # Commit all changes
-        db.commit()
+            # Process suggestions in smaller batches too
+            for i in range(0, len(new_suggestions), 500):
+                batch = new_suggestions[i:i+500]
+                db.bulk_save_objects(batch)
+                db.commit()
+                print(f"Committed batch of {len(batch)} treatment suggestions")
         
         # Update import log status
         import_log.status = ImportStatus.COMPLETED
@@ -3076,26 +3129,48 @@ async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         df["Amount"] = df["Amount"].apply(safe_float_convert)
         df["Vendor Name"] = df["Vendor Name"].apply(lambda x: clean_string(x, 255))
 
-        expenses = []
-        # Build list of expense objects
+        # Set total rows for progress tracking
+        total_rows = len(df)
+        rows_processed = 0
+        
+        # Process in batches to avoid memory issues
+        batch_size = 100
+        batch_count = 0
+        
         for _, row in df.iterrows():
-            # Update progress
-            update_progress(1, total_rows, import_log, db)
-            
-            expense = Expense(
-                date=row["Date"],
-                doctor_id=user.id,
-                # clinic_id=clinic.id,
-                expense_type=row["Expense Type"],
-                description=row["Description"],
-                amount=row["Amount"],
-                vendor_name=row["Vendor Name"]
-            )
-            db.add(expense)
-            db.commit()
-            db.refresh(expense)
-            
-        print(f"Expense data processed successfully. Created {len(expenses)} expense records.")
+            try:
+                # Update progress
+                rows_processed += 1
+                update_progress(rows_processed, total_rows, import_log, db)
+                
+                expense = Expense(
+                    date=row["Date"],
+                    doctor_id=user.id,
+                    # clinic_id=clinic.id,
+                    expense_type=row["Expense Type"],
+                    description=row["Description"],
+                    amount=row["Amount"],
+                    vendor_name=row["Vendor Name"]
+                )
+                db.add(expense)
+                
+                # Commit in batches to avoid long transactions
+                batch_count += 1
+                if batch_count % batch_size == 0:
+                    db.commit()
+                    print(f"Committed batch {batch_count // batch_size} of expenses")
+            except Exception as e:
+                print(f"Error processing individual expense: {str(e)}")
+                continue
+        
+        # Final commit for any remaining records
+        db.commit()
+        
+        # Update import log status
+        import_log.status = ImportStatus.COMPLETED
+        db.commit()
+        
+        print(f"Expense data processed successfully. Created {rows_processed} expense records.")
         return True
             
     except Exception as e:
@@ -3201,100 +3276,125 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         payments = []
         processed_count = 0
         skipped_count = 0
+        total_rows = len(grouped)
+        rows_processed = 0
+        
+        # Process in batches to avoid memory issues
+        batch_size = 100
+        batch_count = 0
         
         for (patient_number, payment_date, receipt_number), group in grouped:
-            # Update progress
-            update_progress(1, total_rows, import_log, db)
-            
-            # Skip if no patient number or date
-            if not patient_number or pd.isna(payment_date):
-                skipped_count += 1
-                continue
-            
-            patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient with number {patient_number} not found, skipping payment")
-                skipped_count += 1
-                continue
-            
-            # Find appointment for this patient with nearest date
-            appointment = None
-            if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
-                # Convert payment date to datetime.date for comparison
-                payment_date_only = payment_date.date() if hasattr(payment_date, 'date') else payment_date
+            try:
+                # Update progress
+                rows_processed += 1
+                update_progress(rows_processed, total_rows, import_log, db)
                 
-                # Find appointment with nearest date
-                nearest_appointment = None
-                min_days_diff = float('inf')
+                # Skip if no patient number or date
+                if not patient_number or pd.isna(payment_date):
+                    skipped_count += 1
+                    continue
                 
-                for appt in appointments_by_patient[patient.id]:
-                    appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
-                    days_diff = abs((payment_date_only - appt_date).days)
+                patient = patients.get(patient_number)
+                if not patient:
+                    print(f"Patient with number {patient_number} not found, skipping payment")
+                    skipped_count += 1
+                    continue
+                
+                # Find appointment for this patient with nearest date
+                appointment = None
+                if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
+                    # Convert payment date to datetime.date for comparison
+                    payment_date_only = payment_date.date() if hasattr(payment_date, 'date') else payment_date
                     
-                    if days_diff < min_days_diff:
-                        min_days_diff = days_diff
-                        nearest_appointment = appt
+                    # Find appointment with nearest date
+                    nearest_appointment = None
+                    min_days_diff = float('inf')
+                    
+                    for appt in appointments_by_patient[patient.id]:
+                        appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
+                        days_diff = abs((payment_date_only - appt_date).days)
+                        
+                        if days_diff < min_days_diff:
+                            min_days_diff = days_diff
+                            nearest_appointment = appt
+                    
+                    appointment = nearest_appointment
                 
-                appointment = nearest_appointment
-            
-            # Calculate total amount for this group
-            total_amount = group["Amount Paid"].sum()
-            
-            # Get patient name from first row
-            patient_name = group.iloc[0]["Patient Name"]
-            
-            # Get payment mode from first row
-            payment_mode = group.iloc[0]["Payment Mode"]
-            
-            # Check if any row in the group is cancelled
-            is_cancelled = any(group["Cancelled"])
-            
-            # Get treatment names as a combined string
-            treatment_names = ", ".join(filter(None, group["Treatment name"].unique()))
-            
-            # Get invoice number from first row (assuming same invoice for grouped items)
-            invoice_number = group.iloc[0]["Invoice Number"]
-            
-            # Link to invoice if it exists
-            invoice_id = None
-            if invoice_number and invoice_number in invoices_by_number:
-                invoice_id = invoices_by_number[invoice_number].id
-            
-            # Get refund information
-            refunded_amount = group["Refunded amount"].sum() if "Refunded amount" in group.columns else 0.0
-            is_refund = any(group["Refund"]) if "Refund" in group.columns else False
-            refund_receipt_number = next((row["Refund Receipt Number"] for _, row in group.iterrows() 
-                                         if "Refund Receipt Number" in row and row["Refund Receipt Number"]), "")
-            
-            # Combine notes if available
-            notes = "; ".join(filter(None, group["Notes"].unique())) if "Notes" in group.columns else ""
-            
-            # Create payment record
-            payment = Payment(
-                date=payment_date,
-                doctor_id=user.id,
-                # clinic_id=clinic.id,
-                patient_id=patient.id,
-                appointment_id=appointment.id if appointment else None,
-                invoice_id=invoice_id,
-                patient_number=patient_number,
-                patient_name=patient_name,
-                receipt_number=receipt_number,
-                treatment_name=treatment_names,
-                amount_paid=total_amount,
-                invoice_number=invoice_number,
-                notes=notes,
-                payment_mode=payment_mode,
-                refund=is_refund,
-                refund_receipt_number=refund_receipt_number,
-                refunded_amount=refunded_amount,
-                cancelled=is_cancelled
-            )
-            db.add(payment)
+                # Calculate total amount for this group
+                total_amount = group["Amount Paid"].sum()
+                
+                # Get patient name from first row
+                patient_name = group.iloc[0]["Patient Name"]
+                
+                # Get payment mode from first row
+                payment_mode = group.iloc[0]["Payment Mode"]
+                
+                # Check if any row in the group is cancelled
+                is_cancelled = any(group["Cancelled"])
+                
+                # Get treatment names as a combined string
+                treatment_names = ", ".join(filter(None, group["Treatment name"].unique()))
+                
+                # Get invoice number from first row (assuming same invoice for grouped items)
+                invoice_number = group.iloc[0]["Invoice Number"]
+                
+                # Link to invoice if it exists
+                invoice_id = None
+                if invoice_number and invoice_number in invoices_by_number:
+                    invoice_id = invoices_by_number[invoice_number].id
+                
+                # Get refund information
+                refunded_amount = group["Refunded amount"].sum() if "Refunded amount" in group.columns else 0.0
+                is_refund = any(group["Refund"]) if "Refund" in group.columns else False
+                refund_receipt_number = next((row["Refund Receipt Number"] for _, row in group.iterrows() 
+                                             if "Refund Receipt Number" in row and row["Refund Receipt Number"]), "")
+                
+                # Combine notes if available
+                notes = "; ".join(filter(None, group["Notes"].unique())) if "Notes" in group.columns else ""
+                
+                # Create payment record
+                payment = Payment(
+                    date=payment_date,
+                    doctor_id=user.id,
+                    # clinic_id=clinic.id,
+                    patient_id=patient.id,
+                    appointment_id=appointment.id if appointment else None,
+                    invoice_id=invoice_id,
+                    patient_number=patient_number,
+                    patient_name=patient_name,
+                    receipt_number=receipt_number,
+                    treatment_name=treatment_names,
+                    amount_paid=total_amount,
+                    invoice_number=invoice_number,
+                    notes=notes,
+                    payment_mode=payment_mode,
+                    refund=is_refund,
+                    refund_receipt_number=refund_receipt_number,
+                    refunded_amount=refunded_amount,
+                    cancelled=is_cancelled
+                )
+                payments.append(payment)
+                
+                # Commit in batches to avoid long transactions
+                batch_count += 1
+                if batch_count % batch_size == 0:
+                    db.commit()
+                    print(f"Committed batch {batch_count // batch_size} of payments")
+                
+                processed_count += 1
+            except Exception as e:
+                print(f"Error processing individual payment: {str(e)}")
+                continue
+        
+        # Final commit for any remaining records
+        if payments:
+            db.bulk_save_objects(payments)
             db.commit()
-            db.refresh(payment)
-            processed_count += 1
-            
+        
+        # Update import log status
+        import_log.status = ImportStatus.COMPLETED
+        db.commit()
+        
         print(f"Payment data processed successfully. Created {processed_count} payment records. Skipped {skipped_count} entries.")
         return True
     except Exception as e:
@@ -3393,139 +3493,153 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         invoices_created = 0
         items_created = 0
         skipped_invoices = 0
+        
+        # Process in smaller batches to avoid long transactions
+        batch_size = 50
+        batch_count = 0
+        
         for (patient_number, invoice_date, invoice_number), group in invoice_groups:
-            # Update progress
-            update_progress(1, total_rows, import_log, db)
-            
-            # Skip if date is invalid
-            if pd.isna(invoice_date):
-                skipped_invoices += 1
-                continue
+            try:
+                # Update progress
+                update_progress(1, total_rows, import_log, db)
                 
-            # Get patient
-            patient = patients.get(patient_number)
-            if not patient:
-                print(f"Patient with number {patient_number} not found, skipping invoice {invoice_number}")
-                skipped_invoices += 1
-                continue
-            
-            # Find appointment for this patient - get the one with nearest date
-            appointment = None
-            if patient.id in all_appointments_by_patient and all_appointments_by_patient[patient.id]:
-                # Find appointment with nearest date
-                patient_appointments = all_appointments_by_patient[patient.id]
+                # Skip if date is invalid
+                if pd.isna(invoice_date):
+                    skipped_invoices += 1
+                    continue
+                    
+                # Get patient
+                patient = patients.get(patient_number)
+                if not patient:
+                    print(f"Patient with number {patient_number} not found, skipping invoice {invoice_number}")
+                    skipped_invoices += 1
+                    continue
                 
-                # Calculate time difference between invoice date and each appointment date
-                nearest_appointment = None
-                min_time_diff = float('inf')
+                # Find appointment for this patient - get the one with nearest date
+                appointment = None
+                if patient.id in all_appointments_by_patient and all_appointments_by_patient[patient.id]:
+                    # Find appointment with nearest date
+                    patient_appointments = all_appointments_by_patient[patient.id]
+                    
+                    # Calculate time difference between invoice date and each appointment date
+                    nearest_appointment = None
+                    min_time_diff = float('inf')
+                    
+                    for appt in patient_appointments:
+                        time_diff = abs((invoice_date - appt.appointment_date.replace(tzinfo=None)).total_seconds())
+                        if time_diff < min_time_diff:
+                            min_time_diff = time_diff
+                            nearest_appointment = appt
+                    
+                    appointment = nearest_appointment
                 
-                for appt in patient_appointments:
-                    time_diff = abs((invoice_date - appt.appointment_date.replace(tzinfo=None)).total_seconds())
-                    if time_diff < min_time_diff:
-                        min_time_diff = time_diff
-                        nearest_appointment = appt
+                # Get payment if it exists
+                payment = payments_by_invoice_number.get(invoice_number)
                 
-                appointment = nearest_appointment
-            
-            # Get payment if it exists
-            payment = payments_by_invoice_number.get(invoice_number)
-            
-            # Check if any item in the group is cancelled
-            is_cancelled = any(group["Cancelled"])
-            
-            # Get the first row for basic invoice info
-            first_row = group.iloc[0]
-            
-            # Create invoice
-            invoice = Invoice(
-                date=invoice_date,
-                doctor_id=user.id,
-                # clinic_id=clinic.id,
-                patient_id=patient.id,
-                appointment_id=appointment.id if appointment else None,
-                payment_id=payment.id if payment else None,
-                patient_number=patient_number,
-                patient_name=first_row["Patient Name"],
-                doctor_name=first_row["Doctor Name"],
-                invoice_number=invoice_number,
-                cancelled=is_cancelled,
-                notes=str(first_row.get("Notes", "")),
-                description=str(first_row.get("Description", "")),
-                total_amount=0.0  # Initialize with zero, will update later
-            )
-            
-            db.add(invoice)
-            db.commit()
-            db.refresh(invoice)
-            invoices_created += 1
-            
-            # Process each item in the group
-            total_invoice_amount = 0.0
-            
-            for _, row in group.iterrows():
-                # Parse discount type
-                discount_type = row.get("DiscountType", "").upper() if pd.notna(row.get("DiscountType")) else None
+                # Check if any item in the group is cancelled
+                is_cancelled = any(group["Cancelled"])
                 
-                # Get values
-                unit_cost = safe_parse_number(row["Unit Cost"], float, 0.0)
-                quantity = safe_parse_number(row["Quantity"], int, 1)
-                discount = safe_parse_number(row["Discount"], float, 0.0)
-                tax_percent = safe_parse_number(row.get("Tax Percent"), float, 0.0)
+                # Get the first row for basic invoice info
+                first_row = group.iloc[0]
                 
-                # Create invoice item
-                invoice_item = InvoiceItem(
-                    invoice_id=invoice.id,
-                    treatment_name=row["Treatment Name"],
-                    unit_cost=unit_cost,
-                    quantity=quantity,
-                    discount=discount,
-                    discount_type=discount_type,
-                    type=str(row.get("Type", "")),
-                    invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float, 0.0),
-                    tax_name=str(row.get("Tax name", "")),
-                    tax_percent=tax_percent
+                # Create invoice
+                invoice = Invoice(
+                    date=invoice_date,
+                    doctor_id=user.id,
+                    # clinic_id=clinic.id,
+                    patient_id=patient.id,
+                    appointment_id=appointment.id if appointment else None,
+                    payment_id=payment.id if payment else None,
+                    patient_number=patient_number,
+                    patient_name=first_row["Patient Name"],
+                    doctor_name=first_row["Doctor Name"],
+                    invoice_number=invoice_number,
+                    cancelled=is_cancelled,
+                    notes=str(first_row.get("Notes", "")),
+                    description=str(first_row.get("Description", "")),
+                    total_amount=0.0  # Initialize with zero, will update later
                 )
                 
-                db.add(invoice_item)
-                db.commit()
-                db.refresh(invoice_item)
-                items_created += 1
+                db.add(invoice)
+                db.flush()  # Use flush instead of commit to keep transaction open
+                invoices_created += 1
                 
-                # Calculate item total
-                item_total = unit_cost * quantity  # Base cost
+                # Process each item in the group
+                total_invoice_amount = 0.0
                 
-                # Apply discount
-                if discount:
-                    if discount_type == "PERCENTAGE" or discount_type == "PERCENT":
-                        item_total -= (item_total * discount / 100)
-                    elif discount_type == "FIXED" or discount_type == "NUMBER":
-                        item_total -= discount
+                for _, row in group.iterrows():
+                    # Parse discount type
+                    discount_type = row.get("DiscountType", "").upper() if pd.notna(row.get("DiscountType")) else None
+                    
+                    # Get values
+                    unit_cost = safe_parse_number(row["Unit Cost"], float, 0.0)
+                    quantity = safe_parse_number(row["Quantity"], int, 1)
+                    discount = safe_parse_number(row["Discount"], float, 0.0)
+                    tax_percent = safe_parse_number(row.get("Tax Percent"), float, 0.0)
+                    
+                    # Create invoice item
+                    invoice_item = InvoiceItem(
+                        invoice_id=invoice.id,
+                        treatment_name=row["Treatment Name"],
+                        unit_cost=unit_cost,
+                        quantity=quantity,
+                        discount=discount,
+                        discount_type=discount_type,
+                        type=str(row.get("Type", "")),
+                        invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float, 0.0),
+                        tax_name=str(row.get("Tax name", "")),
+                        tax_percent=tax_percent
+                    )
+                    
+                    db.add(invoice_item)
+                    db.flush()  # Use flush instead of commit
+                    items_created += 1
+                    
+                    # Calculate item total
+                    item_total = unit_cost * quantity  # Base cost
+                    
+                    # Apply discount
+                    if discount:
+                        if discount_type == "PERCENTAGE" or discount_type == "PERCENT":
+                            item_total -= (item_total * discount / 100)
+                        elif discount_type == "FIXED" or discount_type == "NUMBER":
+                            item_total -= discount
+                    
+                    # Apply tax
+                    if tax_percent:
+                        tax_amount = (item_total * tax_percent / 100)
+                        item_total += tax_amount
+                    
+                    # Add to invoice total
+                    total_invoice_amount += item_total
                 
-                # Apply tax
-                if tax_percent:
-                    tax_amount = (item_total * tax_percent / 100)
-                    item_total += tax_amount
+                # Update invoice total
+                invoice.total_amount = total_invoice_amount
                 
-                # Add to invoice total
-                total_invoice_amount += item_total
+                # Commit in batches to avoid long transactions
+                batch_count += 1
+                if batch_count % batch_size == 0:
+                    db.commit()
+                    print(f"Committed batch {batch_count // batch_size} of invoices")
             
-            # Update invoice total
-            invoice.total_amount = total_invoice_amount
+            except Exception as e:
+                print(f"Error processing individual invoice: {str(e)}")
+                continue
         
-        # Commit all changes at once
-        print(f"Number of invoices to process: {invoices_created}")
-        if invoices_created > 0:
-            db.commit()
-            import_log.status = ImportStatus.COMPLETED
-            db.commit()
-            return JSONResponse(
-                status_code=200, 
-                content={
-                    "message": f"Successfully processed {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices."
-                }
-            )
-        else:
-            return JSONResponse(status_code=200, content={"message": "No invoices to process"})
+        # Final commit for any remaining records
+        db.commit()
+        
+        # Update import log status
+        import_log.status = ImportStatus.COMPLETED
+        db.commit()
+        
+        print(f"Invoice data processed successfully. Created {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices.")
+        return JSONResponse(
+            status_code=200, 
+            content={
+                "message": f"Successfully processed {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices."
+            }
+        )
             
     except Exception as e:
         print(f"Error during invoice processing: {str(e)}")
@@ -3554,6 +3668,10 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         procedures = []
         treatment_suggestions = set()
         
+        # Define batch size for processing
+        batch_size = 100
+        batch_count = 0
+        
         for _, row in df.iterrows():
             # Update progress
             update_progress(1, total_rows, import_log, db)
@@ -3561,7 +3679,6 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
             # Ensure treatment_name is not empty and properly formatted
             if not row['treatment_name']:
                 continue
-
                 
             # Create procedure catalog entry
             procedure = ProcedureCatalog(
@@ -3572,13 +3689,22 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
                 treatment_notes=row['treatment_notes'],
                 locale=row['locale'] if row['locale'] else 'en'
             )
-            db.add(procedure)
-            db.commit()
-            db.refresh(procedure)
+            procedures.append(procedure)
             
             # Add to treatment suggestions set
             treatment_suggestions.add(row['treatment_name'])
             
+            # Commit in batches to avoid long transactions
+            batch_count += 1
+            if batch_count % batch_size == 0:
+                db.commit()
+                print(f"Committed batch {batch_count // batch_size} of procedure catalog entries")
+        
+        # Final commit for any remaining records
+        if procedures:
+            db.bulk_save_objects(procedures)
+            db.commit()
+        
         # Get existing treatment name suggestions to avoid duplicates
         existing_suggestions = {s.treatment_name for s in db.query(TreatmentNameSuggestion.treatment_name).all()}
         
@@ -3591,13 +3717,13 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         # Bulk insert new treatment name suggestions
         if new_suggestions:
             db.bulk_save_objects(new_suggestions)
-            
-        # Commit all changes
-        db.commit()
+            db.commit()
+            print(f"Added {len(new_suggestions)} new treatment name suggestions")
         
         import_log.status = ImportStatus.COMPLETED
         db.commit()
         
+        print(f"Procedure catalog data processed successfully. Created {len(procedures)} procedure catalog entries.")
         return JSONResponse(
             status_code=200,
             content={"message": f"Successfully processed {len(procedures)} procedure catalog entries"}
@@ -3688,7 +3814,11 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         # Count total rows across all files
         for file in csv_files:
             try:
-                total_rows += len(pd.read_csv(f"{import_dir}/{file}"))
+                file_path = os.path.join(import_dir, file)
+                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                    total_rows += len(pd.read_csv(file_path))
+                else:
+                    print(f"Warning: File {file} is empty or does not exist")
             except Exception as e:
                 print(f"Error counting rows in {file}: {str(e)}")
                 # Continue with other files even if one fails
@@ -3745,6 +3875,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         total_files = len(csv_files)
         files_processed = 0
         import_log.total_files = total_files
+        isolated_db.commit()  # Commit total_files update
 
         # Process files in order
         for file_type in file_types:
@@ -3760,8 +3891,15 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         import_log.current_file = filename
                         isolated_db.commit()
                         
-                        print(f"Reading CSV file: {filename}")
-                        df = pd.read_csv(f"{import_dir}/{filename}", keep_default_na=False)
+                        file_path = os.path.join(import_dir, filename)
+                        print(f"Reading CSV file: {file_path}")
+                        
+                        # Check if file exists and is not empty
+                        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                            print(f"Warning: File {filename} is empty or does not exist, skipping")
+                            continue
+                            
+                        df = pd.read_csv(file_path, keep_default_na=False)
                         df = df.fillna("")
                         print(f"Successfully read CSV with {len(df)} rows")
                         
@@ -3770,9 +3908,16 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
                         if processor in [process_patient_data, process_appointment_data, process_expense_data, 
                                       process_invoice_data, process_payment_data, process_procedure_catalog_data, 
                                       process_treatment_data, process_clinical_note_data, process_treatment_plan_data]:
-                            await processor(import_log, df, isolated_db, user)
+                            result = await processor(import_log, df, isolated_db, user)
                         else:
-                            await processor(import_log, df, isolated_db)
+                            result = await processor(import_log, df, isolated_db)
+                            
+                        # Check if processor returned an error response
+                        if isinstance(result, JSONResponse):
+                            print(f"Processor returned error: {result.body}")
+                            import_log.error_message = f"Error in {filename}: {result.body}"
+                            isolated_db.commit()
+                            continue
                             
                         files_processed += 1
                         import_log.files_processed = files_processed
@@ -3926,7 +4071,7 @@ async def process_data_in_background(file_path: str, user_id: str, import_log_id
         }
     }
 )
-async def import_data(background_tasks: BackgroundTasks,request: Request, file: UploadFile = File(...), db: Session = Depends(get_db) ):
+async def import_data(background_tasks: BackgroundTasks, request: Request, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         if not decoded_token:
@@ -3940,49 +4085,56 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
         # if not clinic:
         #     return JSONResponse(status_code=404, content={"error": "Clinic not found"})
         
-
         # Validate file extension
         allowed_extensions = ['.csv', '.zip']
-        file_ext = os.path.splitext(str(file.filename))[1].lower()
-        if file_ext not in allowed_extensions:
-            return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
-        uuid = generate_uuid()
-        # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join("uploads", "imports", uuid)
-        os.makedirs(upload_dir, exist_ok=True)
+        import_log_ids = []
+        for file in files:
+            file_ext = os.path.splitext(str(file.filename))[1].lower()
+            if file_ext not in allowed_extensions:
+                return JSONResponse(status_code=400, content={"error": "Invalid file format. Only CSV and ZIP files are allowed."})
         
-        # Create import log entry
-        import_log = ImportLog(
-            user_id=user.id,
-            # clinic_id=clinic.id,
-            file_name=file.filename,
-            status=ImportStatus.PENDING,
-            progress=0,
-            current_stage="Initializing",
-            current_file=None,
-            files_processed=0,
-            total_files=0,
-            error_message=None
-        )
-        db.add(import_log)
-        db.commit()
-        
-        # Read and save file
-        file_contents = await file.read()
-        file_path = f"uploads/imports/{uuid}/{file.filename}"
-        with open(file_path, "wb") as f:
-            f.write(file_contents)
+            uuid = generate_uuid()
+            # Create uploads directory if it doesn't exist
+            upload_dir = os.path.join("uploads", "imports", uuid)
+            os.makedirs(upload_dir, exist_ok=True)
             
-        if file_ext == '.zip':
-            import_log.zip_file = file_path
+            # Create import log entry
+            import_log = ImportLog(
+                user_id=user.id,
+                # clinic_id=clinic.id,
+                file_name=file.filename,
+                status=ImportStatus.PENDING,
+                progress=0,
+                current_stage="Initializing",
+                current_file=None,
+                files_processed=0,
+                total_files=0,
+                error_message=None
+            )
+            db.add(import_log)
             db.commit()
+            db.refresh(import_log)
+            import_log_ids.append(import_log.id)
+            
+            # Read and save file
+            file_contents = await file.read()
+            file_path = f"uploads/imports/{uuid}/{file.filename}"
+            with open(file_path, "wb") as f:
+                f.write(file_contents)
+                
+            if file_ext == '.zip':
+                import_log.zip_file = file_path
+                db.commit()
 
-        # Start background processing
-        background_tasks.add_task(process_data_in_background, file_path, user.id, import_log.id, db, uuid)
+            # Start background processing without using scheduler
+            # This avoids timezone and scheduler issues
+            process = Process(target=run_process_data_in_background, args=(file_path, user.id, import_log.id, uuid))
+            process.daemon = True
+            process.start()
 
         return JSONResponse(status_code=200, content={
             "message": "Data import started",
-            "import_log_id": import_log.id
+            "import_log_ids": import_log_ids
         })
 
     except Exception as e:
@@ -3991,6 +4143,17 @@ async def import_data(background_tasks: BackgroundTasks,request: Request, file: 
             import_log.error_message = f"Failed to start import: {str(e)}"
             db.commit()
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+
+# Helper function to run in a separate process
+def run_process_data_in_background(file_path, user_id, import_log_id, uuid):
+    from db.db import SessionLocal
+    db = SessionLocal()
+    try:
+        # Use asyncio to properly await the async function
+        import asyncio
+        asyncio.run(process_data_in_background(file_path, user_id, import_log_id, db, uuid))
+    finally:
+        db.close()
 
 @user_router.get("/get-import-logs",
     response_model=dict,
