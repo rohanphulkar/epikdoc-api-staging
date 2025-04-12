@@ -3276,125 +3276,105 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         payments = []
         processed_count = 0
         skipped_count = 0
-        total_rows = len(grouped)
-        rows_processed = 0
-        
-        # Process in batches to avoid memory issues
-        batch_size = 100
-        batch_count = 0
         
         for (patient_number, payment_date, receipt_number), group in grouped:
-            try:
-                # Update progress
-                rows_processed += 1
-                update_progress(rows_processed, total_rows, import_log, db)
-                
-                # Skip if no patient number or date
-                if not patient_number or pd.isna(payment_date):
-                    skipped_count += 1
-                    continue
-                
-                patient = patients.get(patient_number)
-                if not patient:
-                    print(f"Patient with number {patient_number} not found, skipping payment")
-                    skipped_count += 1
-                    continue
-                
-                # Find appointment for this patient with nearest date
-                appointment = None
-                if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
-                    # Convert payment date to datetime.date for comparison
-                    payment_date_only = payment_date.date() if hasattr(payment_date, 'date') else payment_date
-                    
-                    # Find appointment with nearest date
-                    nearest_appointment = None
-                    min_days_diff = float('inf')
-                    
-                    for appt in appointments_by_patient[patient.id]:
-                        appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
-                        days_diff = abs((payment_date_only - appt_date).days)
-                        
-                        if days_diff < min_days_diff:
-                            min_days_diff = days_diff
-                            nearest_appointment = appt
-                    
-                    appointment = nearest_appointment
-                
-                # Calculate total amount for this group
-                total_amount = group["Amount Paid"].sum()
-                
-                # Get patient name from first row
-                patient_name = group.iloc[0]["Patient Name"]
-                
-                # Get payment mode from first row
-                payment_mode = group.iloc[0]["Payment Mode"]
-                
-                # Check if any row in the group is cancelled
-                is_cancelled = any(group["Cancelled"])
-                
-                # Get treatment names as a combined string
-                treatment_names = ", ".join(filter(None, group["Treatment name"].unique()))
-                
-                # Get invoice number from first row (assuming same invoice for grouped items)
-                invoice_number = group.iloc[0]["Invoice Number"]
-                
-                # Link to invoice if it exists
-                invoice_id = None
-                if invoice_number and invoice_number in invoices_by_number:
-                    invoice_id = invoices_by_number[invoice_number].id
-                
-                # Get refund information
-                refunded_amount = group["Refunded amount"].sum() if "Refunded amount" in group.columns else 0.0
-                is_refund = any(group["Refund"]) if "Refund" in group.columns else False
-                refund_receipt_number = next((row["Refund Receipt Number"] for _, row in group.iterrows() 
-                                             if "Refund Receipt Number" in row and row["Refund Receipt Number"]), "")
-                
-                # Combine notes if available
-                notes = "; ".join(filter(None, group["Notes"].unique())) if "Notes" in group.columns else ""
-                
-                # Create payment record
-                payment = Payment(
-                    date=payment_date,
-                    doctor_id=user.id,
-                    # clinic_id=clinic.id,
-                    patient_id=patient.id,
-                    appointment_id=appointment.id if appointment else None,
-                    invoice_id=invoice_id,
-                    patient_number=patient_number,
-                    patient_name=patient_name,
-                    receipt_number=receipt_number,
-                    treatment_name=treatment_names,
-                    amount_paid=total_amount,
-                    invoice_number=invoice_number,
-                    notes=notes,
-                    payment_mode=payment_mode,
-                    refund=is_refund,
-                    refund_receipt_number=refund_receipt_number,
-                    refunded_amount=refunded_amount,
-                    cancelled=is_cancelled
-                )
-                payments.append(payment)
-                
-                # Commit in batches to avoid long transactions
-                batch_count += 1
-                if batch_count % batch_size == 0:
-                    db.commit()
-                    print(f"Committed batch {batch_count // batch_size} of payments")
-                
-                processed_count += 1
-            except Exception as e:
-                print(f"Error processing individual payment: {str(e)}")
+            # Update progress
+            update_progress(1, total_rows, import_log, db)
+            
+            # Skip if no patient number or date
+            if not patient_number or pd.isna(payment_date):
+                skipped_count += 1
                 continue
+            
+            patient = patients.get(patient_number)
+            if not patient:
+                print(f"Patient with number {patient_number} not found, skipping payment")
+                skipped_count += 1
+                continue
+            
+            # Find appointment for this patient with nearest date
+            appointment = None
+            if patient.id in appointments_by_patient and appointments_by_patient[patient.id]:
+                # Convert payment date to datetime.date for comparison
+                payment_date_only = payment_date.date() if hasattr(payment_date, 'date') else payment_date
+                
+                # Find appointment with nearest date
+                nearest_appointment = None
+                min_days_diff = float('inf')
+                
+                for appt in appointments_by_patient[patient.id]:
+                    appt_date = appt.appointment_date.date() if hasattr(appt.appointment_date, 'date') else appt.appointment_date
+                    days_diff = abs((payment_date_only - appt_date).days)
+                    
+                    if days_diff < min_days_diff:
+                        min_days_diff = days_diff
+                        nearest_appointment = appt
+                
+                appointment = nearest_appointment
+            
+            # Calculate total amount for this group
+            total_amount = group["Amount Paid"].sum()
+            
+            # Get patient name from first row
+            patient_name = group.iloc[0]["Patient Name"]
+            
+            # Get payment mode from first row
+            payment_mode = group.iloc[0]["Payment Mode"]
+            
+            # Check if any row in the group is cancelled
+            is_cancelled = any(group["Cancelled"])
+            
+            # Get treatment names as a combined string
+            treatment_names = ", ".join(filter(None, group["Treatment name"].unique()))
+            
+            # Get invoice number from first row (assuming same invoice for grouped items)
+            invoice_number = group.iloc[0]["Invoice Number"]
+            
+            # Link to invoice if it exists
+            invoice_id = None
+            if invoice_number and invoice_number in invoices_by_number:
+                invoice_id = invoices_by_number[invoice_number].id
+            
+            # Get refund information
+            refunded_amount = group["Refunded amount"].sum() if "Refunded amount" in group.columns else 0.0
+            is_refund = any(group["Refund"]) if "Refund" in group.columns else False
+            refund_receipt_number = next((row["Refund Receipt Number"] for _, row in group.iterrows() 
+                                         if "Refund Receipt Number" in row and row["Refund Receipt Number"]), "")
+            
+            # Combine notes if available
+            notes = "; ".join(filter(None, group["Notes"].unique())) if "Notes" in group.columns else ""
+            
+            # Create payment record
+            payment = Payment(
+                date=payment_date,
+                doctor_id=user.id,
+                # clinic_id=clinic.id,
+                patient_id=patient.id,
+                appointment_id=appointment.id if appointment else None,
+                invoice_id=invoice_id,
+                patient_number=patient_number,
+                patient_name=patient_name,
+                receipt_number=receipt_number,
+                treatment_name=treatment_names,
+                amount_paid=total_amount,
+                invoice_number=invoice_number,
+                notes=notes,
+                payment_mode=payment_mode,
+                refund=is_refund,
+                refund_receipt_number=refund_receipt_number,
+                refunded_amount=refunded_amount,
+                cancelled=is_cancelled
+            )
+            payments.append(payment)
+            processed_count += 1
         
-        # Final commit for any remaining records
+        # Bulk insert all payments
         if payments:
             db.bulk_save_objects(payments)
             db.commit()
-        
-        # Update import log status
-        import_log.status = ImportStatus.COMPLETED
-        db.commit()
-        
+            import_log.status = ImportStatus.COMPLETED
+            db.commit()
+            
         print(f"Payment data processed successfully. Created {processed_count} payment records. Skipped {skipped_count} entries.")
         return True
     except Exception as e:
@@ -3493,153 +3473,136 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         invoices_created = 0
         items_created = 0
         skipped_invoices = 0
-        
-        # Process in smaller batches to avoid long transactions
-        batch_size = 50
-        batch_count = 0
-        
         for (patient_number, invoice_date, invoice_number), group in invoice_groups:
-            try:
-                # Update progress
-                update_progress(1, total_rows, import_log, db)
+            # Update progress
+            update_progress(1, total_rows, import_log, db)
+            
+            # Skip if date is invalid
+            if pd.isna(invoice_date):
+                skipped_invoices += 1
+                continue
                 
-                # Skip if date is invalid
-                if pd.isna(invoice_date):
-                    skipped_invoices += 1
-                    continue
-                    
-                # Get patient
-                patient = patients.get(patient_number)
-                if not patient:
-                    print(f"Patient with number {patient_number} not found, skipping invoice {invoice_number}")
-                    skipped_invoices += 1
-                    continue
+            # Get patient
+            patient = patients.get(patient_number)
+            if not patient:
+                print(f"Patient with number {patient_number} not found, skipping invoice {invoice_number}")
+                skipped_invoices += 1
+                continue
+            
+            # Find appointment for this patient - get the one with nearest date
+            appointment = None
+            if patient.id in all_appointments_by_patient and all_appointments_by_patient[patient.id]:
+                # Find appointment with nearest date
+                patient_appointments = all_appointments_by_patient[patient.id]
                 
-                # Find appointment for this patient - get the one with nearest date
-                appointment = None
-                if patient.id in all_appointments_by_patient and all_appointments_by_patient[patient.id]:
-                    # Find appointment with nearest date
-                    patient_appointments = all_appointments_by_patient[patient.id]
-                    
-                    # Calculate time difference between invoice date and each appointment date
-                    nearest_appointment = None
-                    min_time_diff = float('inf')
-                    
-                    for appt in patient_appointments:
-                        time_diff = abs((invoice_date - appt.appointment_date.replace(tzinfo=None)).total_seconds())
-                        if time_diff < min_time_diff:
-                            min_time_diff = time_diff
-                            nearest_appointment = appt
-                    
-                    appointment = nearest_appointment
+                # Calculate time difference between invoice date and each appointment date
+                nearest_appointment = None
+                min_time_diff = float('inf')
                 
-                # Get payment if it exists
-                payment = payments_by_invoice_number.get(invoice_number)
+                for appt in patient_appointments:
+                    time_diff = abs((invoice_date - appt.appointment_date.replace(tzinfo=None)).total_seconds())
+                    if time_diff < min_time_diff:
+                        min_time_diff = time_diff
+                        nearest_appointment = appt
                 
-                # Check if any item in the group is cancelled
-                is_cancelled = any(group["Cancelled"])
+                appointment = nearest_appointment
+            
+            # Get payment if it exists
+            payment = payments_by_invoice_number.get(invoice_number)
+            
+            # Check if any item in the group is cancelled
+            is_cancelled = any(group["Cancelled"])
+            
+            # Get the first row for basic invoice info
+            first_row = group.iloc[0]
+            
+            # Create invoice
+            invoice = Invoice(
+                date=invoice_date,
+                doctor_id=user.id,
+                # clinic_id=clinic.id,
+                patient_id=patient.id,
+                appointment_id=appointment.id if appointment else None,
+                payment_id=payment.id if payment else None,
+                patient_number=patient_number,
+                patient_name=first_row["Patient Name"],
+                doctor_name=first_row["Doctor Name"],
+                invoice_number=invoice_number,
+                cancelled=is_cancelled,
+                notes=str(first_row.get("Notes", "")),
+                description=str(first_row.get("Description", "")),
+                total_amount=0.0  # Initialize with zero, will update later
+            )
+            
+            db.add(invoice)
+            db.flush()  # Flush to get the invoice ID
+            invoices_created += 1
+            
+            # Process each item in the group
+            total_invoice_amount = 0.0
+            
+            for _, row in group.iterrows():
+                # Parse discount type
+                discount_type = row.get("DiscountType", "").upper() if pd.notna(row.get("DiscountType")) else None
                 
-                # Get the first row for basic invoice info
-                first_row = group.iloc[0]
+                # Get values
+                unit_cost = safe_parse_number(row["Unit Cost"], float, 0.0)
+                quantity = safe_parse_number(row["Quantity"], int, 1)
+                discount = safe_parse_number(row["Discount"], float, 0.0)
+                tax_percent = safe_parse_number(row.get("Tax Percent"), float, 0.0)
                 
-                # Create invoice
-                invoice = Invoice(
-                    date=invoice_date,
-                    doctor_id=user.id,
-                    # clinic_id=clinic.id,
-                    patient_id=patient.id,
-                    appointment_id=appointment.id if appointment else None,
-                    payment_id=payment.id if payment else None,
-                    patient_number=patient_number,
-                    patient_name=first_row["Patient Name"],
-                    doctor_name=first_row["Doctor Name"],
-                    invoice_number=invoice_number,
-                    cancelled=is_cancelled,
-                    notes=str(first_row.get("Notes", "")),
-                    description=str(first_row.get("Description", "")),
-                    total_amount=0.0  # Initialize with zero, will update later
+                # Create invoice item
+                invoice_item = InvoiceItem(
+                    invoice_id=invoice.id,
+                    treatment_name=row["Treatment Name"],
+                    unit_cost=unit_cost,
+                    quantity=quantity,
+                    discount=discount,
+                    discount_type=discount_type,
+                    type=str(row.get("Type", "")),
+                    invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float, 0.0),
+                    tax_name=str(row.get("Tax name", "")),
+                    tax_percent=tax_percent
                 )
                 
-                db.add(invoice)
-                db.flush()  # Use flush instead of commit to keep transaction open
-                invoices_created += 1
+                db.add(invoice_item)
+                items_created += 1
                 
-                # Process each item in the group
-                total_invoice_amount = 0.0
+                # Calculate item total
+                item_total = unit_cost * quantity  # Base cost
                 
-                for _, row in group.iterrows():
-                    # Parse discount type
-                    discount_type = row.get("DiscountType", "").upper() if pd.notna(row.get("DiscountType")) else None
-                    
-                    # Get values
-                    unit_cost = safe_parse_number(row["Unit Cost"], float, 0.0)
-                    quantity = safe_parse_number(row["Quantity"], int, 1)
-                    discount = safe_parse_number(row["Discount"], float, 0.0)
-                    tax_percent = safe_parse_number(row.get("Tax Percent"), float, 0.0)
-                    
-                    # Create invoice item
-                    invoice_item = InvoiceItem(
-                        invoice_id=invoice.id,
-                        treatment_name=row["Treatment Name"],
-                        unit_cost=unit_cost,
-                        quantity=quantity,
-                        discount=discount,
-                        discount_type=discount_type,
-                        type=str(row.get("Type", "")),
-                        invoice_level_tax_discount=safe_parse_number(row.get("Invoice Level Tax Discount"), float, 0.0),
-                        tax_name=str(row.get("Tax name", "")),
-                        tax_percent=tax_percent
-                    )
-                    
-                    db.add(invoice_item)
-                    db.flush()  # Use flush instead of commit
-                    items_created += 1
-                    
-                    # Calculate item total
-                    item_total = unit_cost * quantity  # Base cost
-                    
-                    # Apply discount
-                    if discount:
-                        if discount_type == "PERCENTAGE" or discount_type == "PERCENT":
-                            item_total -= (item_total * discount / 100)
-                        elif discount_type == "FIXED" or discount_type == "NUMBER":
-                            item_total -= discount
-                    
-                    # Apply tax
-                    if tax_percent:
-                        tax_amount = (item_total * tax_percent / 100)
-                        item_total += tax_amount
-                    
-                    # Add to invoice total
-                    total_invoice_amount += item_total
+                # Apply discount
+                if discount:
+                    if discount_type == "PERCENTAGE" or discount_type == "PERCENT":
+                        item_total -= (item_total * discount / 100)
+                    elif discount_type == "FIXED" or discount_type == "NUMBER":
+                        item_total -= discount
                 
-                # Update invoice total
-                invoice.total_amount = total_invoice_amount
+                # Apply tax
+                if tax_percent:
+                    tax_amount = (item_total * tax_percent / 100)
+                    item_total += tax_amount
                 
-                # Commit in batches to avoid long transactions
-                batch_count += 1
-                if batch_count % batch_size == 0:
-                    db.commit()
-                    print(f"Committed batch {batch_count // batch_size} of invoices")
+                # Add to invoice total
+                total_invoice_amount += item_total
             
-            except Exception as e:
-                print(f"Error processing individual invoice: {str(e)}")
-                continue
+            # Update invoice total
+            invoice.total_amount = total_invoice_amount
         
-        # Final commit for any remaining records
-        db.commit()
-        
-        # Update import log status
-        import_log.status = ImportStatus.COMPLETED
-        db.commit()
-        
-        print(f"Invoice data processed successfully. Created {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices.")
-        return JSONResponse(
-            status_code=200, 
-            content={
-                "message": f"Successfully processed {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices."
-            }
-        )
+        # Commit all changes at once
+        print(f"Number of invoices to process: {invoices_created}")
+        if invoices_created > 0:
+            db.commit()
+            import_log.status = ImportStatus.COMPLETED
+            db.commit()
+            return JSONResponse(
+                status_code=200, 
+                content={
+                    "message": f"Successfully processed {invoices_created} invoices with {items_created} items. Skipped {skipped_invoices} invoices."
+                }
+            )
+        else:
+            return JSONResponse(status_code=200, content={"message": "No invoices to process"})
             
     except Exception as e:
         print(f"Error during invoice processing: {str(e)}")
@@ -3649,7 +3612,7 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         import_log.status = ImportStatus.FAILED
         db.commit()
         return JSONResponse(status_code=400, content={"error": f"Error during invoice processing: {str(e)}"})
-
+    
 async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing procedure catalog data")
     
