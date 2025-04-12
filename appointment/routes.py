@@ -345,7 +345,6 @@ async def get_all_appointments(
 
         # Base query
         base_query = db.query(Appointment).filter(
-            Appointment.doctor_id == user_id,
             Appointment.appointment_date.between(start_of_month, end_of_month)
         )
 
