@@ -266,7 +266,7 @@ async def login(user: UserLoginSchema, db: Session = Depends(get_db)):
                 return JSONResponse(status_code=401, content={"error": "Your account is deactivated or deleted. Please contact support."})
             
             # Generate OTP and set expiry
-            otp = random.randint(1000, 9999)
+            otp = random.randint(100000, 999999)
             setattr(db_user, 'otp', otp)
             setattr(db_user, 'otp_expiry', datetime.now() + timedelta(minutes=10))
             if not db_user.color_code:
@@ -1294,7 +1294,7 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Sess
         origin = str(request.headers.get('origin', '') or request.base_url)
         # Clean up trailing slash if present
         origin = origin.rstrip('/')
-        reset_link = f"{origin}/user/reset-password?token={reset_token}"
+        reset_link = f"{origin}/newpassword/{reset_token}"
         
         setattr(db_user, 'reset_token', reset_token)
         setattr(db_user, 'reset_token_expiry', datetime.now() + timedelta(hours=3))
@@ -2182,7 +2182,9 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 patient_notes=str(row.get("Patient Notes", ""))
             )
             
-            new_patients.append(new_patient)
+            db.add(new_patient)
+            db.commit()
+            db.refresh(new_patient)
             
         except Exception as e:
             print(f"Error processing patient row {idx}: {str(e)}")
@@ -2190,18 +2192,7 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             import_log.status = ImportStatus.FAILED
             db.commit()
             return JSONResponse(status_code=400, content={"error": f"Error processing patient row {idx}: {str(e)}"})
-    
-    # Bulk insert all patients at once
-    if new_patients:
-        try:
-            db.bulk_save_objects(new_patients)
-            db.commit()
-        except Exception as e:
-            print(f"Error during bulk insert: {str(e)}")
-            db.rollback()
-            import_log.status = ImportStatus.FAILED
-            db.commit()
-            return JSONResponse(status_code=400, content={"error": f"Error during bulk insert: {str(e)}"})
+
 
 async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing appointment data")
@@ -2285,12 +2276,9 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
                         share_on_whatsapp=False,
                         send_reminder=False
                     )
-                    appointments.append(new_appointment)
-        
-        # Bulk save all appointments
-        if appointments:
-            db.bulk_save_objects(appointments)
-            db.commit()
+                    db.add(new_appointment)
+                    db.commit()
+                    db.refresh(new_appointment)
             
         import_log.status = ImportStatus.COMPLETED
         db.commit()
@@ -2560,7 +2548,9 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                             discount_type=discount_type,
                             doctor_id=user.id
                         )
-                        treatments.append(new_treatment)
+                        db.add(new_treatment)
+                        db.commit()
+                        db.refresh(new_treatment)
                         
                         # Add treatment name to suggestions set
                         if treatment_name:
@@ -2568,10 +2558,6 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
                 except Exception as e:
                     print(f"Error processing treatment: {str(e)}")
                     continue
-        
-        # Bulk save all treatments
-        if treatments:
-            db.bulk_save_objects(treatments)
         
         # Add treatment suggestions that don't already exist
         existing_suggestions = {
@@ -3105,14 +3091,9 @@ async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 amount=row["Amount"],
                 vendor_name=row["Vendor Name"]
             )
-            expenses.append(expense)
-
-        # Bulk insert all expenses
-        if expenses:
-            db.bulk_save_objects(expenses)
+            db.add(expense)
             db.commit()
-            import_log.status = ImportStatus.COMPLETED
-            db.commit()
+            db.refresh(expense)
             
         print(f"Expense data processed successfully. Created {len(expenses)} expense records.")
         return True
@@ -3309,15 +3290,10 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 refunded_amount=refunded_amount,
                 cancelled=is_cancelled
             )
-            payments.append(payment)
+            db.add(payment)
+            db.commit()
+            db.refresh(payment)
             processed_count += 1
-        
-        # Bulk insert all payments
-        if payments:
-            db.bulk_save_objects(payments)
-            db.commit()
-            import_log.status = ImportStatus.COMPLETED
-            db.commit()
             
         print(f"Payment data processed successfully. Created {processed_count} payment records. Skipped {skipped_count} entries.")
         return True
@@ -3479,7 +3455,8 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             )
             
             db.add(invoice)
-            db.flush()  # Flush to get the invoice ID
+            db.commit()
+            db.refresh(invoice)
             invoices_created += 1
             
             # Process each item in the group
@@ -3510,6 +3487,8 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 )
                 
                 db.add(invoice_item)
+                db.commit()
+                db.refresh(invoice_item)
                 items_created += 1
                 
                 # Calculate item total
@@ -3593,14 +3572,12 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
                 treatment_notes=row['treatment_notes'],
                 locale=row['locale'] if row['locale'] else 'en'
             )
-            procedures.append(procedure)
+            db.add(procedure)
+            db.commit()
+            db.refresh(procedure)
             
             # Add to treatment suggestions set
             treatment_suggestions.add(row['treatment_name'])
-        
-        # Bulk insert all procedure records
-        if procedures:
-            db.bulk_save_objects(procedures)
             
         # Get existing treatment name suggestions to avoid duplicates
         existing_suggestions = {s.treatment_name for s in db.query(TreatmentNameSuggestion.treatment_name).all()}
