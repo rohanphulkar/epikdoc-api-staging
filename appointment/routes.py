@@ -15,11 +15,13 @@ from utils.auth import verify_token
 from utils.appointment_msg import send_appointment_email
 from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta, time
-from sqlalchemy import or_, and_, func, select
+from sqlalchemy import or_, and_, func, select, case, asc, desc
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
 from prediction.routes import update_image_url
+import re
+import calendar
 
 
 scheduler = BackgroundScheduler()
@@ -198,6 +200,8 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
     - per_page (int): Number of items per page (default: 10, max: 100)
     - sort_by (str): Field to sort by (default: appointment_date)
     - sort_order (str): Sort direction - asc or desc (default: desc)
+    - month (str): Format: MM-YYYY - Filter appointments by month
+
     
     **Statistics Returned:**
     - Today: Number of appointments today
@@ -303,102 +307,76 @@ async def get_all_appointments(
     request: Request,
     db: Session = Depends(get_db),
     page: int = Query(default=1, ge=1, description="Page number"),
-    per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
+    per_page: int = Query(default=50, ge=1, le=100, description="Items per page"),
     sort_by: str = Query(default="appointment_date", description="Field to sort by"),
-    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)")
+    sort_order: str = Query(default="desc", description="Sort direction (asc/desc)"),
+    month: str = Query(default=None, description="Format: MM-YYYY")
 ):
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
-        
+
         user = db.query(User).filter(User.id == user_id).first()
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Base query - get all appointments for the doctor
-        query = db.query(Appointment)
+        # Defaults
+        page = page if page and page >= 1 else 1
+        per_page = per_page if per_page and 1 <= per_page <= 100 else 10
+        sort_by = sort_by or "appointment_date"
+        sort_order = sort_order or "desc"
 
-        # Add sorting
-        if hasattr(Appointment, sort_by):
-            sort_column = getattr(Appointment, sort_by)
-            if sort_order.lower() == "desc":
-                query = query.order_by(sort_column.desc())
+        now = datetime.now()
+        filter_month = now.month
+        filter_year = now.year
+
+        if month:
+            match = re.match(r"^(0[1-9]|1[0-2])-(\d{4})$", month)
+            if match:
+                filter_month = int(match.group(1))
+                filter_year = int(match.group(2))
             else:
-                query = query.order_by(sort_column.asc())
+                return JSONResponse(status_code=400, content={"message": "Invalid month format. Use MM-YYYY."})
+
+        # Start and end of target month
+        start_of_month = datetime(filter_year, filter_month, 1)
+        _, last_day = calendar.monthrange(filter_year, filter_month)
+        end_of_month = datetime(filter_year, filter_month, last_day, 23, 59, 59)
+
+        # Base query
+        base_query = db.query(Appointment).filter(
+            Appointment.doctor_id == user_id,
+            Appointment.appointment_date.between(start_of_month, end_of_month)
+        )
+
+        # Sorting
+        if hasattr(Appointment, sort_by):
+            sort_col = getattr(Appointment, sort_by)
+            base_query = base_query.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
         else:
-            # Default sort if invalid column provided
-            query = query.order_by(Appointment.appointment_date.desc())
+            base_query = base_query.order_by(Appointment.appointment_date.desc())
 
-        # Get total count for pagination
-        total = query.count()
+        total = base_query.count()
+        appointments = base_query.offset((page - 1) * per_page).limit(per_page).all()
 
-        # Add pagination
-        query = query.offset((page - 1) * per_page).limit(per_page)
-        
-        # Execute query
-        appointments = query.all()
-
-        # Get statistics
-        today = datetime.now().date()
+        # Stats
+        today = now.date()
         today_start = datetime.combine(today, time.min)
         today_end = datetime.combine(today, time.max)
 
-        # Count appointments for today
-        today_count = db.query(Appointment).filter(
-            Appointment.doctor_id == user_id,
-            Appointment.appointment_date.between(today_start, today_end)
-        ).count()
+        stats = db.query(
+            func.count(case((Appointment.appointment_date.between(today_start, today_end), 1))).label("today"),
+            func.count(case((Appointment.appointment_date >= datetime(now.year, now.month, 1), 1))).label("this_month"),
+            func.count(case((Appointment.appointment_date >= datetime(now.year, 1, 1), 1))).label("this_year"),
+            func.count().label("overall")
+        ).filter(Appointment.doctor_id == user_id).first()
 
-        # Count appointments for this month
-        first_day_of_month = today.replace(day=1)
-        month_count = db.query(Appointment).filter(
-            Appointment.doctor_id == user_id,
-            Appointment.appointment_date >= first_day_of_month
-        ).count()
-
-        # Count appointments for this year
-        first_day_of_year = today.replace(month=1, day=1)
-        year_count = db.query(Appointment).filter(
-            Appointment.doctor_id == user_id,
-            Appointment.appointment_date >= first_day_of_year
-        ).count()
-
-        # Count all appointments
-        total_count = db.query(Appointment).filter(
-            Appointment.doctor_id == user_id
-        ).count()
-
-        # Format response
         appointment_list = []
         for appointment in appointments:
-            # Fetch patient and doctor separately
             patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
             doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
 
-            patient_data = None
-            doctor_data = None
-
-            if patient:
-                patient_data = {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
-                }
-
-            if doctor:
-                doctor_data = {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone,
-                    "color_code": doctor.color_code if hasattr(doctor, 'color_code') else None
-                }
-            
-            # Format response data
-            appointment_data = {
+            appointment_list.append({
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
                 "clinic_id": appointment.clinic_id,
@@ -417,12 +395,22 @@ async def get_all_appointments(
                 "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                "doctor": doctor_data,
-                "patient": patient_data
-            }
+                "doctor": {
+                    "id": doctor.id,
+                    "name": doctor.name,
+                    "email": doctor.email,
+                    "phone": doctor.phone
+                } if doctor else None,
+                "patient": {
+                    "id": patient.id,
+                    "name": patient.name,
+                    "email": patient.email,
+                    "mobile_number": patient.mobile_number,
+                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
+                } if patient else None
+            })
 
-            appointment_list.append(appointment_data)
-        
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
             "pagination": {
@@ -432,10 +420,10 @@ async def get_all_appointments(
                 "pages": (total + per_page - 1) // per_page if total else 0
             },
             "stats": {
-                "today": today_count,
-                "this_month": month_count,
-                "this_year": year_count,
-                "overall": total_count
+                "today": stats.today if stats else 0,
+                "this_month": stats.this_month if stats else 0,
+                "this_year": stats.this_year if stats else 0,
+                "overall": stats.overall if stats else 0
             }
         })
     except Exception as e:
@@ -835,6 +823,7 @@ async def get_patient_appointments(
     - appointment_date (datetime, optional): Filter appointments from this date onwards (ISO format)
     - today (bool, optional): Filter appointments scheduled for today (default: false)
     - recent (bool, optional): Filter appointments from the last 7 days (default: false)
+    - month (str, optional): Filter appointments by month (Format: MM-YYYY)
     - page (int): Page number for pagination (default: 1, min: 1)
     - per_page (int): Number of items per page (default: 10, min: 1, max: 100)
     
@@ -885,7 +874,7 @@ async def get_patient_appointments(
         "pagination": {
             "total": 100,
             "page": 1,
-            "per_page": 10,
+            "per_page": 50,
             "pages": 10
         },
         "stats": {
@@ -953,8 +942,9 @@ async def search_appointments(
     appointment_date: Optional[datetime] = None,
     today: Optional[bool] = False,
     recent: Optional[bool] = False,
+    month: Optional[str] = None,
     page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(10, ge=1, le=100, description="Items per page"),
+    per_page: int = Query(50, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("appointment_date", description="Field to sort by"),
     sort_order: str = Query("desc", description="Sort direction (asc/desc)"),
     db: Session = Depends(get_db)
@@ -962,16 +952,15 @@ async def search_appointments(
     try:
         decoded_token = verify_token(request)
         user_id = decoded_token.get("user_id") if decoded_token else None
-        
         user = db.query(User).filter(User.id == user_id).first()
+
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        query = db.query(Appointment, Patient, User)\
-            .join(Patient, Appointment.patient_id == Patient.id)\
-            .join(User, Appointment.doctor_id == User.id)
+        query = db.query(Appointment, Patient, User)
+        query = query.join(Patient, Appointment.patient_id == Patient.id)
+        query = query.join(User, Appointment.doctor_id == User.id)
 
-        # Search filters
         search_filters = []
         if patient_name:
             search_filters.append(Patient.name.ilike(f"%{patient_name}%"))
@@ -986,8 +975,6 @@ async def search_appointments(
         if doctor_phone:
             search_filters.append(User.phone.ilike(f"%{doctor_phone}%"))
 
-
-        # Filter conditions
         filter_conditions = []
         if doctor_id:
             filter_conditions.append(Appointment.doctor_id == doctor_id)
@@ -999,67 +986,53 @@ async def search_appointments(
             filter_conditions.append(Appointment.status == status)
         if appointment_date:
             filter_conditions.append(Appointment.appointment_date >= appointment_date)
-            
-        # Add today filter
+
         if today:
             today_date = datetime.now().date()
-            today_start = datetime.combine(today_date, time.min)
-            today_end = datetime.combine(today_date, time.max)
-            filter_conditions.append(Appointment.appointment_date.between(today_start, today_end))
-        
-        # Add recent (last 7 days) filter
+            start = datetime.combine(today_date, time.min)
+            end = datetime.combine(today_date, time.max)
+            filter_conditions.append(Appointment.appointment_date.between(start, end))
+
         elif recent:
             today_date = datetime.now().date()
             seven_days_ago = today_date - timedelta(days=7)
-            seven_days_ago_start = datetime.combine(seven_days_ago, time.min)
-            today_end = datetime.combine(today_date, time.max)
-            filter_conditions.append(Appointment.appointment_date.between(seven_days_ago_start, today_end))
+            start = datetime.combine(seven_days_ago, time.min)
+            end = datetime.combine(today_date, time.max)
+            filter_conditions.append(Appointment.appointment_date.between(start, end))
+
+        if month:
+            try:
+                filter_month = datetime.strptime(month, "%m-%Y")
+            except ValueError:
+                return JSONResponse(status_code=400, content={"message": "Invalid month format. Use MM-YYYY."})
+        else:
+            filter_month = datetime.now()
+
+        start_of_month = filter_month.replace(day=1)
+        _, last_day = calendar.monthrange(filter_month.year, filter_month.month)
+        end_of_month = filter_month.replace(day=last_day, hour=23, minute=59, second=59)
+        filter_conditions.append(Appointment.appointment_date.between(start_of_month, end_of_month))
 
         if search_filters:
             query = query.filter(or_(*search_filters))
         if filter_conditions:
             query = query.filter(and_(*filter_conditions))
 
-        # Get statistics
-        today = datetime.now().date()
-        today_start = datetime.combine(today, time.min)
-        today_end = datetime.combine(today, time.max)
+        # Sorting
+        sort_column = getattr(Appointment, sort_by, None)
+        if sort_column is not None:
+            if sort_order == "asc":
+                query = query.order_by(asc(sort_column))
+            else:
+                query = query.order_by(desc(sort_column))
 
-        today_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at.between(today_start, today_end))
-        ).scalar() or 0
-
-        month_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at >= today.replace(day=1))
-        ).scalar() or 0
-
-        year_count = db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.doctor_id == user.id)
-            .where(Appointment.created_at >= today.replace(month=1, day=1))
-        ).scalar() or 0
-
-        # Get total count for pagination
         total_count = query.count()
-
-        # Apply pagination
-        offset = (page - 1) * per_page
-        query = query.offset(offset).limit(per_page)
-
+        query = query.offset((page - 1) * per_page).limit(per_page)
         appointments = query.all()
-        if sort_order == "asc":
-            appointments = sorted(appointments, key=lambda x: getattr(x[0], sort_by))
-        else:
-            appointments = sorted(appointments, key=lambda x: getattr(x[0], sort_by), reverse=True)
 
-        # Format response
         appointment_list = []
         for appointment, patient, doctor in appointments:
-            appointment_data = {
+            appointment_list.append({
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
                 "clinic_id": appointment.clinic_id,
@@ -1091,8 +1064,25 @@ async def search_appointments(
                     "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value
                 }
-            }
-            appointment_list.append(appointment_data)
+            })
+
+        # Stats
+        now = datetime.now()
+        today_start = datetime.combine(now.date(), time.min)
+        today_end = datetime.combine(now.date(), time.max)
+
+        today_count = db.query(func.count(Appointment.id))\
+            .filter(Appointment.doctor_id == user.id)\
+            .filter(Appointment.created_at.between(today_start, today_end)).scalar() or 0
+
+        month_count = db.query(func.count(Appointment.id))\
+            .filter(Appointment.doctor_id == user.id)\
+            .filter(Appointment.created_at.between(start_of_month, end_of_month)).scalar() or 0
+
+        year_start = now.replace(month=1, day=1)
+        year_count = db.query(func.count(Appointment.id))\
+            .filter(Appointment.doctor_id == user.id)\
+            .filter(Appointment.created_at >= year_start).scalar() or 0
 
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
@@ -1109,6 +1099,7 @@ async def search_appointments(
                 "overall": total_count
             }
         })
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
