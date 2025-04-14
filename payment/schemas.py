@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, List
-
+from .models import InvoiceStatus
 class ExpenseResponse(BaseModel):
     id: str
     doctor_id: Optional[str]
@@ -97,7 +97,7 @@ class InvoiceItemResponse(BaseModel):
     id: str
     invoice_id: str
     treatment_name: Optional[str]
-    unit_cost: Optional[float]
+    unit_cost: Optional[float] 
     quantity: Optional[int]
     discount: Optional[float]
     discount_type: Optional[str]
@@ -138,6 +138,8 @@ class InvoiceResponse(BaseModel):
     notes: Optional[str]
     description: Optional[str]
     file_path: Optional[str]
+    status: Optional[InvoiceStatus]
+    total_amount: Optional[float]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     invoice_items: List[InvoiceItemResponse]
@@ -153,6 +155,7 @@ class InvoiceCreate(BaseModel):
     notes: Optional[str] = None
     description: Optional[str] = None
     invoice_items: List[InvoiceItemCreate]
+    status: Optional[InvoiceStatus] = InvoiceStatus.pending
 
     class Config:
         from_attributes = True
@@ -164,6 +167,7 @@ class InvoiceUpdate(BaseModel):
     notes: Optional[str] = None
     description: Optional[str] = None
     invoice_items: Optional[List[InvoiceItemCreate]] = None
+    status: Optional[InvoiceStatus] = None
 
     class Config:
         from_attributes = True

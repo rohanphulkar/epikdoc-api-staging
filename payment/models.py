@@ -11,6 +11,11 @@ from typing import Optional
 def generate_uuid():
     return str(uuid.uuid4())
 
+class InvoiceStatus(enum.Enum):
+    pending = "pending"
+    paid = "paid"
+    cancelled = "cancelled"
+
 class Expense(Base):
     __tablename__ = "expenses"
 
@@ -74,6 +79,7 @@ class Invoice(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     file_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     total_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[Optional[InvoiceStatus]] = mapped_column(SQLAlchemyEnum(InvoiceStatus), nullable=True, default=InvoiceStatus.pending)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
     invoice_items: Mapped[list["InvoiceItem"]] = relationship("InvoiceItem", back_populates="invoice")

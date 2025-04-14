@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from .schemas import ExpenseCreate, ExpenseUpdate, ExpenseResponse, PaymentCreate, PaymentUpdate, PaymentResponse, InvoiceCreate, InvoiceUpdate, InvoiceResponse
-from .models import Expense, Payment, Invoice, InvoiceItem
+from .models import Expense, Payment, Invoice, InvoiceItem, InvoiceStatus
 from db.db import get_db
 from auth.models import User
 from patient.models import Patient
@@ -12,7 +12,7 @@ from utils.generate_invoice import create_professional_invoice
 import uuid
 import os
 from datetime import datetime
-from sqlalchemy import func
+from sqlalchemy import func, case
 import random
 from catalog.models import TreatmentPlan
 from appointment.models import Appointment
@@ -737,7 +737,8 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                 "invoice_number": f"INV-{datetime.now().strftime('%Y%m%d')}-{new_payment.receipt_number}",
                 "notes": new_payment.notes,
                 "description": new_payment.treatment_name,
-                "total_amount": new_payment.amount_paid
+                "total_amount": new_payment.amount_paid,
+                "status": InvoiceStatus.pending
             }
 
             invoice_items = [{
@@ -793,7 +794,8 @@ async def create_payment(request: Request, patient_id: str, payment: PaymentCrea
                     "invoice_number": invoice.invoice_number,
                     "notes": invoice.notes,
                     "description": invoice.description,
-                    "total_amount": invoice.total_amount
+                    "total_amount": invoice.total_amount,
+                    "status": invoice.status.value if invoice.status else None
                 }
 
                 invoice_items = [{
@@ -1881,6 +1883,7 @@ async def delete_payment(request: Request, payment_id: str, db: Session = Depend
     - notes (string): Additional notes to appear on invoice
     - description (string): Detailed description of services
     - cancelled (boolean): Whether invoice is cancelled (default: false)
+    - status (string): Invoice status (pending, paid, cancelled)
     
     Returns:
     - id (UUID): Unique identifier for the invoice
@@ -1971,6 +1974,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
             notes=invoice.notes,
             description=invoice.description,
             cancelled=invoice.cancelled,
+            status=InvoiceStatus(invoice.status) if invoice.status else InvoiceStatus.pending,
             created_at=current_time,
             updated_at=current_time,
             total_amount=0  # Initialize total amount
@@ -2122,6 +2126,7 @@ async def create_invoice(request: Request, invoice: InvoiceCreate, db: Session =
                             "notes": "Regular checkup invoice",
                             "description": "Detailed treatment description",
                             "file_path": "/path/to/invoice.pdf",
+                            "status": "pending",
                             "total_amount": 400,
                             "items": [{
                                 "treatment_name": "Consultation",
@@ -2245,6 +2250,7 @@ async def get_invoices(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "status": invoice.status.value if invoice.status else None,
                 "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
@@ -2313,6 +2319,8 @@ async def get_invoices(
     - patient_id (string, required): Unique identifier of the patient
     
     **Query Parameters:**
+    - cancelled (boolean, optional): Filter by cancelled status
+    - status (string, optional): Filter by status (pending, paid, cancelled)
     - page (integer, optional): Page number for pagination (default: 1)
     - per_page (integer, optional): Number of items per page (default: 10, max: 100)
     
@@ -2338,6 +2346,7 @@ async def get_invoices(
                             "notes": "Regular checkup",
                             "description": "Monthly visit",
                             "file_path": "http://example.com/invoice/uuid",
+                            "status": "pending",
                             "total_amount": 500.00,
                             "created_at": "2023-01-01T00:00:00",
                             "updated_at": "2023-01-01T00:00:00",
@@ -2398,6 +2407,8 @@ async def get_invoices(
 async def get_invoices_by_patient(
     request: Request, 
     patient_id: str,
+    cancelled: Optional[bool] = None,
+    status: Optional[str] = None,
     page: int = Query(default=1, ge=1, description="Page number"),
     per_page: int = Query(default=10, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db)
@@ -2436,19 +2447,25 @@ async def get_invoices_by_patient(
             "overall": get_total_amount()
         }
         
-        # Get total count
-        total_count = db.query(Invoice).filter(Invoice.patient_id == patient_id).count()
+        # Build base query
+        base_query = db.query(Invoice).filter(Invoice.patient_id == patient_id)
         
-        if total_count == 0:
-            return JSONResponse(status_code=404, content={"message": "No invoices found for this patient"})
+        # Apply filters if provided
+        if cancelled is not None:
+            base_query = base_query.filter(Invoice.cancelled == cancelled)
+            
+        if status:
+            base_query = base_query.filter(Invoice.status == InvoiceStatus[status])
+            
+        # Get total count
+        total_count = base_query.count()
         
         # Calculate offset for pagination
         offset = (page - 1) * per_page
         
         # Get paginated invoices
         invoices = (
-            db.query(Invoice)
-            .filter(Invoice.patient_id == patient_id)
+            base_query
             .order_by(Invoice.date.desc())
             .offset(offset)
             .limit(per_page)
@@ -2471,38 +2488,61 @@ async def get_invoices_by_patient(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "status": invoice.status.value if invoice.status else None,
                 "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
                 "items": []
             }
             
-            # Get invoice items
-            items = db.query(InvoiceItem).filter(InvoiceItem.invoice_id == invoice.id).all()
+            # Get invoice items with a single query
+            items = (
+                db.query(
+                    InvoiceItem,
+                    (InvoiceItem.unit_cost * InvoiceItem.quantity).label('item_amount'),
+                    case(
+                        (
+                            InvoiceItem.discount_type.ilike('percentage'),
+                            (InvoiceItem.unit_cost * InvoiceItem.quantity * InvoiceItem.discount / 100)
+                        ),
+                        else_=InvoiceItem.discount
+                    ).label('discount_amount'),
+                    case(
+                        (
+                            InvoiceItem.tax_percent.isnot(None),
+                            case(
+                                (
+                                    InvoiceItem.invoice_level_tax_discount.isnot(None),
+                                    ((InvoiceItem.unit_cost * InvoiceItem.quantity - 
+                                      case(
+                                          (InvoiceItem.discount_type.ilike('percentage'),
+                                           InvoiceItem.unit_cost * InvoiceItem.quantity * InvoiceItem.discount / 100),
+                                          else_=InvoiceItem.discount
+                                      )
+                                    ) * InvoiceItem.tax_percent / 100) * 
+                                    (1 - InvoiceItem.invoice_level_tax_discount / 100)
+                                ),
+                                else_=((InvoiceItem.unit_cost * InvoiceItem.quantity - 
+                                       case(
+                                           (InvoiceItem.discount_type.ilike('percentage'),
+                                            InvoiceItem.unit_cost * InvoiceItem.quantity * InvoiceItem.discount / 100),
+                                           else_=InvoiceItem.discount
+                                       )
+                                     ) * InvoiceItem.tax_percent / 100)
+                            )
+                        ),
+                        else_=0
+                    ).label('tax_amount')
+                )
+                .filter(InvoiceItem.invoice_id == invoice.id)
+                .all()
+            )
+            
             subtotal = 0
-            total_discount = 0
+            total_discount = 0  
             total_tax = 0
             
-            for item in items:
-                # Calculate item amount
-                item_amount = item.unit_cost * item.quantity if item.unit_cost and item.quantity else 0
-                
-                # Calculate discount
-                discount_amount = 0
-                if item.discount:
-                    if item.discount_type and item.discount_type.lower() == 'percentage':
-                        discount_amount = item_amount * (item.discount / 100)
-                    else:
-                        discount_amount = item.discount
-                
-                # Calculate tax
-                tax_amount = 0
-                if item.tax_percent:
-                    taxable_amount = item_amount - discount_amount
-                    tax_amount = taxable_amount * (item.tax_percent / 100)
-                    if item.invoice_level_tax_discount:
-                        tax_amount = tax_amount * (1 - item.invoice_level_tax_discount / 100)
-                
+            for item, item_amount, discount_amount, tax_amount in items:
                 item_dict = {
                     "treatment_name": item.treatment_name,
                     "unit_cost": item.unit_cost,
@@ -2555,7 +2595,7 @@ async def get_invoices_by_patient(
     - invoice_number_search (str, optional): Search by invoice number (case-insensitive partial match)
     - doctor_name_search (str, optional): Search by doctor name (case-insensitive partial match)
     - patient_gender (str, optional): Filter by patient gender (MALE/FEMALE/OTHER)
-    - status (str, optional): Filter by invoice status (PAID/UNPAID/CANCELLED)
+    - status (str, optional): Filter by invoice status (pending/paid/cancelled)
     - start_date (datetime, optional): Filter invoices from this date onwards (ISO format)
     - end_date (datetime, optional): Filter invoices up to this date (ISO format)
     - page (int): Page number for pagination (default: 1, min: 1)
@@ -2580,6 +2620,7 @@ async def get_invoices_by_patient(
                 "notes": "Invoice notes",
                 "description": "Invoice description",
                 "file_path": "http://api.example.com/invoices/uuid",
+                "status": "pending",
                 "total_amount": 100.00,
                 "created_at": "2023-01-01T00:00:00",
                 "updated_at": "2023-01-01T00:00:00",
@@ -2692,11 +2733,12 @@ async def search_invoices(
         if patient_gender:
             query = query.filter(Invoice.patient_gender == patient_gender)
         if status:
-            query = query.filter(Invoice.status == status)
+            query = query.filter(Invoice.status == InvoiceStatus[status])
         if start_date:
             query = query.filter(Invoice.date >= start_date)
         if end_date:
             query = query.filter(Invoice.date <= end_date)
+
 
         # Get statistics
         today = datetime.now().date()
@@ -2745,6 +2787,7 @@ async def search_invoices(
                 "notes": invoice.notes,
                 "description": invoice.description,
                 "file_path": f"{request.base_url}{invoice.id}" if invoice.file_path else None,
+                "status": invoice.status.value if invoice.status else InvoiceStatus.pending,
                 "total_amount": invoice.total_amount,
                 "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
                 "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
@@ -2860,6 +2903,7 @@ async def search_invoices(
                         "total_discount": 10.00,
                         "total_tax": 9.00,
                         "total_amount": 99.00,
+                        "status": "pending",
                         "items": [{
                             "treatment_name": "Consultation",
                             "unit_cost": 100.00,
@@ -2905,6 +2949,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
             "notes": invoice.notes,
             "description": invoice.description,
             "file_path": f"{invoice.file_path}" if invoice.file_path else None,
+            "status": invoice.status.value if invoice.status else InvoiceStatus.pending,
             "total_amount": invoice.total_amount,
             "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
             "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
@@ -2982,6 +3027,7 @@ async def get_invoice(request: Request, invoice_id: str, db: Session = Depends(g
     - invoice_number (string, optional): New custom invoice number
     - notes (string, optional): Additional notes to appear on invoice
     - description (string, optional): Detailed description of services
+    - status (string, optional): Invoice status (pending, paid, cancelled)
     - invoice_items (array, optional): List of invoice items containing:
         - treatment_name (string): Name/description of the treatment
         - unit_cost (number): Cost per unit
@@ -3037,6 +3083,18 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
         existing_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if not existing_invoice:
             return JSONResponse(status_code=404, content={"message": "Invoice not found"})
+
+        # Validate status transition
+        if invoice.status:
+            # Don't allow changing status of cancelled invoices
+            if existing_invoice.status == InvoiceStatus.cancelled:
+                raise ValueError("Cannot update a cancelled invoice")
+                
+            # Don't allow changing from paid to pending
+            if existing_invoice.status == InvoiceStatus.paid and invoice.status == InvoiceStatus.pending:
+                raise ValueError("Cannot change status from paid to pending")
+                
+            existing_invoice.status = invoice.status
         
         # Update basic invoice fields
         update_data = invoice.model_dump(exclude={'invoice_items'}, exclude_unset=True)
@@ -3059,18 +3117,21 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
                 item_total = float(item.unit_cost) * int(item.quantity)
             
                 # Apply discount
+                discount_amount = 0
                 if item.discount:
                     if item.discount_type == "percentage":
-                        item_total -= (item_total * float(item.discount) / 100)
+                        discount_amount = item_total * float(item.discount) / 100
                     else:  # fixed amount
-                        item_total -= float(item.discount)
+                        discount_amount = float(item.discount)
+                item_total -= discount_amount
                 
                 # Apply tax
+                tax_amount = 0
                 if item.tax_percent:
-                    tax_amount = (item_total * float(item.tax_percent) / 100)
+                    tax_amount = item_total * float(item.tax_percent) / 100
                     if item.invoice_level_tax_discount:
                         tax_amount *= (1 - float(item.invoice_level_tax_discount) / 100)
-                    item_total += tax_amount
+                item_total += tax_amount
                 
                 # Create invoice item
                 invoice_item = InvoiceItem(
@@ -3106,20 +3167,46 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
             invoice_data = {
                 **existing_invoice.__dict__,
                 "doctor_phone": user.phone,
-                "doctor_email": user.email
+                "doctor_email": user.email,
+                "total_amount": existing_invoice.total_amount
             }
 
-            invoice_items = [{
-                "treatment_name": item.treatment_name,
-                "unit_cost": item.unit_cost,
-                "quantity": item.quantity,
-                "discount": item.discount,
-                "discount_type": item.discount_type or "fixed",
-                "type": item.type,
-                "invoice_level_tax_discount": item.invoice_level_tax_discount,
-                "tax_name": item.tax_name,
-                "tax_percent": item.tax_percent
-            } for item in items]
+            invoice_items = []
+            for item in items:
+                # Handle potential None values
+                unit_cost = float(item.unit_cost) if item.unit_cost is not None else 0.0
+                quantity = int(item.quantity) if item.quantity is not None else 0
+                item_amount = unit_cost * quantity
+                
+                discount_amount = 0
+                if item.discount:
+                    if item.discount_type == "percentage":
+                        discount_amount = item_amount * float(item.discount) / 100
+                    else:
+                        discount_amount = float(item.discount)
+                        
+                tax_amount = 0    
+                if item.tax_percent:
+                    taxable_amount = item_amount - discount_amount
+                    tax_amount = taxable_amount * float(item.tax_percent) / 100
+                    if item.invoice_level_tax_discount:
+                        tax_amount *= (1 - float(item.invoice_level_tax_discount) / 100)
+                        
+                invoice_items.append({
+                    "treatment_name": item.treatment_name,
+                    "unit_cost": item.unit_cost,
+                    "quantity": item.quantity,
+                    "amount": item_amount,
+                    "discount": item.discount,
+                    "discount_type": item.discount_type or "fixed",
+                    "discount_amount": discount_amount,
+                    "type": item.type,
+                    "invoice_level_tax_discount": item.invoice_level_tax_discount,
+                    "tax_name": item.tax_name,
+                    "tax_percent": item.tax_percent,
+                    "tax_amount": tax_amount,
+                    "total": item_amount - discount_amount + tax_amount
+                })
 
             pdf_path = create_professional_invoice(
                 invoice_data=invoice_data,
@@ -3154,7 +3241,7 @@ async def update_invoice(request: Request, invoice_id: str, invoice: InvoiceUpda
             "amount_paid": existing_invoice.total_amount,
             "invoice_number": existing_invoice.invoice_number,
             "notes": existing_invoice.notes,
-            "status": "pending"
+            "status": existing_invoice.status.value if existing_invoice.status else "pending"
         }
 
         if payment:
