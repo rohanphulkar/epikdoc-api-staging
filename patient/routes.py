@@ -828,8 +828,8 @@ async def get_patient_by_id(
         
         db_appointments = db.execute(
             select(Appointment).filter(
-                Appointment.patient_id == patient_id,
-                Appointment.doctor_id == user.id
+                Appointment.patient_id == patient_id
+                # Appointment.doctor_id == user.id
             )
         ).scalars().all()
 
