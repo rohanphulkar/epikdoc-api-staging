@@ -493,7 +493,7 @@ async def get_all_patients(
                     "example": {
                         "id": "uuid",
                         "doctor_id": "uuid",
-                        "clinic_id": "uuid",
+                        "clinic_id": "uuid", 
                         "patient_number": "P12345",
                         "name": "John Doe",
                         "mobile_number": "+1234567890",
@@ -516,81 +516,193 @@ async def get_all_patients(
                         "medical_history": "Hypertension",
                         "allergies": "Peanuts",
                         "habits": "Non-smoker",
-                        "weight": "75",
-                        "height": "180",
+                        "weight": 75.5,
+                        "height": 180.0,
                         "referred_by": "Dr. Smith",
                         "groups": "Regular",
                         "patient_notes": "Regular checkup needed",
                         "created_at": "2023-01-01T10:00:00",
-                        "appointments": [
-                            {
+                        "appointments": [{
+                            "id": "uuid",
+                            "patient_id": "uuid",
+                            "patient_number": "P12345",
+                            "patient_name": "John Doe",
+                            "doctor_id": "uuid",
+                            "doctor_name": "Dr. Smith",
+                            "notes": ["Follow-up needed", "Prescribed medication"],
+                            "appointment_date": "2023-02-15T14:00:00",
+                            "checked_in_at": "2023-02-15T13:55:00",
+                            "checked_out_at": "2023-02-15T14:30:00",
+                            "status": "completed",
+                            "share_on_email": True,
+                            "share_on_sms": True,
+                            "share_on_whatsapp": False,
+                            "created_at": "2023-02-10T10:00:00",
+                            "updated_at": "2023-02-15T14:30:00",
+                            "treatments": [{
+                                "id": "uuid",
+                                "treatment_date": "2023-02-15T14:00:00",
+                                "treatment_name": "Root Canal",
+                                "tooth_number": "16",
+                                "treatment_notes": "Procedure completed successfully",
+                                "quantity": 1,
+                                "unit_cost": 5000.00,
+                                "amount": 5000.00,
+                                "discount": 0,
+                                "discount_type": "percentage",
+                                "doctor_id": "uuid",
+                                "created_at": "2023-02-15T14:30:00"
+                            }],
+                            "clinical_notes": [{
+                                "id": "uuid",
+                                "complaints": [{
+                                    "id": "uuid",
+                                    "complaint": "Severe tooth pain",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "diagnosis": [{
+                                    "id": "uuid",
+                                    "diagnosis": "Root canal infection",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "vital_signs": [{
+                                    "id": "uuid",
+                                    "vital_sign": "BP: 120/80",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "observations": [{
+                                    "id": "uuid",
+                                    "observation": "Visible decay in tooth 16",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "investigations": [{
+                                    "id": "uuid",
+                                    "investigation": "X-ray required",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "created_at": "2023-02-15T14:00:00",
+                                "attachments": [{
+                                    "id": "uuid",
+                                    "attachment": "x-ray.jpg",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "treatments": [{
+                                    "id": "uuid",
+                                    "name": "Root Canal Treatment",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "medicines": [{
+                                    "id": "uuid",
+                                    "item_name": "Amoxicillin",
+                                    "price": 100.00,
+                                    "quantity": 10,
+                                    "dosage": "1-0-1",
+                                    "instructions": "After food",
+                                    "amount": 1000.00,
+                                    "created_at": "2023-02-15T14:00:00"
+                                }],
+                                "notes": [{
+                                    "id": "uuid",
+                                    "note": "Patient allergic to penicillin",
+                                    "created_at": "2023-02-15T14:00:00"
+                                }]
+                            }],
+                            "treatment_plans": [{
                                 "id": "uuid",
                                 "date": "2023-02-15T14:00:00",
-                                "status": "completed",
-                                "reason": "Tooth pain",
-                                 "payments": [
-                            {
+                                "created_at": "2023-02-15T14:00:00",
+                                "items": [{
+                                    "id": "uuid",
+                                    "treatment_name": "Root Canal",
+                                    "unit_cost": 5000.00,
+                                    "quantity": 1,
+                                    "discount": 0,
+                                    "discount_type": "percentage",
+                                    "amount": 5000.00,
+                                    "treatment_description": "Complete root canal treatment",
+                                    "tooth_diagram": "16"
+                                }]
+                            }],
+                            "payments": [{
                                 "id": "uuid",
-                                "amount": 5000,
-                                "payment_method": "card",
-                                "status": "completed",
-                                "date": "2023-02-15T15:30:00"
-                            }
-                        ],
-                        "invoices": [
-                            {
-                                "id": "uuid",
-                                "invoice_number": "INV-001",
-                                "total_amount": 5000,
-                                "date": "2023-02-15T15:00:00",
-                                "items": [
-                                    {
-                                        "id": "uuid",
-                                        "name": "Root Canal Treatment",
-                                        "quantity": 1,
-                                        "unit_price": 5000
-                                    }
-                                ]
-                            }
-                        ]
-                            }
-                        ],
-                        "treatments": [
-                            {
-                                "id": "uuid",
-                                "treatment_id": "uuid",
-                                "name": "Root Canal",
-                                "status": "completed",
-                                "date": "2023-02-15T14:30:00"
-                            }
-                        ],
-                        "clinical_notes": [
-                            {
-                                "id": "uuid",
-                                "notes": "Patient reported tooth pain",
-                                "created_at": "2023-02-10T09:15:00"
-                            }
-                        ],
-                        "treatment_plans": [
-                            {
-                                "id": "uuid",
-                                "name": "Dental Restoration Plan",
-                                "status": "active",
-                                "created_at": "2023-02-10T09:30:00"
-                            }
-                        ],
-                        "completed_procedures": [
-                            {
-                                "id": "uuid",
+                                "date": "2023-02-15T14:30:00",
+                                "patient_id": "uuid",
+                                "doctor_id": "uuid",
+                                "clinic_id": "uuid",
+                                "invoice_id": "uuid",
+                                "appointment_id": "uuid",
+                                "patient_number": "P12345",
+                                "patient_name": "John Doe",
+                                "receipt_number": "REC001",
                                 "treatment_name": "Root Canal",
-                                "unit_cost": 5000,
-                                "quantity": 1,
-                                "amount": 5000,
-                                "treatment_description": "Root Canal Treatment",
+                                "amount_paid": 5000.00,
+                                "invoice_number": "INV001",
+                                "notes": "Full payment received",
+                                "payment_mode": "card",
+                                "status": "completed",
+                                "refund": False,
+                                "refund_receipt_number": None,
+                                "refunded_amount": 0,
+                                "cancelled": False,
                                 "created_at": "2023-02-15T14:30:00",
                                 "updated_at": "2023-02-15T14:30:00"
-                            }
-                        ]
+                            }],
+                            "invoices": [{
+                                "id": "uuid",
+                                "date": "2023-02-15T14:30:00",
+                                "patient_id": "uuid",
+                                "doctor_id": "uuid",
+                                "clinic_id": "uuid",
+                                "payment_id": "uuid",
+                                "appointment_id": "uuid",
+                                "patient_number": "P12345",
+                                "patient_name": "John Doe",
+                                "doctor_name": "Dr. Smith",
+                                "invoice_number": "INV001",
+                                "cancelled": False,
+                                "notes": "Treatment invoice",
+                                "description": "Root canal treatment",
+                                "file_path": "/invoices/INV001.pdf",
+                                "total_amount": 5000.00,
+                                "created_at": "2023-02-15T14:30:00",
+                                "updated_at": "2023-02-15T14:30:00",
+                                "items": [{
+                                    "id": "uuid",
+                                    "invoice_id": "uuid",
+                                    "treatment_name": "Root Canal",
+                                    "unit_cost": 5000.00,
+                                    "quantity": 1,
+                                    "discount": 0,
+                                    "discount_type": "percentage",
+                                    "type": "treatment",
+                                    "invoice_level_tax_discount": 0,
+                                    "tax_name": "GST",
+                                    "tax_percent": 18,
+                                    "created_at": "2023-02-15T14:30:00",
+                                    "updated_at": "2023-02-15T14:30:00"
+                                }]
+                            }],
+                            "completed_procedures": [{
+                                "id": "uuid",
+                                "appointment_id": "uuid",
+                                "doctor_id": "uuid",
+                                "clinic_id": "uuid",
+                                "items": [{
+                                    "id": "uuid",
+                                    "treatment_name": "Root Canal",
+                                    "unit_cost": 5000.00,
+                                    "quantity": 1,
+                                    "amount": 5000.00,
+                                    "discount": 0,
+                                    "discount_type": "percentage",
+                                    "treatment_description": "Complete root canal treatment",
+                                    "created_at": "2023-02-15T14:30:00",
+                                    "updated_at": "2023-02-15T14:30:00"
+                                }],
+                                "created_at": "2023-02-15T14:30:00",
+                                "updated_at": "2023-02-15T14:30:00"
+                            }]
+                        }]
                     }
                 }
             }
@@ -878,6 +990,13 @@ async def get_patient_by_id(
                             "amount": medicine.amount,
                             "created_at": medicine.created_at.isoformat() if medicine.created_at else None
                         } for medicine in clinical_note.medicines
+                    ],
+                    "notes": [
+                        {
+                            "id": note.id,
+                            "note": note.note,
+                            "created_at": note.created_at.isoformat() if note.created_at else None
+                        } for note in clinical_note.notes
                     ]
                 }
                 clinical_notes.append(clinical_note_data)     
@@ -2216,6 +2335,7 @@ async def create_clinical_note(
                         "diagnoses": [],
                         "observations": [],
                         "investigations": [],
+                        "notes":[],
                         "created_at": "2023-01-01T00:00:00"
                     }]
                 }
@@ -2281,6 +2401,8 @@ async def get_clinical_notes(
             note.diagnoses = db.query(Diagnosis).filter_by(clinical_note_id=note.id).all()
             note.observations = db.query(Observation).filter_by(clinical_note_id=note.id).all()
             note.investigations = db.query(Investigation).filter_by(clinical_note_id=note.id).all()
+            note.notes = db.query(Notes).filter_by(clinical_note_id=note.id).all()
+            
 
         return clinical_notes
     except Exception as e:
