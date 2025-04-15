@@ -59,7 +59,6 @@ class Payment(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=True)
 
 
-
 class Invoice(Base):
     __tablename__ = "invoices"
 

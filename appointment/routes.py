@@ -345,7 +345,8 @@ async def get_all_appointments(
 
         # Base query
         base_query = db.query(Appointment).filter(
-            Appointment.appointment_date.between(start_of_month, end_of_month)
+            Appointment.appointment_date.between(start_of_month, end_of_month),
+            Appointment.clinic_id == user.default_clinic_id
         )
 
         # Sorting
@@ -984,7 +985,7 @@ async def search_appointments(
         if status:
             filter_conditions.append(Appointment.status == status)
         if appointment_date:
-            filter_conditions.append(Appointment.appointment_date >= appointment_date)
+            filter_conditions.append(Appointment.appointment_date == appointment_date)
 
         if today:
             today_date = datetime.now().date()

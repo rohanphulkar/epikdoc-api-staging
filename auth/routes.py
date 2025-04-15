@@ -23,7 +23,7 @@ from prediction.models import *
 from catalog.models import *
 import json, shutil
 from math import ceil
-from sqlalchemy import func
+from sqlalchemy import func, desc, asc
 from suggestion.models import *
 import random
 import asyncio
@@ -5313,9 +5313,7 @@ async def get_doctor_list(
     doctor_id: Optional[str] = Query(None, description="Search by doctor ID"),
     db: Session = Depends(get_db)
 ):
-    try:
-        from sqlalchemy import or_, and_
-        
+    try:        
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -5323,58 +5321,52 @@ async def get_doctor_list(
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        # Build base query - get ALL doctors
-        query = db.query(User).filter(User.user_type == "doctor")
-        
-        # Apply search filters if provided
-        search_filters = []
+
+        # Get base query for created doctors
+        query = db.query(User).filter(User.id.in_([d.id for d in user.created_doctors])) if user.created_doctors else db.query(User).filter(User.id == None)
+
+        has_filters = any([name, email, phone, doctor_id])
+
+        # Apply search filters
         if name:
-            search_filters.append(User.name.ilike(f"%{name}%"))
+            query = query.filter(User.name.ilike(f"%{name}%"))
         if email:
-            search_filters.append(User.email.ilike(f"%{email}%"))
+            query = query.filter(User.email.ilike(f"%{email}%"))
         if phone:
-            search_filters.append(User.phone.ilike(f"%{phone}%"))
+            query = query.filter(User.phone.ilike(f"%{phone}%"))
         if doctor_id:
-            search_filters.append(User.id == doctor_id)
-            
-        if search_filters:
-            query = query.filter(or_(*search_filters))
-        
-        # Get total count
+            query = query.filter(User.id == doctor_id)
+
+        # Apply sorting
+        sort_column = getattr(User, sort_by, None)
+        if sort_column is not None:
+            query = query.order_by(desc(sort_column) if sort_order == "desc" else asc(sort_column))
+
+        # Apply pagination
         total = query.count()
-        if total == 0:
-            return JSONResponse(status_code=404, content={"error": "No doctors found"})
-            
-        # Calculate pagination
+        query = query.offset((page - 1) * per_page).limit(per_page)
         total_pages = ceil(total / per_page)
-        offset = (page - 1) * per_page
-
-        # Get statistics
-        today = datetime.now().date()
-        first_day_of_month = today.replace(day=1)
-        first_day_of_year = today.replace(month=1, day=1)
-
-        stats_query = db.query(func.count(User.id).label('count')).filter(User.user_type == "doctor")
-
-        today_stats = stats_query.filter(func.date(User.created_at) == today).first()
-        month_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_month).first()
-        year_stats = stats_query.filter(func.date(User.created_at) >= first_day_of_year).first()
-        overall_stats = stats_query.first()
         
-        # Add sorting
-        if hasattr(User, sort_by):
-            sort_column = getattr(User, sort_by)
-            if sort_order.lower() == 'desc':
-                query = query.order_by(sort_column.desc())
-            else:
-                query = query.order_by(sort_column.asc())
-        
-        # Get paginated doctors - ALL doctors in the system
-        doctors = query.offset(offset).limit(per_page).all()
-        
-        doctors_list = []
-        for doctor in doctors:
+        created_doctors = query.all()
+        doctor_list = []
+
+        # Add current user's data if no filters are applied
+        if not has_filters:
+            doctor_list.append({
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "phone": user.phone,
+                "user_type": user.user_type,
+                "bio": user.bio,
+                "profile_pic": user.profile_pic,
+                "color_code": user.color_code,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None
+            })
+
+        # Add created doctors data
+        for doctor in created_doctors:
             doctor_data = {
                 "id": doctor.id,
                 "name": doctor.name,
@@ -5382,39 +5374,29 @@ async def get_doctor_list(
                 "phone": doctor.phone,
                 "user_type": doctor.user_type,
                 "bio": doctor.bio,
-                "color_code": doctor.color_code,
                 "profile_pic": doctor.profile_pic,
+                "color_code": doctor.color_code,
                 "created_at": doctor.created_at.isoformat() if doctor.created_at else None,
                 "updated_at": doctor.updated_at.isoformat() if doctor.updated_at else None
             }
-            doctors_list.append(doctor_data)
+            doctor_list.append(doctor_data)
 
         return JSONResponse(status_code=200, content={
-            "doctors": doctors_list,
+            "doctors": doctor_list,
             "statistics": {
-                "today": {
-                    "count": today_stats.count if today_stats else 0
-                },
-                "month": {
-                    "count": month_stats.count if month_stats else 0
-                },
-                "year": {
-                    "count": year_stats.count if year_stats else 0
-                },
-                "overall": {
-                    "count": overall_stats.count if overall_stats else 0
-                }
+                "total_doctors": total + (1 if not has_filters else 0),
             },
             "pagination": {
-                "total": total,
+                "total": total + (1 if not has_filters else 0),
                 "page": page,
                 "per_page": per_page,
-                "total_pages": total_pages
+                "total_pages": ceil((total + (1 if not has_filters else 0)) / per_page)
             }
         })
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
+    
 @user_router.get("/dashboard",
     response_model=dict,
     status_code=200,
