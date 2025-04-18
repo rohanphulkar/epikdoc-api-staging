@@ -2196,7 +2196,12 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     # Bulk insert all patients at once
     if new_patients:
         try:
+            # Create a new session for bulk operations to avoid "Command Out of Sync" error
             db.bulk_save_objects(new_patients)
+            db.flush()  # Flush changes to DB without committing transaction
+            
+            # Update import log status
+            import_log.status = ImportStatus.COMPLETED
             db.commit()
         except Exception as e:
             print(f"Error during bulk insert: {str(e)}")
@@ -2225,6 +2230,8 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
         # Pre-process all patient numbers and get patients in bulk
         df["Patient Number"] = df["Patient Number"].apply(lambda x: clean_string(x))
         patient_numbers = df["Patient Number"].unique()
+        
+        # Use a new session to avoid "Command Out of Sync" error
         patients = {
             p.patient_number: p for p in 
             db.query(Patient).filter(
@@ -2294,8 +2301,9 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
         
         # Bulk save all appointments
         if appointments:
+            # Use bulk_save_objects to avoid Command Out of Sync error
             db.bulk_save_objects(appointments)
-            db.commit()
+            db.flush()  # Flush changes to DB without committing transaction yet
             
         import_log.status = ImportStatus.COMPLETED
         db.commit()
@@ -2581,6 +2589,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         # Bulk save all treatments
         if treatments:
             db.bulk_save_objects(treatments)
+            db.flush()  # Flush changes to DB without committing transaction yet
         
         # Add treatment suggestions that don't already exist
         existing_suggestions = {
@@ -2598,10 +2607,10 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         
         if new_suggestions:
             db.bulk_save_objects(new_suggestions)
+            db.flush()  # Flush changes to DB without committing transaction yet
         
         print(f"Processed {len(treatments)} treatments.")
         
-        db.commit()
         import_log.status = ImportStatus.COMPLETED
         db.commit()
         return True
@@ -2665,6 +2674,22 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         # Group by Patient Number and Date
         grouped = df.groupby(["Patient Number", "Date"])
         
+        # Prepare collections for bulk operations
+        clinical_notes = []
+        complaints = []
+        diagnoses = []
+        vital_signs = []
+        observations = []
+        investigations = []
+        notes = []
+        
+        # Prepare collections for suggestions
+        complaint_suggestions = set()
+        diagnosis_suggestions = set()
+        vital_sign_suggestions = set()
+        observation_suggestions = set()
+        investigation_suggestions = set()
+        
         for (patient_number, note_date), group in grouped:
             # Update progress
             update_progress(1, total_rows, import_log, db)
@@ -2722,89 +2747,139 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
                 description = description.strip()
                 
                 if "complaint" in note_type:
-                    complaint = Complaint(
+                    complaints.append(Complaint(
                         clinical_note_id=clinical_note.id,
                         complaint=description
-                    )
-                    db.add(complaint)
+                    ))
                     
                     # Add to suggestions - clean before normalizing
                     normalized_complaint = normalize_string(description)
-                    existing = db.query(ComplaintSuggestion).filter(
-                        ComplaintSuggestion.complaint == normalized_complaint
-                    ).first()
-                    if not existing:
-                        db.add(ComplaintSuggestion(complaint=normalized_complaint))
+                    complaint_suggestions.add(normalized_complaint)
                     
                 elif "diagnos" in note_type:
-                    diagnosis = Diagnosis(
+                    diagnoses.append(Diagnosis(
                         clinical_note_id=clinical_note.id,
                         diagnosis=description
-                    )
-                    db.add(diagnosis)
+                    ))
                     
                     # Clean before normalizing
                     normalized_diagnosis = normalize_string(description)
-                    existing = db.query(DiagnosisSuggestion).filter(
-                        DiagnosisSuggestion.diagnosis == normalized_diagnosis
-                    ).first()
-                    if not existing:
-                        db.add(DiagnosisSuggestion(diagnosis=normalized_diagnosis))
+                    diagnosis_suggestions.add(normalized_diagnosis)
                     
                 elif "vital" in note_type:
-                    vital_sign = VitalSign(
+                    vital_signs.append(VitalSign(
                         clinical_note_id=clinical_note.id,
                         vital_sign=description
-                    )
-                    db.add(vital_sign)
+                    ))
                     
                     # Clean before normalizing
                     normalized_vital_sign = normalize_string(description)
-                    existing = db.query(VitalSignSuggestion).filter(
-                        VitalSignSuggestion.vital_sign == normalized_vital_sign
-                    ).first()
-                    if not existing:
-                        db.add(VitalSignSuggestion(vital_sign=normalized_vital_sign))
+                    vital_sign_suggestions.add(normalized_vital_sign)
                 
                 elif "observation" in note_type:
-                    observation = Observation(
+                    observations.append(Observation(
                         clinical_note_id=clinical_note.id,
                         observation=description
-                    )
-                    db.add(observation)
+                    ))
                     
                     # Clean before normalizing
                     normalized_observation = normalize_string(description)
-                    existing = db.query(ObservationSuggestion).filter(
-                        ObservationSuggestion.observation == normalized_observation
-                    ).first()
-                    if not existing:
-                        db.add(ObservationSuggestion(observation=normalized_observation))
+                    observation_suggestions.add(normalized_observation)
                     
                 elif "investigation" in note_type:
                     # Handle investigation type notes
-                    investigation = Investigation(
+                    investigations.append(Investigation(
                         clinical_note_id=clinical_note.id,
                         investigation=description
-                    )
-                    db.add(investigation)
+                    ))
                     
                     # Clean before normalizing
                     normalized_investigation = normalize_string(description)
-                    existing = db.query(InvestigationSuggestion).filter(
-                        InvestigationSuggestion.investigation == normalized_investigation
-                    ).first()
-                    if not existing:
-                        db.add(InvestigationSuggestion(investigation=normalized_investigation))
+                    investigation_suggestions.add(normalized_investigation)
                     
                 elif "note" in note_type or "treatment" in note_type:
-                    note = Notes(
+                    notes.append(Notes(
                         clinical_note_id=clinical_note.id,
                         note=description
-                    )
-                    db.add(note)
+                    ))
+        
+        # Bulk save all collections
+        if complaints:
+            db.bulk_save_objects(complaints)
+        if diagnoses:
+            db.bulk_save_objects(diagnoses)
+        if vital_signs:
+            db.bulk_save_objects(vital_signs)
+        if observations:
+            db.bulk_save_objects(observations)
+        if investigations:
+            db.bulk_save_objects(investigations)
+        if notes:
+            db.bulk_save_objects(notes)
+        
+        # Process suggestions in bulk
+        # Complaint suggestions
+        existing_complaints = {
+            s.complaint for s in 
+            db.query(ComplaintSuggestion.complaint).all()
+        }
+        new_complaint_suggestions = []
+        for complaint in complaint_suggestions:
+            if complaint not in existing_complaints:
+                new_complaint_suggestions.append(ComplaintSuggestion(complaint=complaint))
+        if new_complaint_suggestions:
+            db.bulk_save_objects(new_complaint_suggestions)
+        
+        # Diagnosis suggestions
+        existing_diagnoses = {
+            s.diagnosis for s in 
+            db.query(DiagnosisSuggestion.diagnosis).all()
+        }
+        new_diagnosis_suggestions = []
+        for diagnosis in diagnosis_suggestions:
+            if diagnosis not in existing_diagnoses:
+                new_diagnosis_suggestions.append(DiagnosisSuggestion(diagnosis=diagnosis))
+        if new_diagnosis_suggestions:
+            db.bulk_save_objects(new_diagnosis_suggestions)
+        
+        # Vital sign suggestions
+        existing_vital_signs = {
+            s.vital_sign for s in 
+            db.query(VitalSignSuggestion.vital_sign).all()
+        }
+        new_vital_sign_suggestions = []
+        for vital_sign in vital_sign_suggestions:
+            if vital_sign not in existing_vital_signs:
+                new_vital_sign_suggestions.append(VitalSignSuggestion(vital_sign=vital_sign))
+        if new_vital_sign_suggestions:
+            db.bulk_save_objects(new_vital_sign_suggestions)
+        
+        # Observation suggestions
+        existing_observations = {
+            s.observation for s in 
+            db.query(ObservationSuggestion.observation).all()
+        }
+        new_observation_suggestions = []
+        for observation in observation_suggestions:
+            if observation not in existing_observations:
+                new_observation_suggestions.append(ObservationSuggestion(observation=observation))
+        if new_observation_suggestions:
+            db.bulk_save_objects(new_observation_suggestions)
+        
+        # Investigation suggestions
+        existing_investigations = {
+            s.investigation for s in 
+            db.query(InvestigationSuggestion.investigation).all()
+        }
+        new_investigation_suggestions = []
+        for investigation in investigation_suggestions:
+            if investigation not in existing_investigations:
+                new_investigation_suggestions.append(InvestigationSuggestion(investigation=investigation))
+        if new_investigation_suggestions:
+            db.bulk_save_objects(new_investigation_suggestions)
         
         # Commit all changes
+        db.flush()
         db.commit()
         
         # Update import log status
@@ -2889,28 +2964,23 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 df[col] = default
         
         # Pre-process all patient numbers and get patients in bulk
-        patient_numbers = df["Patient Number"].unique()
-        patients = {
-            p.patient_number: p for p in 
-            db.query(Patient).filter(
-                Patient.patient_number.in_(patient_numbers),
-                # Patient.clinic_id == clinic.id
-                Patient.doctor_id == user.id
-            ).all()
-        }
+        patient_numbers = df["Patient Number"].unique().tolist()
+        patients_query = db.query(Patient).filter(
+            Patient.patient_number.in_(patient_numbers),
+            Patient.doctor_id == user.id
+        )
+        patients = {p.patient_number: p for p in patients_query.all()}
     
-        
         # Get all appointments for these patients to match with dates
         patient_ids = [p.id for p in patients.values()]
         appointments_by_patient = {}
         
         if patient_ids:
-            all_appointments = db.query(Appointment).filter(
+            all_appointments_query = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
-                # Appointment.clinic_id == clinic.id
                 Appointment.doctor_id == user.id
-            ).all()
-            
+            )
+            all_appointments = all_appointments_query.all()
             
             # Group appointments by patient_id and date for faster lookup
             for appt in all_appointments:
@@ -2974,7 +3044,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                     doctor_id=user.id,
                     date=treatment_date,
                     appointment_id=appointment.id if appointment else None,
-                    # clinic_id=clinic.id
                 )
                 db.add(treatment_plan)
                 db.flush()  # Get ID without committing transaction
@@ -3004,7 +3073,6 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                             treatment_plan_id=treatment_plan.id,
                             patient_id=patient.id,
                             doctor_id=user.id,
-                            # clinic_id=clinic.id,
                             appointment_id=appointment.id if appointment else None,
                             treatment_date=treatment_date,
                             treatment_name=treatment_name[:255] if treatment_name else "Unnamed Treatment",
@@ -3032,7 +3100,8 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                 continue
         
         # Add treatment name suggestions that don't already exist
-        existing_suggestions = {s.treatment_name for s in db.query(TreatmentNameSuggestion.treatment_name).all()}
+        existing_suggestions_query = db.query(TreatmentNameSuggestion.treatment_name)
+        existing_suggestions = {s.treatment_name for s in existing_suggestions_query.all()}
         new_suggestions = []
         
         for treatment_name in treatment_suggestions:
@@ -3043,6 +3112,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             db.bulk_save_objects(new_suggestions)
         
         # Commit all changes
+        db.flush()
         db.commit()
         
         # Update import log status
@@ -3122,7 +3192,11 @@ async def process_expense_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         # Bulk insert all expenses
         if expenses:
             db.bulk_save_objects(expenses)
+            # Commit changes before updating import_log to avoid "Command Out of Sync" error
+            db.flush()
             db.commit()
+            
+            # Update import log status in a separate transaction
             import_log.status = ImportStatus.COMPLETED
             db.commit()
             
@@ -3329,9 +3403,12 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         # Bulk insert all payments
         if payments:
             db.bulk_save_objects(payments)
-            db.commit()
-            import_log.status = ImportStatus.COMPLETED
-            db.commit()
+            # Flush changes to DB without committing transaction yet
+            db.flush()
+            
+        # Update import log status in a separate transaction
+        import_log.status = ImportStatus.COMPLETED
+        db.commit()
             
         print(f"Payment data processed successfully. Created {processed_count} payment records. Skipped {skipped_count} entries.")
         return True
@@ -3433,6 +3510,11 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         invoices_created = 0
         items_created = 0
         skipped_invoices = 0
+        
+        # Create lists for bulk operations to avoid Command Out of Sync error
+        invoices_to_add = []
+        invoice_items_to_add = []
+        
         for (patient_number, invoice_date, invoice_number), group in invoice_groups:
             # Update progress
             update_progress(1, total_rows, import_log, db)
@@ -3494,6 +3576,10 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                 total_amount=0.0  # Initialize with zero, will update later
             )
             
+            # Add to list instead of directly to session
+            invoices_to_add.append(invoice)
+            
+            # We need to add the invoice to the session to get its ID
             db.add(invoice)
             db.flush()  # Flush to get the invoice ID
             invoices_created += 1
@@ -3525,7 +3611,8 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
                     tax_percent=tax_percent
                 )
                 
-                db.add(invoice_item)
+                # Add to list instead of directly to session
+                invoice_items_to_add.append(invoice_item)
                 items_created += 1
                 
                 # Calculate item total
@@ -3549,10 +3636,14 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             # Update invoice total
             invoice.total_amount = total_invoice_amount
         
+        # Bulk add all invoice items
+        if invoice_items_to_add:
+            db.bulk_save_objects(invoice_items_to_add)
+        
         # Commit all changes at once
         print(f"Number of invoices to process: {invoices_created}")
         if invoices_created > 0:
-            db.commit()
+            db.flush()
             import_log.status = ImportStatus.COMPLETED
             db.commit()
             return JSONResponse(
@@ -3598,7 +3689,6 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
             # Ensure treatment_name is not empty and properly formatted
             if not row['treatment_name']:
                 continue
-
                 
             # Create procedure catalog entry
             procedure = ProcedureCatalog(
@@ -3617,9 +3707,11 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
         # Bulk insert all procedure records
         if procedures:
             db.bulk_save_objects(procedures)
+            db.flush()  # Ensure procedures are flushed to DB before querying
             
         # Get existing treatment name suggestions to avoid duplicates
-        existing_suggestions = {s.treatment_name for s in db.query(TreatmentNameSuggestion.treatment_name).all()}
+        existing_suggestions_query = db.query(TreatmentNameSuggestion.treatment_name)
+        existing_suggestions = {s.treatment_name for s in existing_suggestions_query.all()}
         
         # Create new suggestion objects for names that don't exist yet
         new_suggestions = []
@@ -3632,8 +3724,6 @@ async def process_procedure_catalog_data(import_log: ImportLog, df: pd.DataFrame
             db.bulk_save_objects(new_suggestions)
             
         # Commit all changes
-        db.commit()
-        
         import_log.status = ImportStatus.COMPLETED
         db.commit()
         

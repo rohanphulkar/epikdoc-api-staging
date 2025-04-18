@@ -107,7 +107,7 @@ async def preflight(full_path: str):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure specific origins in production
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
