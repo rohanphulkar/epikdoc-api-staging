@@ -2141,14 +2141,15 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
     # Prepare bulk insert
     new_patients = []
     
-    for idx, row in df.iterrows():
+    for idx in range(len(df)):
         try:
             # Update progress
             update_progress(1, total_rows, import_log, db)
             
+            row = df.iloc[idx]
             patient_number = str(row.get("Patient Number", "")).strip("'")
             
-            # Handle NaT values for dates by converting to None - use iloc for proper indexing
+            # Handle NaT values for dates by converting to None - use integer index
             dob = None if pd.isna(dob_series.iloc[idx]) else dob_series.iloc[idx].to_pydatetime()
             anniversary = None if pd.isna(anniversary_series.iloc[idx]) else anniversary_series.iloc[idx].to_pydatetime()
 
@@ -2207,88 +2208,89 @@ async def process_patient_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
 async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: Session, user: User):
     print("Processing appointment data")
     try:
-        # Clean column names and strip whitespace
+        global total_rows, rows_processed, percentage_completed
+        
+        # Clean and prepare data
         df.columns = df.columns.str.strip()
         
+        # Helper functions for data cleaning
+        def clean_string(value, max_length=None):
+            if pd.isna(value):
+                return ""
+            result = str(value).strip().strip("'").strip('"')
+            if max_length:
+                result = result[:max_length]
+            return result
+        
         # Pre-process all patient numbers and get patients in bulk
-        df["Patient Number"] = df["Patient Number"].astype(str).str.strip().str.strip("'").str.strip('"')
+        df["Patient Number"] = df["Patient Number"].apply(lambda x: clean_string(x))
         patient_numbers = df["Patient Number"].unique()
         patients = {
             p.patient_number: p for p in 
             db.query(Patient).filter(
                 Patient.patient_number.in_(patient_numbers),
-                # Patient.clinic_id == clinic.id,
                 Patient.doctor_id == user.id
             ).all()
         }
         
-        # Create appointment objects
-        appointments = []
-        
         # Convert date columns to datetime
-        df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
-        df["Checked In At"] = pd.to_datetime(df["Checked In At"], errors='coerce')
-        df["Checked Out At"] = pd.to_datetime(df["Checked Out At"], errors='coerce')
+        df["Date"] = pd.to_datetime(df["Date"].apply(clean_string), errors='coerce')
+        df["Checked In At"] = pd.to_datetime(df["Checked In At"].apply(clean_string), errors='coerce') if "Checked In At" in df.columns else None
+        df["Checked Out At"] = pd.to_datetime(df["Checked Out At"].apply(clean_string), errors='coerce') if "Checked Out At" in df.columns else None
 
         # Clean text columns
-        if "Notes" in df.columns:
-            df["Notes"] = df["Notes"].astype(str).str.strip().str.strip("'").str.strip('"')
-        if "Status" in df.columns:
-            df["Status"] = df["Status"].astype(str).str.strip().str.strip("'").str.strip('"').str.lower()
+        df["Notes"] = df["Notes"].apply(lambda x: clean_string(x)) if "Notes" in df.columns else ""
+        df["Status"] = df["Status"].apply(lambda x: clean_string(x).lower()) if "Status" in df.columns else "scheduled"
 
-        # Grouping by Patient Number, then sorting by Date
-        grouped = df.sort_values(by=["Patient Number", "Date"]).groupby("Patient Number")
-
-        # Creating JSON output with better formatting
-        grouped_appointments = {}
-        for patient, group in grouped:
-            patient_key = str(patient).strip().strip("'").strip('"')
-            appointments_list = clean_list_of_dicts(group.sort_values("Date").to_dict(orient="records"))
-            grouped_appointments[patient_key] = appointments_list
-
-        # Initialize progress tracking
-        global total_rows, rows_processed, percentage_completed
-
-        for k, v in grouped_appointments.items():
+        # Create appointment objects
+        appointments = []
+        skipped_count = 0
+        
+        # Process each row
+        for idx, row in df.iterrows():
             # Update progress
             update_progress(1, total_rows, import_log, db)
             
-            patient = patients.get(k)
-            if patient:
-                for appointment in v:
-                    # Extract the appointment date from the appointment data
-                    appointment_date = appointment.get("Date")
-                    # Skip this appointment if the date is missing or NaN
-                    if pd.isna(appointment_date):
-                        continue
-                    
-                    # Ensure status is a valid enum value
-                    status_str = str(appointment.get("Status", "scheduled")).lower().strip()
-                    try:
-                        status = AppointmentStatus(status_str)
-                    except ValueError:
-                        status = AppointmentStatus.SCHEDULED
-                        
-                    new_appointment = Appointment(
-                        patient_id=patient.id,
-                        # clinic_id=clinic.id,
-                        patient_number=patient.patient_number,
-                        patient_name=patient.name,
-                        appointment_date=appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date,
-                        start_time=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
-                        end_time=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else (appointment_date.date() if hasattr(appointment_date, 'date') else appointment_date),
-                        checked_in_at=appointment.get("Checked In At") if pd.notna(appointment.get("Checked In At")) else None,
-                        checked_out_at=appointment.get("Checked Out At") if pd.notna(appointment.get("Checked Out At")) else None,
-                        status=status,
-                        notes=str(appointment.get("Notes", "")).strip(),
-                        doctor_id=user.id,
-                        doctor_name=user.name,
-                        share_on_email=False,
-                        share_on_sms=False,
-                        share_on_whatsapp=False,
-                        send_reminder=False
-                    )
-                    appointments.append(new_appointment)
+            patient_number = row.get("Patient Number", "")
+            appointment_date = row.get("Date")
+            
+            # Skip if missing critical data
+            if not patient_number or pd.isna(appointment_date):
+                skipped_count += 1
+                continue
+            
+            patient = patients.get(patient_number)
+            if not patient:
+                skipped_count += 1
+                continue
+            
+            # Determine appointment status
+            status_str = row.get("Status", "scheduled").lower().strip()
+            try:
+                status = AppointmentStatus(status_str)
+            except ValueError:
+                status = AppointmentStatus.SCHEDULED
+            
+            # Create appointment object
+            new_appointment = Appointment(
+                patient_id=patient.id,
+                patient_number=patient.patient_number,
+                patient_name=patient.name,
+                appointment_date=appointment_date,
+                start_time=row.get("Checked In At") if pd.notna(row.get("Checked In At")) else appointment_date,
+                end_time=row.get("Checked Out At") if pd.notna(row.get("Checked Out At")) else appointment_date,
+                checked_in_at=row.get("Checked In At") if pd.notna(row.get("Checked In At")) else None,
+                checked_out_at=row.get("Checked Out At") if pd.notna(row.get("Checked Out At")) else None,
+                status=status,
+                notes=row.get("Notes", ""),
+                doctor_id=user.id,
+                doctor_name=user.name,
+                share_on_email=False,
+                share_on_sms=False,
+                share_on_whatsapp=False,
+                send_reminder=False
+            )
+            appointments.append(new_appointment)
         
         # Bulk save all appointments
         if appointments:
@@ -2300,6 +2302,8 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
         return True
     except Exception as e:
         print(f"Error during appointment processing: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         import_log.status = ImportStatus.FAILED
         db.commit()
@@ -2625,7 +2629,7 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         df["Type"] = df["Type"].astype(str).str.strip("'")
         df["Description"] = df["Description"].astype(str).str.strip("'").str.strip('"')
         df["Date"] = pd.to_datetime(df["Date"].astype(str).str.strip("'"), errors='coerce')
-        
+                
         # Pre-process all patient numbers and get patients in bulk
         patient_numbers = df["Patient Number"].unique()
         patients = {
@@ -3024,7 +3028,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
                         print(f"Error processing individual treatment: {str(e)}")
                         continue
             except Exception as e:
-                print(f"Error processing group for patient {patient_number} on {date_str}: {str(e)}")
+                print(f"Error processing group for patient {patient_number} on {treatment_date}: {str(e)}")
                 continue
         
         # Add treatment name suggestions that don't already exist
