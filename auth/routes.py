@@ -2256,7 +2256,9 @@ async def process_appointment_data(import_log: ImportLog, df: pd.DataFrame, db: 
             patient = patients.get(k)
             if patient:
                 for appointment in v:
+                    # Extract the appointment date from the appointment data
                     appointment_date = appointment.get("Date")
+                    # Skip this appointment if the date is missing or NaN
                     if pd.isna(appointment_date):
                         continue
                     
@@ -2317,6 +2319,7 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
             p.patient_number: p for p in 
             db.query(Patient).filter(
                 Patient.patient_number.in_(patient_numbers),
+                Patient.doctor_id == user.id,
                 # Patient.clinic_id == clinic.id
             ).all()
         }
@@ -2348,7 +2351,8 @@ async def process_treatment_data(import_log: ImportLog, df: pd.DataFrame, db: Se
         all_appointments = db.query(Appointment).filter(
             Appointment.patient_id.in_([p.id for p in patients.values()]),
             # Appointment.clinic_id == clinic.id,
-            func.date(Appointment.appointment_date).in_(all_dates)
+            func.date(Appointment.appointment_date).in_(all_dates),
+            Appointment.doctor_id == user.id
         ).all()
         
         # Create lookup dictionary for appointments
@@ -2639,7 +2643,8 @@ async def process_clinical_note_data(import_log: ImportLog, df: pd.DataFrame, db
         if patient_ids:
             all_appointments = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
-                # Appointment.clinic_id == clinic.id
+                # Appointment.clinic_id == clinic.id,
+                Appointment.doctor_id == user.id
             ).all()
             
             # Group appointments by patient_id for faster lookup
@@ -2886,6 +2891,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             db.query(Patient).filter(
                 Patient.patient_number.in_(patient_numbers),
                 # Patient.clinic_id == clinic.id
+                Patient.doctor_id == user.id
             ).all()
         }
     
@@ -2898,6 +2904,7 @@ async def process_treatment_plan_data(import_log: ImportLog, df: pd.DataFrame, d
             all_appointments = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
                 # Appointment.clinic_id == clinic.id
+                Appointment.doctor_id == user.id
             ).all()
             
             
@@ -3183,6 +3190,7 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             db.query(Patient).filter(
                 Patient.patient_number.in_(patient_numbers),
                 # Patient.clinic_id == clinic.id
+                Patient.doctor_id == user.id
             ).all()
         }
         
@@ -3194,7 +3202,8 @@ async def process_payment_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
         if patient_ids:
             all_appointments = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
-                # Appointment.clinic_id == clinic.id
+                # Appointment.clinic_id == clinic.id,
+                Appointment.doctor_id == user.id
             ).all()
             
             # Group appointments by patient_id for faster lookup
@@ -3387,6 +3396,7 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             db.query(Patient).filter(
                 Patient.patient_number.in_(patient_numbers),
                 # Patient.clinic_id == clinic.id
+                Patient.doctor_id == user.id
             ).all()
         }
         
@@ -3398,6 +3408,7 @@ async def process_invoice_data(import_log: ImportLog, df: pd.DataFrame, db: Sess
             all_appointments = db.query(Appointment).filter(
                 Appointment.patient_id.in_(patient_ids),
                 # Appointment.clinic_id == clinic.id
+                Appointment.doctor_id == user.id
             ).all()
             
             # Group appointments by patient_id for faster lookup
@@ -5311,6 +5322,7 @@ async def get_doctor_list(
     email: Optional[str] = Query(None, description="Search by doctor email"),
     phone: Optional[str] = Query(None, description="Search by doctor phone"),
     doctor_id: Optional[str] = Query(None, description="Search by doctor ID"),
+    clinic_id: Optional[str] = Query(None, description="Search by clinic ID"),
     db: Session = Depends(get_db)
 ):
     try:        
@@ -5325,7 +5337,7 @@ async def get_doctor_list(
         # Get base query for created doctors
         query = db.query(User).filter(User.id.in_([d.id for d in user.created_doctors])) if user.created_doctors else db.query(User).filter(User.id == None)
 
-        has_filters = any([name, email, phone, doctor_id])
+        has_filters = any([name, email, phone, doctor_id, clinic_id])
 
         # Apply search filters
         if name:
@@ -5336,6 +5348,14 @@ async def get_doctor_list(
             query = query.filter(User.phone.ilike(f"%{phone}%"))
         if doctor_id:
             query = query.filter(User.id == doctor_id)
+        if clinic_id:
+            # Filter doctors by clinic_id using the association table
+            clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+            if not clinic:
+                return JSONResponse(status_code=404, content={"error": "Clinic not found"})
+            # Import the doctor_clinics table from models
+            from auth.models import doctor_clinics
+            query = query.join(doctor_clinics).filter(doctor_clinics.c.clinic_id == clinic_id)
 
         # Apply sorting
         sort_column = getattr(User, sort_by, None)
@@ -5396,7 +5416,6 @@ async def get_doctor_list(
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {str(e)}"})
-    
 @user_router.get("/dashboard",
     response_model=dict,
     status_code=200,
