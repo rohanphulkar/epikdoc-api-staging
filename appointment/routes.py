@@ -24,6 +24,8 @@ import re
 import calendar
 from redis_client import get_redis_client, close_redis_connection
 import json
+import hashlib
+import orjson, logging
 
 
 scheduler = BackgroundScheduler()
@@ -1236,56 +1238,124 @@ async def search_appointments(
     db: Session = Depends(get_db)
 ):
     try:
+        # Authentication first - fix the user_id reference issue
         decoded_token = verify_token(request)
-        user_id = decoded_token.get("user_id") if decoded_token else None
-        user = db.query(User).filter(User.id == user_id).first()
-
-        if not user or str(user.user_type) != "doctor":
+        if not decoded_token or "user_id" not in decoded_token:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+            
+        user_id = decoded_token["user_id"]
+        
+        # Generate cache key hash for better performance
+        params_hash = hashlib.md5(
+            f"{user_id}:{doctor_id}:{patient_name}:{patient_email}:{patient_phone}:{doctor_name}:{doctor_email}:{doctor_phone}:{patient_gender}:{clinic_id}:{status}:{appointment_date}:{today}:{recent}:{month}:{page}:{per_page}:{sort_by}:{sort_order}".encode()
+        ).hexdigest()
+        
+        cache_key = f"appointments:search:{params_hash}"
+        stats_cache_key = f"appointments:stats:{user_id}"
+        
+        # Use Redis directly without connection pool
+        redis = await get_redis_client()
+        
+        # Try to get cached result
+        cached_result = await redis.get(cache_key)
+        cached_stats = await redis.get(stats_cache_key)
+        
+        if cached_result:
+            try:
+                # Handle bytes to string conversion properly
+                cached_result_str = cached_result.decode('utf-8') if isinstance(cached_result, bytes) else cached_result
+                return JSONResponse(status_code=200, content=orjson.loads(cached_result_str))
+            except Exception as e:
+                logging.error(f"Error parsing cached result: {str(e)}")
+                # Continue with normal flow if cache parsing fails
+        
+        # Check user type with optimized query
+        user = db.execute(select(User.user_type).where(User.id == user_id)).scalar_one_or_none()
+        
+        if not user or str(user) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        query = db.query(Appointment, Patient, User)
-        query = query.join(Patient, Appointment.patient_id == Patient.id)
-        query = query.join(User, Appointment.doctor_id == User.id)
+        # Build optimized query with specific column selection and prefetching
+        # Use Core SQL for better performance
+        stmt = select(
+            Appointment.id, 
+            Appointment.patient_id, 
+            Appointment.clinic_id,
+            Appointment.patient_number, 
+            Appointment.patient_name, 
+            Appointment.doctor_id,
+            Appointment.doctor_name, 
+            Appointment.notes, 
+            Appointment.appointment_date,
+            Appointment.start_time, 
+            Appointment.end_time, 
+            Appointment.checked_in_at,
+            Appointment.checked_out_at, 
+            Appointment.status, 
+            Appointment.created_at,
+            Appointment.updated_at,
+            Patient.id.label('p_id'), 
+            Patient.name.label('p_name'),
+            Patient.email.label('p_email'), 
+            Patient.mobile_number,
+            Patient.date_of_birth, 
+            Patient.gender,
+            User.id.label('d_id'), 
+            User.name.label('d_name'),
+            User.email.label('d_email'), 
+            User.phone, 
+            User.color_code
+        ).select_from(
+            Appointment.__table__.join(
+                Patient.__table__, 
+                Appointment.patient_id == Patient.id
+            ).join(
+                User.__table__, 
+                Appointment.doctor_id == User.id
+            )
+        )
 
-        search_filters = []
+        # Apply filters with optimized conditions
+        conditions = []
+        
+        # Search filters
         if patient_name:
-            search_filters.append(Patient.name.ilike(f"%{patient_name}%"))
+            conditions.append(func.lower(Patient.name).contains(patient_name.lower()))
         if patient_email:
-            search_filters.append(Patient.email.ilike(f"%{patient_email}%"))
+            conditions.append(func.lower(Patient.email).contains(patient_email.lower()))
         if patient_phone:
-            search_filters.append(Patient.mobile_number.ilike(f"%{patient_phone}%"))
+            conditions.append(Patient.mobile_number.contains(patient_phone))
         if doctor_name:
-            search_filters.append(User.name.ilike(f"%{doctor_name}%"))
+            conditions.append(func.lower(User.name).contains(doctor_name.lower()))
         if doctor_email:
-            search_filters.append(User.email.ilike(f"%{doctor_email}%"))
+            conditions.append(func.lower(User.email).contains(doctor_email.lower()))
         if doctor_phone:
-            search_filters.append(User.phone.ilike(f"%{doctor_phone}%"))
-
-        filter_conditions = []
+            conditions.append(User.phone.contains(doctor_phone))
         if doctor_id:
-            filter_conditions.append(Appointment.doctor_id == doctor_id)
+            conditions.append(Appointment.doctor_id == doctor_id)
         if patient_gender:
-            filter_conditions.append(Patient.gender == patient_gender)
+            conditions.append(Patient.gender == patient_gender)
         if clinic_id:
-            filter_conditions.append(Appointment.clinic_id == clinic_id)
+            conditions.append(Appointment.clinic_id == clinic_id)
         if status:
-            filter_conditions.append(Appointment.status == status)
+            conditions.append(Appointment.status == status)
         if appointment_date:
-            filter_conditions.append(Appointment.appointment_date == appointment_date)
+            conditions.append(Appointment.appointment_date == appointment_date)
 
+        # Date filters
         if today:
             today_date = datetime.now().date()
             start = datetime.combine(today_date, time.min)
             end = datetime.combine(today_date, time.max)
-            filter_conditions.append(Appointment.appointment_date.between(start, end))
-
+            conditions.append(Appointment.appointment_date.between(start, end))
         elif recent:
             today_date = datetime.now().date()
             seven_days_ago = today_date - timedelta(days=7)
             start = datetime.combine(seven_days_ago, time.min)
             end = datetime.combine(today_date, time.max)
-            filter_conditions.append(Appointment.appointment_date.between(start, end))
+            conditions.append(Appointment.appointment_date.between(start, end))
 
+        # Month filter
         if month:
             try:
                 filter_month = datetime.strptime(month, "%m-%Y")
@@ -1294,83 +1364,144 @@ async def search_appointments(
         else:
             filter_month = datetime.now()
 
-        start_of_month = filter_month.replace(day=1)
+        start_of_month = filter_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         _, last_day = calendar.monthrange(filter_month.year, filter_month.month)
-        end_of_month = filter_month.replace(day=last_day, hour=23, minute=59, second=59)
-        filter_conditions.append(Appointment.appointment_date.between(start_of_month, end_of_month))
+        end_of_month = filter_month.replace(day=last_day, hour=23, minute=59, second=59, microsecond=999999)
+        conditions.append(Appointment.appointment_date.between(start_of_month, end_of_month))
 
-        if search_filters:
-            query = query.filter(or_(*search_filters))
-        if filter_conditions:
-            query = query.filter(and_(*filter_conditions))
+        # Apply all conditions
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
 
-        # Sorting
-        sort_column = getattr(Appointment, sort_by, None)
-        if sort_column is not None:
-            if sort_order == "asc":
-                query = query.order_by(asc(sort_column))
-            else:
-                query = query.order_by(desc(sort_column))
+        # Sorting - use index-optimized sorting
+        sort_column = getattr(Appointment, sort_by, Appointment.appointment_date)
+        if sort_order.lower() == "asc":
+            stmt = stmt.order_by(sort_column.asc())
+        else:
+            stmt = stmt.order_by(sort_column.desc())
 
-        total_count = query.count()
-        query = query.offset((page - 1) * per_page).limit(per_page)
-        appointments = query.all()
-
+        # Count query - use optimized count
+        count_stmt = select(func.count()).select_from(
+            Appointment.__table__.join(
+                Patient.__table__, 
+                Appointment.patient_id == Patient.id
+            ).join(
+                User.__table__, 
+                Appointment.doctor_id == User.id
+            )
+        )
+        
+        if conditions:
+            count_stmt = count_stmt.where(and_(*conditions))
+            
+        # Execute count query
+        total_count = db.execute(count_stmt).scalar() or 0
+        
+        # Apply pagination with optimized offset/limit
+        stmt = stmt.offset((page - 1) * per_page).limit(per_page)
+        
+        # Execute main query
+        result = db.execute(stmt).fetchall()
+        
+        # Process results with optimized data structure
         appointment_list = []
-        for appointment, patient, doctor in appointments:
-            appointment_list.append({
-                "id": appointment.id,
-                "patient_id": appointment.patient_id,
-                "clinic_id": appointment.clinic_id,
-                "patient_number": appointment.patient_number,
-                "patient_name": appointment.patient_name,
-                "doctor_id": appointment.doctor_id,
-                "doctor_name": appointment.doctor_name,
-                "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
-                "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
-                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
-                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
-                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
-                "status": appointment.status.value,
-                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+        for row in result:
+            # Convert row to dict with optimized mapping
+            appointment_data = {
+                "id": row.id,
+                "patient_id": row.patient_id,
+                "clinic_id": row.clinic_id,
+                "patient_number": row.patient_number,
+                "patient_name": row.patient_name,
+                "doctor_id": row.doctor_id,
+                "doctor_name": row.doctor_name,
+                "notes": row.notes,
+                "appointment_date": row.appointment_date.isoformat() if row.appointment_date else None,
+                "start_time": row.start_time.isoformat() if row.start_time else None,
+                "end_time": row.end_time.isoformat() if row.end_time else None,
+                "checked_in_at": row.checked_in_at.isoformat() if row.checked_in_at else None,
+                "checked_out_at": row.checked_out_at.isoformat() if row.checked_out_at else None,
+                "status": row.status.value,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                 "doctor": {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone,
-                    "color_code": doctor.color_code
+                    "id": row.d_id,
+                    "name": row.d_name,
+                    "email": row.d_email,
+                    "phone": row.phone,
+                    "color_code": row.color_code
                 },
                 "patient": {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value
+                    "id": row.p_id,
+                    "name": row.p_name,
+                    "email": row.p_email,
+                    "mobile_number": row.mobile_number,
+                    "date_of_birth": row.date_of_birth.isoformat() if row.date_of_birth else None,
+                    "gender": row.gender.value
                 }
-            })
+            }
+            appointment_list.append(appointment_data)
 
-        # Stats
-        now = datetime.now()
-        today_start = datetime.combine(now.date(), time.min)
-        today_end = datetime.combine(now.date(), time.max)
+        # Get stats from cache or compute them
+        stats = None
+        if cached_stats:
+            try:
+                # Handle bytes to string conversion properly
+                cached_stats_str = cached_stats.decode('utf-8') if isinstance(cached_stats, bytes) else cached_stats
+                stats = orjson.loads(cached_stats_str)
+            except Exception as e:
+                logging.error(f"Error parsing cached stats: {str(e)}")
+                # Continue with stats computation if cache parsing fails
+                stats = None
+        
+        if not stats:
+            now = datetime.now()
+            today_start = datetime.combine(now.date(), time.min)
+            today_end = datetime.combine(now.date(), time.max)
+            
+            # Create all stats queries
+            today_count_stmt = select(func.count()).select_from(Appointment.__table__).where(
+                and_(
+                    Appointment.doctor_id == user_id,
+                    Appointment.created_at.between(today_start, today_end)
+                )
+            )
+            
+            month_count_stmt = select(func.count()).select_from(Appointment.__table__).where(
+                and_(
+                    Appointment.doctor_id == user_id,
+                    Appointment.created_at.between(start_of_month, end_of_month)
+                )
+            )
+            
+            year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            year_count_stmt = select(func.count()).select_from(Appointment.__table__).where(
+                and_(
+                    Appointment.doctor_id == user_id,
+                    Appointment.created_at >= year_start
+                )
+            )
+            
+            # Execute stats queries
+            today_count = db.execute(today_count_stmt).scalar() or 0
+            month_count = db.execute(month_count_stmt).scalar() or 0
+            year_count = db.execute(year_count_stmt).scalar() or 0
+            
+            stats = {
+                "today": today_count,
+                "this_month": month_count,
+                "this_year": year_count,
+                "overall": total_count
+            }
+            
+            # Cache stats for 30 minutes
+            try:
+                await redis.set(stats_cache_key, orjson.dumps(stats), ex=1800)
+            except Exception as e:
+                logging.error(f"Error caching stats: {str(e)}")
 
-        today_count = db.query(func.count(Appointment.id))\
-            .filter(Appointment.doctor_id == user.id)\
-            .filter(Appointment.created_at.between(today_start, today_end)).scalar() or 0
-
-        month_count = db.query(func.count(Appointment.id))\
-            .filter(Appointment.doctor_id == user.id)\
-            .filter(Appointment.created_at.between(start_of_month, end_of_month)).scalar() or 0
-
-        year_start = now.replace(month=1, day=1)
-        year_count = db.query(func.count(Appointment.id))\
-            .filter(Appointment.doctor_id == user.id)\
-            .filter(Appointment.created_at >= year_start).scalar() or 0
-
-        return JSONResponse(status_code=200, content={
+        # Prepare response with optimized structure
+        response_data = {
             "appointments": appointment_list,
             "pagination": {
                 "total": total_count,
@@ -1378,15 +1509,20 @@ async def search_appointments(
                 "per_page": per_page,
                 "pages": (total_count + per_page - 1) // per_page
             },
-            "stats": {
-                "today": today_count,
-                "this_month": month_count,
-                "this_year": year_count,
-                "overall": total_count
-            }
-        })
+            "stats": stats
+        }
+        
+        # Cache the result for 10 minutes with orjson for faster serialization
+        try:
+            await redis.set(cache_key, orjson.dumps(response_data), ex=600)
+        except Exception as e:
+            logging.error(f"Error caching response: {str(e)}")
+        
+        return JSONResponse(status_code=200, content=response_data)
 
     except Exception as e:
+        # Log the error for debugging
+        logging.error(f"Error in search_appointments: {str(e)}", exc_info=True)
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 @appointment_router.get("/details/{appointment_id}",
