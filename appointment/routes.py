@@ -313,19 +313,25 @@ async def get_all_appointments(
     month: str = Query(default=None, description="Format: MM-YYYY")
 ):
     try:
+        # Verify the JWT token from the request
         decoded_token = verify_token(request)
+        # Extract the user_id from the token if it exists, otherwise set to None
         user_id = decoded_token.get("user_id") if decoded_token else None
 
-        user = db.query(User).filter(User.id == user_id).first()
+        # Use select to fetch only needed columns for user validation
+        user = db.execute(
+            select(User.id, User.user_type, User.default_clinic_id)
+            .where(User.id == user_id)
+        ).first()
+        
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-        # Defaults
-        page = page if page and page >= 1 else 1
-        per_page = per_page if per_page and 1 <= per_page <= 100 else 10
-        sort_by = sort_by or "appointment_date"
-        sort_order = sort_order or "desc"
-
+        # Validate and set defaults
+        page = max(1, page)
+        per_page = max(1, min(per_page, 100))
+        
+        # Parse month filter
         now = datetime.now()
         filter_month = now.month
         filter_year = now.year
@@ -338,45 +344,74 @@ async def get_all_appointments(
             else:
                 return JSONResponse(status_code=400, content={"message": "Invalid month format. Use MM-YYYY."})
 
-        # Start and end of target month
+        # Calculate date ranges once
         start_of_month = datetime(filter_year, filter_month, 1)
         _, last_day = calendar.monthrange(filter_year, filter_month)
         end_of_month = datetime(filter_year, filter_month, last_day, 23, 59, 59)
-
-        # Base query
-        base_query = db.query(Appointment).filter(
-            Appointment.appointment_date.between(start_of_month, end_of_month),
-            Appointment.clinic_id == user.default_clinic_id
-        )
-
-        # Sorting
-        if hasattr(Appointment, sort_by):
-            sort_col = getattr(Appointment, sort_by)
-            base_query = base_query.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
-        else:
-            base_query = base_query.order_by(Appointment.appointment_date.desc())
-
-        total = base_query.count()
-        appointments = base_query.offset((page - 1) * per_page).limit(per_page).all()
-
-        # Stats
+        
         today = now.date()
         today_start = datetime.combine(today, time.min)
         today_end = datetime.combine(today, time.max)
+        month_start = datetime(now.year, now.month, 1)
+        year_start = datetime(now.year, 1, 1)
 
-        stats = db.query(
-            func.count(case((Appointment.appointment_date.between(today_start, today_end), 1))).label("today"),
-            func.count(case((Appointment.appointment_date >= datetime(now.year, now.month, 1), 1))).label("this_month"),
-            func.count(case((Appointment.appointment_date >= datetime(now.year, 1, 1), 1))).label("this_year"),
-            func.count().label("overall")
-        ).filter(Appointment.doctor_id == user_id).first()
+        # Prepare sort column
+        if hasattr(Appointment, sort_by):
+            sort_col = getattr(Appointment, sort_by)
+            sort_expr = sort_col.desc() if sort_order.lower() == "desc" else sort_col.asc()
+        else:
+            sort_expr = Appointment.appointment_date.desc()
 
+        # Compile the base query once
+        base_query = select(Appointment).filter(
+            Appointment.appointment_date.between(start_of_month, end_of_month),
+            Appointment.clinic_id == user.default_clinic_id
+        ).order_by(sort_expr)
+        
+        # Execute count query with optimized count expression
+        total = db.scalar(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        
+        # Execute paginated query with limit/offset
+        appointments = db.execute(
+            base_query.offset((page - 1) * per_page).limit(per_page)
+        ).scalars().all()
+        
+        # Get all patient and doctor IDs in one go to minimize queries
+        patient_ids = {a.patient_id for a in appointments if a.patient_id}
+        doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
+        
+        # Fetch all related patients and doctors in bulk
+        patients = {
+            p.id: p for p in db.execute(
+                select(Patient).where(Patient.id.in_(patient_ids))
+            ).scalars().all()
+        } if patient_ids else {}
+        
+        doctors = {
+            d.id: d for d in db.execute(
+                select(User).where(User.id.in_(doctor_ids))
+            ).scalars().all()
+        } if doctor_ids else {}
+        
+        # Get stats in a single optimized query
+        stats = db.execute(
+            select(
+                func.count(case((Appointment.appointment_date.between(today_start, today_end), 1), else_=None)).label("today"),
+                func.count(case((Appointment.appointment_date >= month_start, 1), else_=None)).label("this_month"),
+                func.count(case((Appointment.appointment_date >= year_start, 1), else_=None)).label("this_year"),
+                func.count().label("overall")
+            ).where(Appointment.doctor_id == user_id)
+        ).first()
+        
+        # Build response with pre-fetched related data
         appointment_list = []
         for appointment in appointments:
-            patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
-            doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
-
-            appointment_list.append({
+            patient = patients.get(appointment.patient_id)
+            doctor = doctors.get(appointment.doctor_id)
+            
+            appointment_data = {
                 "id": appointment.id,
                 "patient_id": appointment.patient_id,
                 "clinic_id": appointment.clinic_id,
@@ -395,29 +430,43 @@ async def get_all_appointments(
                 "remind_time_before": appointment.remind_time_before,
                 "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
                 "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                "doctor": {
+            }
+            
+            # Add related data only if available
+            if doctor:
+                appointment_data["doctor"] = {
                     "id": doctor.id,
                     "name": doctor.name,
                     "email": doctor.email,
                     "phone": doctor.phone
-                } if doctor else None,
-                "patient": {
+                }
+            else:
+                appointment_data["doctor"] = None
+                
+            if patient:
+                appointment_data["patient"] = {
                     "id": patient.id,
                     "name": patient.name,
                     "email": patient.email,
                     "mobile_number": patient.mobile_number,
                     "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
                     "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
-                } if patient else None
-            })
+                }
+            else:
+                appointment_data["patient"] = None
+                
+            appointment_list.append(appointment_data)
 
+        # Calculate pagination once
+        pages = (total + per_page - 1) // per_page if total else 0
+        
         return JSONResponse(status_code=200, content={
             "appointments": appointment_list,
             "pagination": {
                 "total": total,
                 "page": page,
                 "per_page": per_page,
-                "pages": (total + per_page - 1) // per_page if total else 0
+                "pages": pages
             },
             "stats": {
                 "today": stats.today if stats else 0,
