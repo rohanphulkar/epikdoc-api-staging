@@ -22,6 +22,9 @@ import asyncio
 from prediction.routes import update_image_url
 import re
 import calendar
+from redis_client import get_redis_client, close_redis_connection
+import json
+import pickle
 
 
 scheduler = BackgroundScheduler()
@@ -119,7 +122,21 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         user_id = decoded_token.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
+        
+        # Get Redis client
+        redis_client = await get_redis_client()
+        
+        # Try to get user from cache
+        user_cache_key = f"user:{user_id}"
+        cached_user = await redis_client.get(user_cache_key)
+        
+        if cached_user:
+            user = pickle.loads(cached_user)
+        else:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                # Cache user for 30 minutes
+                await redis_client.setex(user_cache_key, 1800, pickle.dumps(user))
 
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized - doctor access required"})
@@ -127,29 +144,71 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
         # Validate patient
         if not appointment.patient_id:
             return JSONResponse(status_code=400, content={"message": "Patient ID is required"})
-            
-        patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
+        
+        # Try to get patient from cache
+        patient_cache_key = f"patient:{appointment.patient_id}"
+        cached_patient = await redis_client.get(patient_cache_key)
+        
+        if cached_patient:
+            patient = pickle.loads(cached_patient)
+        else:
+            patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
+            if patient:
+                # Cache patient for 30 minutes
+                await redis_client.setex(patient_cache_key, 1800, pickle.dumps(patient))
+                
         if not patient:
             return JSONResponse(status_code=404, content={"message": "Patient not found"})
 
         # Validate/set doctor
         doctor = user
         if appointment.doctor_id:
-            doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+            # Try to get doctor from cache
+            doctor_cache_key = f"user:{appointment.doctor_id}"
+            cached_doctor = await redis_client.get(doctor_cache_key)
+            
+            if cached_doctor:
+                doctor = pickle.loads(cached_doctor)
+            else:
+                doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+                if doctor:
+                    # Cache doctor for 30 minutes
+                    await redis_client.setex(doctor_cache_key, 1800, pickle.dumps(doctor))
+                    
             if not doctor or str(doctor.user_type) != "doctor":
                 return JSONResponse(status_code=404, content={"message": "Doctor not found"})
 
         # Validate/set clinic
+        clinic = None
         if appointment.clinic_id:
-            clinic_id = appointment.clinic_id or user.default_clinic_id
-            if not clinic_id:
-                return JSONResponse(status_code=400, content={"message": "Clinic ID is required"})
-                
-            clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+            clinic_id = appointment.clinic_id
+            # Try to get clinic from cache
+            clinic_cache_key = f"clinic:{clinic_id}"
+            cached_clinic = await redis_client.get(clinic_cache_key)
+            
+            if cached_clinic:
+                clinic = pickle.loads(cached_clinic)
+            else:
+                clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+                if clinic:
+                    # Cache clinic for 30 minutes
+                    await redis_client.setex(clinic_cache_key, 1800, pickle.dumps(clinic))
+                    
             if not clinic:
                 return JSONResponse(status_code=404, content={"message": "Clinic not found"})
-        else:
-            clinic = None
+        elif user.default_clinic_id:
+            clinic_id = user.default_clinic_id
+            # Try to get clinic from cache
+            clinic_cache_key = f"clinic:{clinic_id}"
+            cached_clinic = await redis_client.get(clinic_cache_key)
+            
+            if cached_clinic:
+                clinic = pickle.loads(cached_clinic)
+            else:
+                clinic = db.query(Clinic).filter(Clinic.id == clinic_id).first()
+                if clinic:
+                    # Cache clinic for 30 minutes
+                    await redis_client.setex(clinic_cache_key, 1800, pickle.dumps(clinic))
 
         # Validate status
         status = appointment.status
@@ -178,6 +237,15 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
         db.commit()
         db.refresh(new_appointment)
 
+        # Invalidate relevant cache entries
+        await redis_client.delete(f"appointments:doctor:{doctor.id}")
+        await redis_client.delete(f"appointments:patient:{patient.id}")
+        if clinic:
+            await redis_client.delete(f"appointments:clinic:{clinic.id}")
+        
+        # Invalidate stats cache
+        await redis_client.delete(f"appointment_stats:doctor:{doctor.id}")
+
         if new_appointment.share_on_email:
             background_tasks.add_task(send_appointment_email, db, new_appointment.id)
 
@@ -187,6 +255,9 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
         return JSONResponse(status_code=500, content={"message": f"Database error: {str(e)}"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        # Close Redis connection
+        await close_redis_connection()
 
 @appointment_router.get("/all",
     response_model=dict,
@@ -319,15 +390,37 @@ async def get_all_appointments(
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
         user_id = decoded_token["user_id"]
-
-        # Fast user validation with minimal columns
-        user = db.execute(
-            select(User.id, User.user_type, User.default_clinic_id)
-            .where(User.id == user_id)
-            .limit(1)
-        ).first()
         
-        if not user or str(user.user_type) != "doctor":
+        # Get Redis client
+        redis_client = await get_redis_client()
+        
+        # Try to get user from cache
+        user_cache_key = f"user:{user_id}"
+        cached_user = await redis_client.get(user_cache_key)
+        
+        if cached_user:
+            user_data = pickle.loads(cached_user)
+            user_type = user_data.user_type
+            default_clinic_id = user_data.default_clinic_id
+        else:
+            # Fast user validation with minimal columns
+            user = db.execute(
+                select(User.id, User.user_type, User.default_clinic_id)
+                .where(User.id == user_id)
+                .limit(1)
+            ).first()
+            
+            if not user:
+                return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+            
+            user_type = user.user_type
+            default_clinic_id = user.default_clinic_id
+            
+            # Cache user data
+            user_data = type('UserData', (), {'user_type': user_type, 'default_clinic_id': default_clinic_id})
+            await redis_client.setex(user_cache_key, 1800, pickle.dumps(user_data))
+        
+        if str(user_type) != "doctor":
             return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
         # Validate and set defaults
@@ -352,158 +445,232 @@ async def get_all_appointments(
         _, last_day = calendar.monthrange(filter_year, filter_month)
         end_of_month = datetime(filter_year, filter_month, last_day, 23, 59, 59)
         
-        today = now.date()
-        today_start = datetime.combine(today, time.min)
-        today_end = datetime.combine(today, time.max)
-        month_start = datetime(now.year, now.month, 1)
-        year_start = datetime(now.year, 1, 1)
-
-        # Prepare sort column
-        valid_sort_fields = {col.name: col for col in Appointment.__table__.columns}
-        if sort_by in valid_sort_fields:
-            sort_col = valid_sort_fields[sort_by]
-            sort_expr = sort_col.desc() if sort_order.lower() == "desc" else sort_col.asc()
-        else:
-            sort_expr = Appointment.appointment_date.desc()
-
-        # Create filter conditions
-        filter_conditions = [
-            Appointment.appointment_date.between(start_of_month, end_of_month),
-            Appointment.clinic_id == user.default_clinic_id
-        ]
+        # Create cache keys
+        cache_key_base = f"appointments:doctor:{user_id}:month:{filter_month}-{filter_year}"
+        appointments_cache_key = f"{cache_key_base}:page:{page}:per_page:{per_page}:sort:{sort_by}:{sort_order}"
+        total_cache_key = f"{cache_key_base}:total"
         
-        # Check if there are any appointments for this month before doing more expensive queries
-        has_appointments = db.scalar(
-            select(func.count(1))
-            .select_from(Appointment)
-            .where(and_(*filter_conditions))
-            .limit(1)
-        )
+        # Try to get cached data
+        cached_appointments = await redis_client.get(appointments_cache_key)
+        cached_total = await redis_client.get(total_cache_key)
         
-        # If no appointments exist, return early with empty results
-        if not has_appointments:
-            return JSONResponse(status_code=200, content={
-                "appointments": [],
-                "pagination": {
-                    "total": 0,
-                    "page": page,
-                    "per_page": per_page,
-                    "pages": 0
-                },
-                "stats": {
-                    "today": 0,
-                    "this_month": 0,
-                    "this_year": 0,
-                    "overall": 0
-                }
-            })
-        
-        # Get total count efficiently
-        total = db.scalar(
-            select(func.count())
-            .select_from(Appointment)
-            .where(and_(*filter_conditions))
-        ) or 0
-        
-        # Only fetch appointments if we have results and they're on a valid page
         appointment_list = []
-        if total > 0 and (page - 1) * per_page < total:
-            # Execute paginated query with limit/offset
-            appointments = db.execute(
-                select(Appointment)
-                .where(and_(*filter_conditions))
-                .order_by(sort_expr)
-                .offset((page - 1) * per_page)
-                .limit(per_page)
-            ).scalars().all()
-            
-            if appointments:
-                # Get all patient and doctor IDs in one go to minimize queries
-                patient_ids = {a.patient_id for a in appointments if a.patient_id}
-                doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
-                
-                # Fetch all related patients and doctors in bulk if needed
-                patients = {}
-                if patient_ids:
-                    patients = {
-                        p.id: p for p in db.execute(
-                            select(Patient)
-                            .where(Patient.id.in_(patient_ids))
-                            .execution_options(populate_existing=True)
-                        ).scalars().all()
-                    }
-                
-                doctors = {}
-                if doctor_ids:
-                    doctors = {
-                        d.id: d for d in db.execute(
-                            select(User)
-                            .where(User.id.in_(doctor_ids))
-                            .execution_options(populate_existing=True)
-                        ).scalars().all()
-                    }
-                
-                # Build response with pre-fetched related data
-                for appointment in appointments:
-                    patient = patients.get(appointment.patient_id)
-                    doctor = doctors.get(appointment.doctor_id)
-                    
-                    appointment_data = {
-                        "id": appointment.id,
-                        "patient_id": appointment.patient_id,
-                        "clinic_id": appointment.clinic_id,
-                        "patient_number": appointment.patient_number,
-                        "patient_name": appointment.patient_name,
-                        "doctor_id": appointment.doctor_id,
-                        "doctor_name": appointment.doctor_name,
-                        "notes": appointment.notes,
-                        "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
-                        "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
-                        "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
-                        "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
-                        "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
-                        "status": appointment.status.value if hasattr(appointment.status, 'value') else str(appointment.status),
-                        "send_reminder": appointment.send_reminder,
-                        "remind_time_before": appointment.remind_time_before,
-                        "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                        "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-                    }
-                    
-                    # Add related data only if available
-                    if doctor:
-                        appointment_data["doctor"] = {
-                            "id": doctor.id,
-                            "name": doctor.name,
-                            "email": doctor.email,
-                            "phone": doctor.phone
-                        }
-                    else:
-                        appointment_data["doctor"] = None
-                        
-                    if patient:
-                        appointment_data["patient"] = {
-                            "id": patient.id,
-                            "name": patient.name,
-                            "email": patient.email,
-                            "mobile_number": patient.mobile_number,
-                            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                            "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
-                        }
-                    else:
-                        appointment_data["patient"] = None
-                        
-                    appointment_list.append(appointment_data)
+        total = 0
         
-        # Get stats in a single optimized query with proper indexing
-        stats = db.execute(
-            select(
-                func.count(case((Appointment.appointment_date.between(today_start, today_end), 1), else_=None)).label("today"),
-                func.count(case((Appointment.appointment_date >= month_start, 1), else_=None)).label("this_month"),
-                func.count(case((Appointment.appointment_date >= year_start, 1), else_=None)).label("this_year"),
-                func.count().label("overall")
+        if cached_total:
+            total = int(cached_total)
+        
+        if cached_appointments and cached_total:
+            appointment_list = json.loads(cached_appointments)
+        else:
+            # Prepare sort column
+            valid_sort_fields = {col.name: col for col in Appointment.__table__.columns}
+            if sort_by in valid_sort_fields:
+                sort_col = valid_sort_fields[sort_by]
+                sort_expr = sort_col.desc() if sort_order.lower() == "desc" else sort_col.asc()
+            else:
+                sort_expr = Appointment.appointment_date.desc()
+
+            # Create filter conditions
+            filter_conditions = [
+                Appointment.appointment_date.between(start_of_month, end_of_month),
+                Appointment.clinic_id == default_clinic_id
+            ]
+            
+            # Check if there are any appointments for this month before doing more expensive queries
+            has_appointments = db.scalar(
+                select(func.count(1))
+                .select_from(Appointment)
+                .where(and_(*filter_conditions))
+                .limit(1)
             )
-            .where(Appointment.doctor_id == user_id)
-        ).first()
+            
+            # If no appointments exist, return early with empty results
+            if not has_appointments:
+                # Cache empty results for 5 minutes
+                await redis_client.setex(appointments_cache_key, 300, json.dumps([]))
+                await redis_client.setex(total_cache_key, 300, "0")
+                
+                stats_cache_key = f"appointment_stats:doctor:{user_id}"
+                empty_stats = json.dumps({"today": 0, "this_month": 0, "this_year": 0, "overall": 0})
+                await redis_client.setex(stats_cache_key, 300, empty_stats)
+                
+                return JSONResponse(status_code=200, content={
+                    "appointments": [],
+                    "pagination": {
+                        "total": 0,
+                        "page": page,
+                        "per_page": per_page,
+                        "pages": 0
+                    },
+                    "stats": {
+                        "today": 0,
+                        "this_month": 0,
+                        "this_year": 0,
+                        "overall": 0
+                    }
+                })
+            
+            # Get total count efficiently
+            total = db.scalar(
+                select(func.count())
+                .select_from(Appointment)
+                .where(and_(*filter_conditions))
+            ) or 0
+            
+            # Cache the total for 5 minutes
+            await redis_client.setex(total_cache_key, 300, str(total))
+            
+            # Only fetch appointments if we have results and they're on a valid page
+            if total > 0 and (page - 1) * per_page < total:
+                # Execute paginated query with limit/offset
+                appointments = db.execute(
+                    select(Appointment)
+                    .where(and_(*filter_conditions))
+                    .order_by(sort_expr)
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                ).scalars().all()
+                
+                if appointments:
+                    # Get all patient and doctor IDs in one go to minimize queries
+                    patient_ids = {a.patient_id for a in appointments if a.patient_id}
+                    doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
+                    
+                    # Fetch all related patients and doctors in bulk if needed
+                    patients = {}
+                    if patient_ids:
+                        # Try to get patients from cache first
+                        for patient_id in patient_ids:
+                            patient_cache_key = f"patient:{patient_id}"
+                            cached_patient = await redis_client.get(patient_cache_key)
+                            if cached_patient:
+                                patients[patient_id] = pickle.loads(cached_patient)
+                        
+                        # Fetch missing patients from database
+                        missing_patient_ids = patient_ids - patients.keys()
+                        if missing_patient_ids:
+                            db_patients = db.execute(
+                                select(Patient)
+                                .where(Patient.id.in_(missing_patient_ids))
+                                .execution_options(populate_existing=True)
+                            ).scalars().all()
+                            
+                            for patient in db_patients:
+                                patients[patient.id] = patient
+                                # Cache patient for 30 minutes
+                                await redis_client.setex(f"patient:{patient.id}", 1800, pickle.dumps(patient))
+                    
+                    doctors = {}
+                    if doctor_ids:
+                        # Try to get doctors from cache first
+                        for doctor_id in doctor_ids:
+                            doctor_cache_key = f"user:{doctor_id}"
+                            cached_doctor = await redis_client.get(doctor_cache_key)
+                            if cached_doctor:
+                                doctors[doctor_id] = pickle.loads(cached_doctor)
+                        
+                        # Fetch missing doctors from database
+                        missing_doctor_ids = doctor_ids - doctors.keys()
+                        if missing_doctor_ids:
+                            db_doctors = db.execute(
+                                select(User)
+                                .where(User.id.in_(missing_doctor_ids))
+                                .execution_options(populate_existing=True)
+                            ).scalars().all()
+                            
+                            for doctor in db_doctors:
+                                doctors[doctor.id] = doctor
+                                # Cache doctor for 30 minutes
+                                await redis_client.setex(f"user:{doctor.id}", 1800, pickle.dumps(doctor))
+                    
+                    # Build response with pre-fetched related data
+                    for appointment in appointments:
+                        patient = patients.get(appointment.patient_id)
+                        doctor = doctors.get(appointment.doctor_id)
+                        
+                        appointment_data = {
+                            "id": str(appointment.id),
+                            "patient_id": str(appointment.patient_id) if appointment.patient_id else None,
+                            "clinic_id": str(appointment.clinic_id) if appointment.clinic_id else None,
+                            "patient_number": appointment.patient_number,
+                            "patient_name": appointment.patient_name,
+                            "doctor_id": str(appointment.doctor_id) if appointment.doctor_id else None,
+                            "doctor_name": appointment.doctor_name,
+                            "notes": appointment.notes,
+                            "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                            "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+                            "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
+                            "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                            "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
+                            "status": appointment.status.value if hasattr(appointment.status, 'value') else str(appointment.status),
+                            "send_reminder": appointment.send_reminder,
+                            "remind_time_before": appointment.remind_time_before,
+                            "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                            "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+                        }
+                        
+                        # Add related data only if available
+                        if doctor:
+                            appointment_data["doctor"] = {
+                                "id": str(doctor.id),
+                                "name": doctor.name,
+                                "email": doctor.email,
+                                "phone": doctor.phone
+                            }
+                        else:
+                            appointment_data["doctor"] = None
+                            
+                        if patient:
+                            appointment_data["patient"] = {
+                                "id": str(patient.id),
+                                "name": patient.name,
+                                "email": patient.email,
+                                "mobile_number": patient.mobile_number,
+                                "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                                "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
+                            }
+                        else:
+                            appointment_data["patient"] = None
+                            
+                        appointment_list.append(appointment_data)
+                
+                # Cache the appointments for 5 minutes
+                await redis_client.setex(appointments_cache_key, 300, json.dumps(appointment_list))
+        
+        # Get stats from cache or database
+        stats_cache_key = f"appointment_stats:doctor:{user_id}"
+        cached_stats = await redis_client.get(stats_cache_key)
+        
+        if cached_stats:
+            stats = json.loads(cached_stats)
+        else:
+            today = now.date()
+            today_start = datetime.combine(today, time.min)
+            today_end = datetime.combine(today, time.max)
+            month_start = datetime(now.year, now.month, 1)
+            year_start = datetime(now.year, 1, 1)
+            
+            # Get stats in a single optimized query with proper indexing
+            stats_result = db.execute(
+                select(
+                    func.count(case((Appointment.appointment_date.between(today_start, today_end), 1), else_=None)).label("today"),
+                    func.count(case((Appointment.appointment_date >= month_start, 1), else_=None)).label("this_month"),
+                    func.count(case((Appointment.appointment_date >= year_start, 1), else_=None)).label("this_year"),
+                    func.count().label("overall")
+                )
+                .where(Appointment.doctor_id == user_id)
+            ).first()
+            
+            stats = {
+                "today": stats_result.today if stats_result else 0,
+                "this_month": stats_result.this_month if stats_result else 0,
+                "this_year": stats_result.this_year if stats_result else 0,
+                "overall": stats_result.overall if stats_result else 0
+            }
+            
+            # Cache stats for 5 minutes
+            await redis_client.setex(stats_cache_key, 300, json.dumps(stats))
 
         # Calculate pagination once
         pages = (total + per_page - 1) // per_page if total else 0
@@ -516,17 +683,15 @@ async def get_all_appointments(
                 "per_page": per_page,
                 "pages": pages
             },
-            "stats": {
-                "today": stats.today if stats else 0,
-                "this_month": stats.this_month if stats else 0,
-                "this_year": stats.this_year if stats else 0,
-                "overall": stats.overall if stats else 0
-            }
+            "stats": stats
         })
     except Exception as e:
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        # Close Redis connection
+        await close_redis_connection()
 
 @appointment_router.get("/patient-appointments/{patient_id}",
     response_model=dict,
