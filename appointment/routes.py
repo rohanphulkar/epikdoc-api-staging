@@ -197,7 +197,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
     
     **Query Parameters:**
     - page (int): Page number for pagination (default: 1)
-    - per_page (int): Number of items per page (default: 10, max: 100)
+    - per_page (int): Number of items per page (default: 50, max: 100)
     - sort_by (str): Field to sort by (default: appointment_date)
     - sort_order (str): Sort direction - asc or desc (default: desc)
     - month (str): Format: MM-YYYY - Filter appointments by month
@@ -250,7 +250,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
         "pagination": {
             "total": 100,
             "page": 1,
-            "per_page": 10,
+            "per_page": 50,
             "pages": 10
         },
         "stats": {
@@ -272,7 +272,7 @@ async def create_appointment(request: Request, appointment: AppointmentCreate, b
                         "pagination": {
                             "total": 0,
                             "page": 1,
-                            "per_page": 10,
+                            "per_page": 50,
                             "pages": 0
                         },
                         "stats": {
@@ -315,13 +315,16 @@ async def get_all_appointments(
     try:
         # Verify the JWT token from the request
         decoded_token = verify_token(request)
-        # Extract the user_id from the token if it exists, otherwise set to None
-        user_id = decoded_token.get("user_id") if decoded_token else None
+        if not decoded_token or "user_id" not in decoded_token:
+            return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+        
+        user_id = decoded_token["user_id"]
 
-        # Use select to fetch only needed columns for user validation
+        # Fast user validation with minimal columns
         user = db.execute(
             select(User.id, User.user_type, User.default_clinic_id)
             .where(User.id == user_id)
+            .limit(1)
         ).first()
         
         if not user or str(user.user_type) != "doctor":
@@ -356,106 +359,151 @@ async def get_all_appointments(
         year_start = datetime(now.year, 1, 1)
 
         # Prepare sort column
-        if hasattr(Appointment, sort_by):
-            sort_col = getattr(Appointment, sort_by)
+        valid_sort_fields = {col.name: col for col in Appointment.__table__.columns}
+        if sort_by in valid_sort_fields:
+            sort_col = valid_sort_fields[sort_by]
             sort_expr = sort_col.desc() if sort_order.lower() == "desc" else sort_col.asc()
         else:
             sort_expr = Appointment.appointment_date.desc()
 
-        # Compile the base query once
-        base_query = select(Appointment).filter(
+        # Create filter conditions
+        filter_conditions = [
             Appointment.appointment_date.between(start_of_month, end_of_month),
             Appointment.clinic_id == user.default_clinic_id
-        ).order_by(sort_expr)
+        ]
         
-        # Execute count query with optimized count expression
-        total = db.scalar(
-            select(func.count()).select_from(base_query.subquery())
+        # Check if there are any appointments for this month before doing more expensive queries
+        has_appointments = db.scalar(
+            select(func.count(1))
+            .select_from(Appointment)
+            .where(and_(*filter_conditions))
+            .limit(1)
         )
         
-        # Execute paginated query with limit/offset
-        appointments = db.execute(
-            base_query.offset((page - 1) * per_page).limit(per_page)
-        ).scalars().all()
+        # If no appointments exist, return early with empty results
+        if not has_appointments:
+            return JSONResponse(status_code=200, content={
+                "appointments": [],
+                "pagination": {
+                    "total": 0,
+                    "page": page,
+                    "per_page": per_page,
+                    "pages": 0
+                },
+                "stats": {
+                    "today": 0,
+                    "this_month": 0,
+                    "this_year": 0,
+                    "overall": 0
+                }
+            })
         
-        # Get all patient and doctor IDs in one go to minimize queries
-        patient_ids = {a.patient_id for a in appointments if a.patient_id}
-        doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
+        # Get total count efficiently
+        total = db.scalar(
+            select(func.count())
+            .select_from(Appointment)
+            .where(and_(*filter_conditions))
+        ) or 0
         
-        # Fetch all related patients and doctors in bulk
-        patients = {
-            p.id: p for p in db.execute(
-                select(Patient).where(Patient.id.in_(patient_ids))
+        # Only fetch appointments if we have results and they're on a valid page
+        appointment_list = []
+        if total > 0 and (page - 1) * per_page < total:
+            # Execute paginated query with limit/offset
+            appointments = db.execute(
+                select(Appointment)
+                .where(and_(*filter_conditions))
+                .order_by(sort_expr)
+                .offset((page - 1) * per_page)
+                .limit(per_page)
             ).scalars().all()
-        } if patient_ids else {}
+            
+            if appointments:
+                # Get all patient and doctor IDs in one go to minimize queries
+                patient_ids = {a.patient_id for a in appointments if a.patient_id}
+                doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
+                
+                # Fetch all related patients and doctors in bulk if needed
+                patients = {}
+                if patient_ids:
+                    patients = {
+                        p.id: p for p in db.execute(
+                            select(Patient)
+                            .where(Patient.id.in_(patient_ids))
+                            .execution_options(populate_existing=True)
+                        ).scalars().all()
+                    }
+                
+                doctors = {}
+                if doctor_ids:
+                    doctors = {
+                        d.id: d for d in db.execute(
+                            select(User)
+                            .where(User.id.in_(doctor_ids))
+                            .execution_options(populate_existing=True)
+                        ).scalars().all()
+                    }
+                
+                # Build response with pre-fetched related data
+                for appointment in appointments:
+                    patient = patients.get(appointment.patient_id)
+                    doctor = doctors.get(appointment.doctor_id)
+                    
+                    appointment_data = {
+                        "id": appointment.id,
+                        "patient_id": appointment.patient_id,
+                        "clinic_id": appointment.clinic_id,
+                        "patient_number": appointment.patient_number,
+                        "patient_name": appointment.patient_name,
+                        "doctor_id": appointment.doctor_id,
+                        "doctor_name": appointment.doctor_name,
+                        "notes": appointment.notes,
+                        "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
+                        "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
+                        "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
+                        "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
+                        "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
+                        "status": appointment.status.value if hasattr(appointment.status, 'value') else str(appointment.status),
+                        "send_reminder": appointment.send_reminder,
+                        "remind_time_before": appointment.remind_time_before,
+                        "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
+                        "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
+                    }
+                    
+                    # Add related data only if available
+                    if doctor:
+                        appointment_data["doctor"] = {
+                            "id": doctor.id,
+                            "name": doctor.name,
+                            "email": doctor.email,
+                            "phone": doctor.phone
+                        }
+                    else:
+                        appointment_data["doctor"] = None
+                        
+                    if patient:
+                        appointment_data["patient"] = {
+                            "id": patient.id,
+                            "name": patient.name,
+                            "email": patient.email,
+                            "mobile_number": patient.mobile_number,
+                            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+                            "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
+                        }
+                    else:
+                        appointment_data["patient"] = None
+                        
+                    appointment_list.append(appointment_data)
         
-        doctors = {
-            d.id: d for d in db.execute(
-                select(User).where(User.id.in_(doctor_ids))
-            ).scalars().all()
-        } if doctor_ids else {}
-        
-        # Get stats in a single optimized query
+        # Get stats in a single optimized query with proper indexing
         stats = db.execute(
             select(
                 func.count(case((Appointment.appointment_date.between(today_start, today_end), 1), else_=None)).label("today"),
                 func.count(case((Appointment.appointment_date >= month_start, 1), else_=None)).label("this_month"),
                 func.count(case((Appointment.appointment_date >= year_start, 1), else_=None)).label("this_year"),
                 func.count().label("overall")
-            ).where(Appointment.doctor_id == user_id)
+            )
+            .where(Appointment.doctor_id == user_id)
         ).first()
-        
-        # Build response with pre-fetched related data
-        appointment_list = []
-        for appointment in appointments:
-            patient = patients.get(appointment.patient_id)
-            doctor = doctors.get(appointment.doctor_id)
-            
-            appointment_data = {
-                "id": appointment.id,
-                "patient_id": appointment.patient_id,
-                "clinic_id": appointment.clinic_id,
-                "patient_number": appointment.patient_number,
-                "patient_name": appointment.patient_name,
-                "doctor_id": appointment.doctor_id,
-                "doctor_name": appointment.doctor_name,
-                "notes": appointment.notes,
-                "appointment_date": appointment.appointment_date.isoformat() if appointment.appointment_date else None,
-                "start_time": appointment.start_time.isoformat() if appointment.start_time else None,
-                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
-                "checked_in_at": appointment.checked_in_at.isoformat() if appointment.checked_in_at else None,
-                "checked_out_at": appointment.checked_out_at.isoformat() if appointment.checked_out_at else None,
-                "status": appointment.status.value if hasattr(appointment.status, 'value') else str(appointment.status),
-                "send_reminder": appointment.send_reminder,
-                "remind_time_before": appointment.remind_time_before,
-                "created_at": appointment.created_at.isoformat() if appointment.created_at else None,
-                "updated_at": appointment.updated_at.isoformat() if appointment.updated_at else None,
-            }
-            
-            # Add related data only if available
-            if doctor:
-                appointment_data["doctor"] = {
-                    "id": doctor.id,
-                    "name": doctor.name,
-                    "email": doctor.email,
-                    "phone": doctor.phone
-                }
-            else:
-                appointment_data["doctor"] = None
-                
-            if patient:
-                appointment_data["patient"] = {
-                    "id": patient.id,
-                    "name": patient.name,
-                    "email": patient.email,
-                    "mobile_number": patient.mobile_number,
-                    "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-                    "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender)
-                }
-            else:
-                appointment_data["patient"] = None
-                
-            appointment_list.append(appointment_data)
 
         # Calculate pagination once
         pages = (total + per_page - 1) // per_page if total else 0
