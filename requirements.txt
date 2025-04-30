@@ -24,7 +24,7 @@ pydicom==3.0.1
 PyJWT==2.10.0
 PyMySQL==1.1.1
 python-decouple==3.8
-python-multipart==0.0.17
+python-multipart==0.0.18
 razorpay==1.4.2
 reportlab==4.2.5
 requests==2.32.3
